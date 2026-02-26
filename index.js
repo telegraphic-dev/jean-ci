@@ -9,8 +9,16 @@ const PORT = process.env.PORT || 3000;
 // Load config
 const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET;
 const APP_ID = process.env.GITHUB_APP_ID;
-const PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY || 
-  fs.readFileSync(process.env.GITHUB_APP_PRIVATE_KEY_PATH || '/app/private-key.pem', 'utf8');
+
+// Private key can be: direct PEM, base64-encoded, or file path
+let PRIVATE_KEY;
+if (process.env.GITHUB_APP_PRIVATE_KEY) {
+  PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY;
+} else if (process.env.GITHUB_APP_PRIVATE_KEY_B64) {
+  PRIVATE_KEY = Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY_B64, 'base64').toString('utf8');
+} else {
+  PRIVATE_KEY = fs.readFileSync(process.env.GITHUB_APP_PRIVATE_KEY_PATH || '/app/private-key.pem', 'utf8');
+}
 
 // OpenClaw integration
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
