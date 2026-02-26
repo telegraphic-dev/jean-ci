@@ -1,0 +1,15 @@
+{
+  "name": "jean-ci",
+  "version": "0.1.0",
+  "description": "GitHub webhook handler for Jean",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@octokit/webhooks": "^12.0.0",
+    "@octokit/app": "^14.0.0"
+  }
+}
