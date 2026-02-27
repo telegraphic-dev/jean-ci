@@ -189,33 +189,14 @@ async function syncReposFromInstallations() {
   console.log('🔄 Syncing repositories from GitHub App installations...');
   
   try {
-    // Use the App's JWT to list installations
-    const jwt = await githubApp.getSignedJsonWebToken();
-    
-    const installationsRes = await fetch('https://api.github.com/app/installations', {
-      headers: {
-        'Authorization': `Bearer ${jwt}`,
-        'Accept': 'application/vnd.github+json',
-        'User-Agent': 'jean-ci',
-      },
-    });
-    
-    if (!installationsRes.ok) {
-      console.error('Failed to fetch installations:', await installationsRes.text());
-      return [];
-    }
-    
-    const installations = await installationsRes.json();
-    console.log(`Found ${installations.length} installations`);
-    
+    // Use octokit's eachInstallation to iterate all installations
     const allRepos = [];
     
-    for (const installation of installations) {
+    for await (const { installation, octokit } of githubApp.eachInstallation.iterator()) {
       try {
-        const installationOctokit = await githubApp.getInstallationOctokit(installation.id);
-        const { data } = await installationOctokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 });
+        const { data } = await octokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 });
         
-        console.log(`Installation ${installation.id}: ${data.repositories.length} repos`);
+        console.log(`Installation ${installation.id} (${installation.account?.login}): ${data.repositories.length} repos`);
         
         for (const repo of data.repositories) {
           await upsertRepo(repo.full_name, installation.id, false);
@@ -662,7 +643,7 @@ app.get('/api/events', requireAdmin, async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.1' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.2' });
 });
 
 app.get('/', (req, res) => {
@@ -913,7 +894,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.4.1 starting...`);
+  console.log(`jean-ci v0.4.2 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
