@@ -149,6 +149,11 @@ async function initDatabase() {
       );
     `);
 
+    // Migration: rename global_prompt -> user_prompt
+    await client.query(`
+      UPDATE jean_ci_config SET key = 'user_prompt' WHERE key = 'global_prompt'
+    `);
+
     await client.query(`
       INSERT INTO jean_ci_config (key, value) 
       VALUES ('user_prompt', $1) 
@@ -1301,7 +1306,7 @@ app.get('/admin', (req, res) => {
       <div class="card">
         <h2>📝 Global Review Prompt</h2>
         <p style="color: #666; font-size: 14px;">This prompt determines how PRs are reviewed. Use <code>VERDICT: PASS</code> or <code>VERDICT: FAIL</code> format.</p>
-        <textarea id="global-prompt"></textarea>
+        <textarea id="user-prompt"></textarea>
         <br><br>
         <button class="btn btn-success" onclick="savePrompt()">Save Prompt</button>
         <span id="save-status" style="margin-left: 10px; color: #28a745;"></span>
@@ -1356,14 +1361,14 @@ app.get('/admin', (req, res) => {
     async function loadConfig() {
       const res = await fetch('/api/config');
       const data = await res.json();
-      document.getElementById('global-prompt').value = data.user_prompt;
+      document.getElementById('user-prompt').value = data.user_prompt;
     }
     
     async function savePrompt() {
       await fetch('/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_prompt: document.getElementById('global-prompt').value }),
+        body: JSON.stringify({ user_prompt: document.getElementById('user-prompt').value }),
       });
       document.getElementById('save-status').textContent = 'Saved!';
       setTimeout(() => document.getElementById('save-status').textContent = '', 2000);
