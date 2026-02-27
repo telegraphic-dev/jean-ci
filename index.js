@@ -189,9 +189,6 @@ async function syncReposFromInstallations() {
   console.log('🔄 Syncing repositories from GitHub App installations...');
   
   try {
-    // Get all installations
-    const octokit = await githubApp.getInstallationOctokit(undefined);
-    
     // Use the App's JWT to list installations
     const jwt = await githubApp.getSignedJsonWebToken();
     
@@ -209,25 +206,23 @@ async function syncReposFromInstallations() {
     }
     
     const installations = await installationsRes.json();
+    console.log(`Found ${installations.length} installations`);
+    
     const allRepos = [];
     
     for (const installation of installations) {
-      // Get repos for this installation
-      const reposRes = await fetch(`https://api.github.com/installation/repositories`, {
-        headers: {
-          'Authorization': `Bearer ${await (await githubApp.getInstallationOctokit(installation.id)).auth()}`,
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'jean-ci',
-        },
-      });
-      
-      // Use installation token instead
-      const installationOctokit = await githubApp.getInstallationOctokit(installation.id);
-      const { data } = await installationOctokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 });
-      
-      for (const repo of data.repositories) {
-        await upsertRepo(repo.full_name, installation.id, false);
-        allRepos.push({ full_name: repo.full_name, installation_id: installation.id });
+      try {
+        const installationOctokit = await githubApp.getInstallationOctokit(installation.id);
+        const { data } = await installationOctokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 });
+        
+        console.log(`Installation ${installation.id}: ${data.repositories.length} repos`);
+        
+        for (const repo of data.repositories) {
+          await upsertRepo(repo.full_name, installation.id, false);
+          allRepos.push({ full_name: repo.full_name, installation_id: installation.id });
+        }
+      } catch (err) {
+        console.error(`Error fetching repos for installation ${installation.id}:`, err.message);
       }
     }
     
@@ -667,7 +662,7 @@ app.get('/api/events', requireAdmin, async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.1' });
 });
 
 app.get('/', (req, res) => {
@@ -918,7 +913,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.4.0 starting...`);
+  console.log(`jean-ci v0.4.1 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
