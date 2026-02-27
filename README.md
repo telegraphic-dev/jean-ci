@@ -37,3 +37,9 @@ npm install
 npm run dev
 # Send test webhook to http://localhost:3000/webhook
 ```
+
+## Gateway Connection
+
+jean-ci connects to OpenClaw via the internal Traefik proxy:
+- URL: `http://coolify-proxy/openclaw/v1/chat/completions`
+- Auth: Bearer token in `OPENCLAW_GATEWAY_TOKEN`
