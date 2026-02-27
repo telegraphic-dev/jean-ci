@@ -1,39 +1,105 @@
 # jean-ci
 
-GitHub webhook handler that routes events to Jean (OpenClaw).
+GitHub webhook handler for automated PR reviews with LLM assistance.
 
-## Events Handled
+## Features
 
-- **pull_request** → Notifies on new/updated PRs
-- **pull_request_review_comment** → Line comments for review
-- **issue_comment** → `/review` command support
-- **check_suite** → CI failure alerts
-- **deployment_status** → Post-deploy verification triggers
+- **Automated PR Reviews**: Run LLM-powered code reviews on every PR
+- **Customizable Prompts**: Edit the global review prompt in the admin UI
+- **Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for custom checks
+- **GitHub Checks Integration**: Results appear as nested checks on PRs
+- **Admin Dashboard**: GitHub OAuth protected management interface
 
-## Environment Variables
+## Architecture
 
-```bash
-# Required
-GITHUB_APP_ID=
-GITHUB_WEBHOOK_SECRET=
-
-# Private key (one of these)
-GITHUB_APP_PRIVATE_KEY=      # PEM content directly
-GITHUB_APP_PRIVATE_KEY_PATH= # Or path to .pem file
-
-# OpenClaw integration
-OPENCLAW_GATEWAY_URL=
-OPENCLAW_GATEWAY_TOKEN=
+```
+PR Opened → Webhook → jean-ci → OpenClaw Gateway → LLM
+                         ↓
+                  GitHub Checks API
+                         ↓
+                  ✅ Global Standards
+                  ✅ security.md
+                  ✅ style.md
 ```
 
-## Deployment
+## Setup
 
-Deployed to Coolify at `jean-ci.telegraphic.app`.
-
-## Local Testing
+### 1. Environment Variables
 
 ```bash
-npm install
-npm run dev
-# Send test webhook to http://localhost:3000/webhook
+# GitHub App
+GITHUB_APP_ID=your_app_id
+GITHUB_WEBHOOK_SECRET=your_webhook_secret
+GITHUB_APP_PRIVATE_KEY_B64=base64_encoded_private_key
+
+# GitHub OAuth (for admin UI)
+GITHUB_CLIENT_ID=your_oauth_client_id
+GITHUB_CLIENT_SECRET=your_oauth_client_secret
+
+# Admin access (your GitHub user ID)
+ADMIN_GITHUB_ID=your_github_user_id
+
+# OpenClaw Gateway
+OPENCLAW_GATEWAY_URL=http://coolify-proxy/openclaw
+OPENCLAW_GATEWAY_TOKEN=your_gateway_token
+
+# Data storage
+DATA_DIR=/data
 ```
+
+### 2. GitHub App Permissions
+
+Required permissions:
+- **Checks**: Read & Write
+- **Contents**: Read (for fetching `.jean-ci/` files)
+- **Pull requests**: Read
+- **Metadata**: Read
+
+Subscribe to events:
+- `pull_request`
+- `check_suite`
+- `installation`
+
+### 3. Custom PR Checks
+
+Add markdown files to `.jean-ci/pr-checks/` in your repository:
+
+```
+.jean-ci/
+  pr-checks/
+    security.md    # Security review prompt
+    style.md       # Code style review prompt
+    tests.md       # Test coverage review prompt
+```
+
+Each file becomes a separate GitHub Check with its own ✅/❌ status.
+
+Example `security.md`:
+```markdown
+Review this PR for security issues:
+
+- SQL injection vulnerabilities
+- XSS attacks
+- Exposed secrets or credentials
+- Unsafe deserialization
+- Missing input validation
+
+Report any findings with specific line numbers.
+```
+
+## Admin Dashboard
+
+Access at `/admin` after signing in with GitHub.
+
+Features:
+- Edit global PR review prompt
+- Enable/disable PR reviews per repository
+- View recent webhook events
+
+## Gateway Connection
+
+Uses the Coolify Traefik proxy bridge:
+- URL: `http://coolify-proxy/openclaw`
+- Auth: Bearer token
+
+See COOLIFY_INSTANCES.md for bridge setup details.
