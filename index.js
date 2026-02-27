@@ -525,7 +525,7 @@ async function callOpenClaw(userPrompt, context = '') {
   }
 
   // Combine user criteria with PR context
-  const userMessage = `## Review Criteria\n${userPrompt}\n\n## Pull Request Details\n${context}`;
+  const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
 
   try {
     const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
