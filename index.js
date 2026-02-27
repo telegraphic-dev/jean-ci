@@ -219,14 +219,14 @@ async function syncReposFromInstallations() {
 async function fetchPRCheckFiles(octokit, owner, repo, ref) {
   const files = [];
   try {
-    const { data } = await octokit.rest.repos.getContent({
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
       owner, repo, path: '.jean-ci/pr-checks', ref,
     });
     
     if (Array.isArray(data)) {
       for (const file of data) {
         if (file.name.endsWith('.md')) {
-          const { data: content } = await octokit.rest.repos.getContent({
+          const { data: content } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
             owner, repo, path: file.path, ref,
           });
           files.push({
@@ -244,7 +244,7 @@ async function fetchPRCheckFiles(octokit, owner, repo, ref) {
 }
 
 async function getPRDiff(octokit, owner, repo, prNumber) {
-  const { data } = await octokit.rest.pulls.get({
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
     owner, repo, pull_number: prNumber,
     mediaType: { format: 'diff' },
   });
@@ -252,7 +252,23 @@ async function getPRDiff(octokit, owner, repo, prNumber) {
 }
 
 async function getPRInfo(octokit, owner, repo, prNumber) {
-  const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner, repo, pull_number: prNumber,
+  });
+  return data;
+}
+
+async function createCheck(octokit, owner, repo, name, headSha, status = 'queued') {
+  const { data } = await octokit.request('POST /repos/{owner}/{repo}/check-runs', {
+    owner, repo, name, head_sha: headSha, status,
+  });
+  return data;
+}
+
+async function updateCheck(octokit, owner, repo, checkRunId, updates) {
+  const { data } = await octokit.request('PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}', {
+    owner, repo, check_run_id: checkRunId, ...updates,
+  });
   return data;
 }
 
@@ -324,12 +340,7 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
   const checkRuns = [];
   for (const check of checks) {
     try {
-      const { data: checkRun } = await octokit.rest.checks.create({
-        owner, repo,
-        name: `jean-ci / ${check.name}`,
-        head_sha: headSha,
-        status: 'queued',
-      });
+      const checkRun = await createCheck(octokit, owner, repo, `jean-ci / ${check.name}`, headSha, 'queued');
       checkRuns.push({ check, checkRun });
       console.log(`Created pending check: ${check.name}`);
     } catch (error) {
@@ -347,9 +358,7 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
   for (const { check, checkRun } of checkRuns) {
     try {
       // Mark as in_progress
-      await octokit.rest.checks.update({
-        owner, repo,
-        check_run_id: checkRun.id,
+      await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'in_progress',
         started_at: new Date().toISOString(),
       });
@@ -390,9 +399,7 @@ ${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
         }
       }
 
-      await octokit.rest.checks.update({
-        owner, repo,
-        check_run_id: checkRun.id,
+      await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'completed',
         conclusion,
         completed_at: new Date().toISOString(),
@@ -408,9 +415,7 @@ ${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
       
       // Mark as failed on error
       try {
-        await octokit.rest.checks.update({
-          owner, repo,
-          check_run_id: checkRun.id,
+        await updateCheck(octokit, owner, repo, checkRun.id, {
           status: 'completed',
           conclusion: 'failure',
           completed_at: new Date().toISOString(),
@@ -483,7 +488,12 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 }
+  cookie: { 
+    secure: true,  // Required for HTTPS
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 24 * 60 * 60 * 1000 
+  }
 }));
 
 function requireAdmin(req, res, next) {
@@ -644,7 +654,7 @@ app.get('/api/events', requireAdmin, async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.3' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.5.0' });
 });
 
 app.get('/', (req, res) => {
@@ -895,7 +905,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.4.3 starting...`);
+  console.log(`jean-ci v0.5.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
