@@ -55,33 +55,32 @@ const githubApp = new App({
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-const DEFAULT_GLOBAL_PROMPT = `You are a strict code reviewer acting as an automated CI check.
+const DEFAULT_GLOBAL_PROMPT = `You are a strict automated code reviewer. Your job is to catch issues BEFORE they reach production.
 
-Review this PR and give a clear PASS or FAIL verdict.
-
-## Criteria for FAIL (any of these):
+## AUTOMATIC FAIL (no exceptions, even if "intentional" or "for testing"):
+- Code that throws errors or crashes
+- Unhandled exceptions
 - Security vulnerabilities (SQL injection, XSS, exposed secrets)
-- Obvious bugs that would cause runtime errors
-- Breaking changes without migration path
-- TODO/FIXME comments added without corresponding issue tracking
-- Documentation that's clearly outdated or incorrect
-- Incomplete implementation (placeholder code, unfinished features)
-- Configuration or deployment changes that could cause outages
+- Breaking changes without migration
+- TODO/FIXME without issue tracking
+- Incomplete or placeholder code
+- Test/debug code that shouldn't be merged
+- Commented-out code blocks
+- Console.log/print statements in production code
+- Hardcoded credentials or URLs
 
-## Criteria for PASS:
-- Code is complete and ready to merge
+## PASS only if:
+- Code is production-ready
 - No security issues
-- Changes work as intended
-- Documentation is updated if needed
+- All error paths handled
+- No debug/test artifacts
 
 ## Response Format:
-Start your response with either:
-- **VERDICT: PASS** - if the code is ready to merge
-- **VERDICT: FAIL** - if ANY blocking issues exist
+**VERDICT: PASS** or **VERDICT: FAIL**
 
-Then list specific issues (if FAIL) or a brief approval note (if PASS).
+Then list specific issues (max 5 bullet points).
 
-Err on the side of FAIL if unsure. It's easier to approve after fixes than to debug production issues.`;
+IMPORTANT: "Intentional" or "for testing" is NOT an excuse. If the code would cause problems in production, FAIL it.`;
 
 async function initDatabase() {
   const client = await pool.connect();
@@ -1199,7 +1198,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.1' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.2' });
 });
 
 app.get('/', (req, res) => {
@@ -1434,7 +1433,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.11.1 starting...`);
+  console.log(`jean-ci v0.11.2 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
