@@ -949,11 +949,11 @@ app.get('/checks/:id', async (req, res) => {
   };
   const statusColor = statusColors[checkRun.conclusion] || statusColors[checkRun.status] || '#6c757d';
 
-  res.send(\`
+  res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-  <title>\${checkRun.check_name} - jean-ci</title>
+  <title>${checkRun.check_name} - jean-ci</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; }
@@ -963,7 +963,7 @@ app.get('/checks/:id', async (req, res) => {
     h1 { margin: 0 0 10px 0; font-size: 1.5rem; }
     .meta { color: #666; font-size: 14px; margin-bottom: 20px; }
     .meta a { color: #0066cc; }
-    .status { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: 600; color: white; background: \${statusColor}; }
+    .status { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: 600; color: white; background: ${statusColor}; }
     h2 { font-size: 1.1rem; margin: 20px 0 10px; color: #333; }
     .summary { background: #f8f9fa; padding: 15px; border-radius: 4px; white-space: pre-wrap; font-family: system-ui; line-height: 1.6; }
     .prompt { background: #fff3cd; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 13px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
@@ -979,32 +979,32 @@ app.get('/checks/:id', async (req, res) => {
     <a href="javascript:history.back()" class="back">← Back</a>
     
     <div class="card">
-      <h1>jean-ci / \${checkRun.check_name}</h1>
+      <h1>jean-ci / ${checkRun.check_name}</h1>
       <div class="meta">
-        <span class="status">\${checkRun.conclusion || checkRun.status}</span>
+        <span class="status">${checkRun.conclusion || checkRun.status}</span>
         &nbsp;&nbsp;
-        <a href="https://github.com/\${checkRun.repo}/pull/\${checkRun.pr_number}" target="_blank">\${checkRun.repo}#\${checkRun.pr_number}</a>
+        <a href="https://github.com/${checkRun.repo}/pull/${checkRun.pr_number}" target="_blank">${checkRun.repo}#${checkRun.pr_number}</a>
         &nbsp;·&nbsp;
-        \${checkRun.pr_title || 'PR'}
+        ${checkRun.pr_title || 'PR'}
         &nbsp;·&nbsp;
-        \${new Date(checkRun.created_at).toLocaleString()}
+        ${new Date(checkRun.created_at).toLocaleString()}
       </div>
       
       <h2>📝 Review Result</h2>
-      <div class="summary">\${checkRun.summary || 'No summary available'}</div>
+      <div class="summary">${checkRun.summary || 'No summary available'}</div>
       
       <h2>🎯 Prompt Used</h2>
-      <div class="prompt">\${checkRun.prompt || 'Default prompt'}</div>
+      <div class="prompt">${checkRun.prompt || 'Default prompt'}</div>
       
-      \${checkRun.diff_preview ? \`
+      ${checkRun.diff_preview ? \`
       <h2>📄 Diff Preview</h2>
-      <div class="diff">\${checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+      <div class="diff">${checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
       \` : ''}
     </div>
   </div>
 </body>
 </html>
-  \`);
+  `);
 });
 
 // =============================================================================
@@ -1171,10 +1171,10 @@ app.get('/admin', (req, res) => {
         ? '<tr><td colspan="2" style="color: #666;">No repositories yet. Click "Sync from GitHub" to load them.</td></tr>'
         : repos.map(r => \`
           <tr>
-            <td><a href="https://github.com/\${r.full_name}" target="_blank">\${r.full_name}</a></td>
+            <td><a href="https://github.com/${r.full_name}" target="_blank">${r.full_name}</a></td>
             <td>
-              <span class="toggle \${r.pr_review_enabled ? 'on' : 'off'}" onclick="toggleRepo('\${r.full_name}', \${!r.pr_review_enabled})">
-                \${r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled'}
+              <span class="toggle ${r.pr_review_enabled ? 'on' : 'off'}" onclick="toggleRepo('${r.full_name}', ${!r.pr_review_enabled})">
+                ${r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled'}
               </span>
             </td>
           </tr>
@@ -1185,14 +1185,14 @@ app.get('/admin', (req, res) => {
       document.getElementById('sync-status').textContent = 'Syncing...';
       const res = await fetch('/api/repos/sync', { method: 'POST' });
       const data = await res.json();
-      document.getElementById('sync-status').textContent = \`Synced \${data.count} repos!\`;
+      document.getElementById('sync-status').textContent = \`Synced ${data.count} repos!\`;
       setTimeout(() => document.getElementById('sync-status').textContent = '', 3000);
       loadRepos();
     }
     
     async function toggleRepo(fullName, enabled) {
       const [owner, repo] = fullName.split('/');
-      await fetch(\`/api/repos/\${owner}/\${repo}\`, {
+      await fetch(\`/api/repos/${owner}/${repo}\`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pr_review_enabled: enabled }),
@@ -1208,10 +1208,10 @@ app.get('/admin', (req, res) => {
         ? '<tr><td colspan="4" style="color: #666;">No events yet.</td></tr>'
         : events.map(e => \`
           <tr>
-            <td>\${new Date(e.created_at).toLocaleString()}</td>
-            <td><span class="event-type">\${e.event_type}</span></td>
-            <td>\${e.repo || '-'}</td>
-            <td>\${e.action || '-'}</td>
+            <td>${new Date(e.created_at).toLocaleString()}</td>
+            <td><span class="event-type">${e.event_type}</span></td>
+            <td>${e.repo || '-'}</td>
+            <td>${e.action || '-'}</td>
           </tr>
         \`).join('');
     }
