@@ -293,6 +293,28 @@ function parseSimpleYaml(content) {
   return config;
 }
 
+async function getCoolifyAppDetails(appUuid) {
+  if (!COOLIFY_TOKEN) return null;
+  
+  try {
+    const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}`, {
+      headers: { 'Authorization': `Bearer ${COOLIFY_TOKEN}` },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return {
+      fqdn: data.fqdn,
+      name: data.name,
+      status: data.status,
+      projectUuid: data.project?.uuid,
+      environmentName: data.environment?.name,
+    };
+  } catch (e) {
+    console.error('Error fetching Coolify app details:', e.message);
+    return null;
+  }
+}
+
 async function triggerCoolifyDeploy(appUuid) {
   if (!COOLIFY_TOKEN) {
     console.log('[MOCK] Would trigger Coolify deploy for:', appUuid);
@@ -313,10 +335,30 @@ async function triggerCoolifyDeploy(appUuid) {
       return { success: false, error };
     }
     
-    return { success: true };
+    const data = await response.json();
+    return { success: true, deploymentUuid: data.deployment_uuid };
   } catch (error) {
     return { success: false, error: error.message };
   }
+}
+
+async function pollCoolifyDeployment(appUuid, maxAttempts = 30, intervalMs = 2000) {
+  // Poll app status until it's running or failed
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, intervalMs));
+    const details = await getCoolifyAppDetails(appUuid);
+    if (!details) continue;
+    
+    // Status format: "running:healthy", "running:unknown", "stopped:...", etc.
+    const [state, health] = (details.status || '').split(':');
+    if (state === 'running' && health === 'healthy') {
+      return { success: true, status: details.status };
+    }
+    if (state === 'stopped' || state === 'exited') {
+      return { success: false, status: details.status };
+    }
+  }
+  return { success: false, status: 'timeout' };
 }
 
 async function createGitHubDeployment(octokit, owner, repo, ref, environment, description) {
@@ -335,14 +377,14 @@ async function createGitHubDeployment(octokit, owner, repo, ref, environment, de
   }
 }
 
-async function updateDeploymentStatus(octokit, owner, repo, deploymentId, state, description, logUrl) {
+async function updateDeploymentStatus(octokit, owner, repo, deploymentId, state, description, logUrl, environmentUrl) {
   try {
     await octokit.request('POST /repos/{owner}/{repo}/deployments/{deployment_id}/statuses', {
       owner, repo, deployment_id: deploymentId,
       state, // pending, success, error, failure, inactive, in_progress, queued
       description,
       log_url: logUrl,
-      environment_url: logUrl,
+      environment_url: environmentUrl || logUrl,
     });
   } catch (error) {
     console.error('Error updating deployment status:', error.message);
@@ -708,32 +750,51 @@ async function handleRegistryPackage(payload) {
   const environment = deployment.environment || 'production';
   const ref = registry_package?.package_version?.target_commitish || 'main';
 
-  // Create GitHub deployment
+  // Get Coolify app details for real URLs
+  const appDetails = await getCoolifyAppDetails(deployment.coolify_app);
+  const appUrl = appDetails?.fqdn || `https://${repo}.telegraphic.app`;
+  const coolifyDashboard = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
+  const logsUrl = `${coolifyDashboard}/project/${appDetails?.projectUuid || 'default'}/${appDetails?.environmentName || 'production'}/application/${deployment.coolify_app}`;
+
+  // Create GitHub deployment with real URLs
   const ghDeployment = await createGitHubDeployment(
     octokit, owner, repo, ref, environment,
     `Deploy ${packageVersion} to Coolify`
   );
 
   if (ghDeployment) {
-    // Set status to in_progress
+    // Set status to in_progress with real log URL
     await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'in_progress',
-      'Deploying to Coolify...', `${COOLIFY_URL}/project`);
+      'Deploying to Coolify...', logsUrl, appUrl);
   }
 
   // Trigger Coolify deploy
   console.log(`🚀 Triggering Coolify deploy for ${deployment.coolify_app}`);
   const result = await triggerCoolifyDeploy(deployment.coolify_app);
 
-  if (ghDeployment) {
-    if (result.success) {
-      await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'success',
-        `Deployed ${packageVersion}`, `${COOLIFY_URL}/project`);
-      console.log(`✅ Deployment successful for ${repository.full_name}`);
-    } else {
+  if (!result.success) {
+    if (ghDeployment) {
       await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'failure',
-        `Deploy failed: ${result.error}`, `${COOLIFY_URL}/project`);
-      console.error(`❌ Deployment failed: ${result.error}`);
+        `Deploy failed: ${result.error}`, logsUrl, appUrl);
     }
+    console.error(`❌ Deployment failed: ${result.error}`);
+    return;
+  }
+
+  // Poll for deployment completion (fire and forget - don't block webhook response)
+  // Note: This won't complete if jean-ci is deploying itself
+  if (ghDeployment) {
+    pollCoolifyDeployment(deployment.coolify_app, 30, 2000).then(pollResult => {
+      if (pollResult.success) {
+        updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'success',
+          `Deployed ${packageVersion}`, logsUrl, appUrl);
+        console.log(`✅ Deployment successful for ${repository.full_name}`);
+      } else {
+        updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'failure',
+          `Deploy failed: ${pollResult.status}`, logsUrl, appUrl);
+        console.error(`❌ Deployment failed: ${pollResult.status}`);
+      }
+    }).catch(e => console.error('Poll error:', e.message));
   }
 }
 
@@ -1009,7 +1070,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.7.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.8.0' });
 });
 
 app.get('/', (req, res) => {
@@ -1244,7 +1305,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.7.0 starting...`);
+  console.log(`jean-ci v0.8.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
