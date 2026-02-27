@@ -98,6 +98,25 @@ async function initDatabase() {
         processed BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS jean_ci_check_runs (
+        id SERIAL PRIMARY KEY,
+        github_check_id BIGINT,
+        repo TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        check_name TEXT NOT NULL,
+        head_sha TEXT,
+        status TEXT DEFAULT 'queued',
+        conclusion TEXT,
+        title TEXT,
+        summary TEXT,
+        prompt TEXT,
+        pr_title TEXT,
+        pr_body TEXT,
+        diff_preview TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP
+      );
     `);
 
     await client.query(`
@@ -154,6 +173,34 @@ async function setRepoReviewEnabled(fullName, enabled) {
 async function getAllRepos() {
   const result = await pool.query('SELECT * FROM jean_ci_repos ORDER BY full_name');
   return result.rows;
+}
+
+async function insertCheckRun(data) {
+  const result = await pool.query(`
+    INSERT INTO jean_ci_check_runs 
+    (github_check_id, repo, pr_number, check_name, head_sha, status, prompt, pr_title, pr_body, diff_preview)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    RETURNING id
+  `, [data.github_check_id, data.repo, data.pr_number, data.check_name, data.head_sha, 
+      'queued', data.prompt, data.pr_title, data.pr_body, data.diff_preview]);
+  return result.rows[0].id;
+}
+
+async function updateCheckRun(id, data) {
+  await pool.query(`
+    UPDATE jean_ci_check_runs SET
+      status = COALESCE($2, status),
+      conclusion = COALESCE($3, conclusion),
+      title = COALESCE($4, title),
+      summary = COALESCE($5, summary),
+      completed_at = COALESCE($6, completed_at)
+    WHERE id = $1
+  `, [id, data.status, data.conclusion, data.title, data.summary, data.completed_at]);
+}
+
+async function getCheckRun(id) {
+  const result = await pool.query('SELECT * FROM jean_ci_check_runs WHERE id = $1', [id]);
+  return result.rows[0];
 }
 
 async function insertEvent(eventType, deliveryId, repo, action, payload) {
@@ -313,6 +360,8 @@ async function callOpenClaw(prompt, context = '') {
 // PR Review Logic
 // =============================================================================
 
+const BASE_URL = process.env.BASE_URL || 'https://jean-ci.telegraphic.app';
+
 async function runPRReview(installationId, owner, repo, prNumber, headSha) {
   const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
@@ -324,6 +373,12 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
 
   const octokit = await getInstallationOctokit(installationId);
   
+  // Get PR info and diff first (we need it for storing)
+  const [prInfo, diff] = await Promise.all([
+    getPRInfo(octokit, owner, repo, prNumber),
+    getPRDiff(octokit, owner, repo, prNumber),
+  ]);
+
   // Fetch check files from repo
   const checkFiles = await fetchPRCheckFiles(octokit, owner, repo, headSha);
   const globalPrompt = await getConfig('global_prompt') || DEFAULT_GLOBAL_PROMPT;
@@ -336,31 +391,43 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
 
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
-  // Create ALL checks as pending first
+  // Create ALL checks as pending first, storing in DB
   const checkRuns = [];
   for (const check of checks) {
     try {
+      // Store in our DB first
+      const dbId = await insertCheckRun({
+        repo: repoFullName,
+        pr_number: prNumber,
+        check_name: check.name,
+        head_sha: headSha,
+        prompt: check.prompt,
+        pr_title: prInfo.title,
+        pr_body: prInfo.body || '',
+        diff_preview: diff.substring(0, 10000),
+      });
+
+      // Create GitHub check with details URL
       const checkRun = await createCheck(octokit, owner, repo, `jean-ci / ${check.name}`, headSha, 'queued');
-      checkRuns.push({ check, checkRun });
-      console.log(`Created pending check: ${check.name}`);
+      
+      // Update DB with GitHub check ID
+      await pool.query('UPDATE jean_ci_check_runs SET github_check_id = $1 WHERE id = $2', [checkRun.id, dbId]);
+      
+      checkRuns.push({ check, checkRun, dbId });
+      console.log(`Created pending check: ${check.name} (db: ${dbId})`);
     } catch (error) {
       console.error(`Error creating check "${check.name}":`, error.message);
     }
   }
 
-  // Now get PR info and diff
-  const [prInfo, diff] = await Promise.all([
-    getPRInfo(octokit, owner, repo, prNumber),
-    getPRDiff(octokit, owner, repo, prNumber),
-  ]);
-
   // Run each check
-  for (const { check, checkRun } of checkRuns) {
+  for (const { check, checkRun, dbId } of checkRuns) {
     try {
       // Mark as in_progress
       await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'in_progress',
         started_at: new Date().toISOString(),
+        details_url: `${BASE_URL}/checks/${dbId}`,
       });
 
       const context = `
@@ -399,14 +466,24 @@ ${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
         }
       }
 
+      const summary = result.success ? result.response.substring(0, 65535) : `Error: ${result.error}`;
+
+      // Update GitHub check
       await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'completed',
         conclusion,
         completed_at: new Date().toISOString(),
-        output: {
-          title,
-          summary: result.success ? result.response.substring(0, 65535) : `Error: ${result.error}`,
-        },
+        details_url: `${BASE_URL}/checks/${dbId}`,
+        output: { title, summary },
+      });
+
+      // Store in DB
+      await updateCheckRun(dbId, {
+        status: 'completed',
+        conclusion,
+        title,
+        summary,
+        completed_at: new Date().toISOString(),
       });
 
       console.log(`Check "${check.name}" completed: ${conclusion}`);
@@ -650,11 +727,89 @@ app.get('/api/events', requireAdmin, async (req, res) => {
 });
 
 // =============================================================================
+// Routes - Check Details
+// =============================================================================
+
+app.get('/checks/:id', async (req, res) => {
+  const checkRun = await getCheckRun(req.params.id);
+  
+  if (!checkRun) {
+    return res.status(404).send('Check not found');
+  }
+
+  const statusColors = {
+    success: '#28a745',
+    failure: '#dc3545',
+    neutral: '#6c757d',
+    queued: '#ffc107',
+    in_progress: '#007bff',
+  };
+  const statusColor = statusColors[checkRun.conclusion] || statusColors[checkRun.status] || '#6c757d';
+
+  res.send(\`
+<!DOCTYPE html>
+<html>
+<head>
+  <title>\${checkRun.check_name} - jean-ci</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui; margin: 0; padding: 20px; background: #f5f5f5; }
+    .container { max-width: 900px; margin: 0 auto; }
+    .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    h1 { margin: 0 0 10px 0; font-size: 1.5rem; }
+    .meta { color: #666; font-size: 14px; margin-bottom: 20px; }
+    .meta a { color: #0066cc; }
+    .status { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: 600; color: white; background: \${statusColor}; }
+    h2 { font-size: 1.1rem; margin: 20px 0 10px; color: #333; }
+    .summary { background: #f8f9fa; padding: 15px; border-radius: 4px; white-space: pre-wrap; font-family: system-ui; line-height: 1.6; }
+    .prompt { background: #fff3cd; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 13px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
+    .diff { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre; overflow-x: auto; max-height: 400px; }
+    .diff .add { color: #4ec9b0; }
+    .diff .del { color: #f14c4c; }
+    .back { display: inline-block; margin-bottom: 15px; color: #0066cc; text-decoration: none; }
+    .back:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="javascript:history.back()" class="back">← Back</a>
+    
+    <div class="card">
+      <h1>jean-ci / \${checkRun.check_name}</h1>
+      <div class="meta">
+        <span class="status">\${checkRun.conclusion || checkRun.status}</span>
+        &nbsp;&nbsp;
+        <a href="https://github.com/\${checkRun.repo}/pull/\${checkRun.pr_number}" target="_blank">\${checkRun.repo}#\${checkRun.pr_number}</a>
+        &nbsp;·&nbsp;
+        \${checkRun.pr_title || 'PR'}
+        &nbsp;·&nbsp;
+        \${new Date(checkRun.created_at).toLocaleString()}
+      </div>
+      
+      <h2>📝 Review Result</h2>
+      <div class="summary">\${checkRun.summary || 'No summary available'}</div>
+      
+      <h2>🎯 Prompt Used</h2>
+      <div class="prompt">\${checkRun.prompt || 'Default prompt'}</div>
+      
+      \${checkRun.diff_preview ? \`
+      <h2>📄 Diff Preview</h2>
+      <div class="diff">\${checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+      \` : ''}
+    </div>
+  </div>
+</body>
+</html>
+  \`);
+});
+
+// =============================================================================
 // Routes - Admin UI
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.5.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.6.0' });
 });
 
 app.get('/', (req, res) => {
@@ -905,7 +1060,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.5.0 starting...`);
+  console.log(`jean-ci v0.6.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
