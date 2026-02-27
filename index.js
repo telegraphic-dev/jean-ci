@@ -819,15 +819,14 @@ async function handleRegistryPackage(payload) {
     logsUrl, appUrl,
     createdAt: Date.now(),
   });
-    
-    // Auto-cleanup after 10 minutes (in case webhook never arrives)
-    setTimeout(() => {
-      if (pendingDeployments.has(deployment.coolify_app)) {
-        pendingDeployments.delete(deployment.coolify_app);
-        console.log(`[Cleanup] Removed stale pending deployment for ${deployment.coolify_app}`);
-      }
-    }, 10 * 60 * 1000);
-  }
+  
+  // Auto-cleanup after 10 minutes (in case webhook never arrives)
+  setTimeout(() => {
+    if (pendingDeployments.has(deployment.coolify_app)) {
+      pendingDeployments.delete(deployment.coolify_app);
+      console.log(`[Cleanup] Removed stale pending deployment for ${deployment.coolify_app}`);
+    }
+  }, 10 * 60 * 1000);
   
   console.log(`✅ Deploy triggered for ${repository.full_name}, waiting for Coolify webhook...`);
 }
@@ -1414,7 +1413,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.10.0 starting...`);
+  console.log(`jean-ci v0.10.1 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
