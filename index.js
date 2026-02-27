@@ -1199,7 +1199,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.1' });
 });
 
 app.get('/', (req, res) => {
@@ -1434,7 +1434,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.11.0 starting...`);
+  console.log(`jean-ci v0.11.1 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
