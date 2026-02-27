@@ -562,9 +562,9 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
 ${prInfo.body || 'No description provided'}
 
 ## Diff
-\`\`\`diff
+${'```'}diff
 ${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
-\`\`\`
+${'```'}
 `;
 
       const result = await callOpenClaw(check.prompt, context);
@@ -996,10 +996,7 @@ app.get('/checks/:id', async (req, res) => {
       <h2>🎯 Prompt Used</h2>
       <div class="prompt">${checkRun.prompt || 'Default prompt'}</div>
       
-      ${checkRun.diff_preview ? \`
-      <h2>📄 Diff Preview</h2>
-      <div class="diff">${checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
-      \` : ''}
+      ${checkRun.diff_preview ? '<h2>📄 Diff Preview</h2><div class="diff">' + checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>' : ''}
     </div>
   </div>
 </body>
@@ -1169,30 +1166,21 @@ app.get('/admin', (req, res) => {
       
       document.getElementById('repos-list').innerHTML = repos.length === 0 
         ? '<tr><td colspan="2" style="color: #666;">No repositories yet. Click "Sync from GitHub" to load them.</td></tr>'
-        : repos.map(r => \`
-          <tr>
-            <td><a href="https://github.com/${r.full_name}" target="_blank">${r.full_name}</a></td>
-            <td>
-              <span class="toggle ${r.pr_review_enabled ? 'on' : 'off'}" onclick="toggleRepo('${r.full_name}', ${!r.pr_review_enabled})">
-                ${r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled'}
-              </span>
-            </td>
-          </tr>
-        \`).join('');
+        : repos.map(r => '<tr><td><a href="https://github.com/' + r.full_name + '" target="_blank">' + r.full_name + '</a></td><td><span class="toggle ' + (r.pr_review_enabled ? 'on' : 'off') + '" onclick="toggleRepo(\\''+r.full_name+'\\', '+ !r.pr_review_enabled+')">' + (r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled') + '</span></td></tr>').join('');
     }
     
     async function syncRepos() {
       document.getElementById('sync-status').textContent = 'Syncing...';
       const res = await fetch('/api/repos/sync', { method: 'POST' });
       const data = await res.json();
-      document.getElementById('sync-status').textContent = \`Synced ${data.count} repos!\`;
+      document.getElementById('sync-status').textContent = 'Synced ' + data.count + ' repos!';
       setTimeout(() => document.getElementById('sync-status').textContent = '', 3000);
       loadRepos();
     }
     
     async function toggleRepo(fullName, enabled) {
       const [owner, repo] = fullName.split('/');
-      await fetch(\`/api/repos/${owner}/${repo}\`, {
+      await fetch('/api/repos/' + owner + '/' + repo, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pr_review_enabled: enabled }),
@@ -1206,14 +1194,7 @@ app.get('/admin', (req, res) => {
       
       document.getElementById('events-list').innerHTML = events.length === 0
         ? '<tr><td colspan="4" style="color: #666;">No events yet.</td></tr>'
-        : events.map(e => \`
-          <tr>
-            <td>${new Date(e.created_at).toLocaleString()}</td>
-            <td><span class="event-type">${e.event_type}</span></td>
-            <td>${e.repo || '-'}</td>
-            <td>${e.action || '-'}</td>
-          </tr>
-        \`).join('');
+        : events.map(e => '<tr><td>' + new Date(e.created_at).toLocaleString() + '</td><td><span class="event-type">' + e.event_type + '</span></td><td>' + (e.repo || '-') + '</td><td>' + (e.action || '-') + '</td></tr>').join('');
     }
     
     init();
