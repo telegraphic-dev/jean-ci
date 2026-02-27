@@ -7,6 +7,7 @@ import fs from 'fs';
 
 const { Pool } = pg;
 const app = express();
+app.set('trust proxy', 1); // Trust first proxy (Traefik)
 const PORT = process.env.PORT || 3000;
 
 // =============================================================================
@@ -458,9 +459,12 @@ app.get('/auth/github', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
   req.session.oauthState = state;
   
+  // Use X-Forwarded-Proto from proxy, default to https in production
+  const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
+  
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
-    redirect_uri: `${req.protocol}://${req.get('host')}/auth/callback`,
+    redirect_uri: `${protocol}://${req.get('host')}/auth/callback`,
     scope: 'read:user',
     state,
   });
