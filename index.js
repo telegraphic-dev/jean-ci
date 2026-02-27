@@ -893,10 +893,10 @@ app.post('/webhook', async (req, res) => {
 app.post('/webhook/coolify', express.json(), async (req, res) => {
   const payload = req.body;
   
-  console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 300));
+  console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 500));
   
-  // Coolify payload: { event, message, application_uuid, application_name, deployment_uuid, ... }
-  const { event, message, application_uuid } = payload;
+  // Coolify payload: { event, message, application_uuid, deployment_uuid, deployment_url, ... }
+  const { event, message, application_uuid, deployment_url } = payload;
   
   if (!application_uuid) {
     return res.status(200).json({ received: true, ignored: 'no app uuid' });
@@ -909,7 +909,10 @@ app.post('/webhook/coolify', express.json(), async (req, res) => {
     return res.status(200).json({ received: true, ignored: 'no pending deployment' });
   }
   
-  const { octokit, owner, repo, deploymentId, logsUrl, appUrl } = pending;
+  const { octokit, owner, repo, deploymentId, appUrl } = pending;
+  
+  // Use deployment_url from Coolify for logs link (it has full path with project/env/app/deployment)
+  const logsUrl = deployment_url || pending.logsUrl;
   
   // Map Coolify event to GitHub deployment status
   let ghState = 'in_progress';
@@ -929,7 +932,7 @@ app.post('/webhook/coolify', express.json(), async (req, res) => {
   }
   
   await updateDeploymentStatus(octokit, owner, repo, deploymentId, ghState, description, logsUrl, appUrl);
-  console.log(`[Coolify] Updated GitHub deployment ${deploymentId} to ${ghState}`);
+  console.log(`[Coolify] Updated GitHub deployment ${deploymentId} to ${ghState} (logs: ${logsUrl})`);
   
   res.status(200).json({ received: true, state: ghState });
 });
@@ -1360,7 +1363,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.9.1 starting...`);
+  console.log(`jean-ci v0.9.2 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
