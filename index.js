@@ -55,34 +55,49 @@ const githubApp = new App({
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-const DEFAULT_GLOBAL_PROMPT = `You are a pedantic code linter. You do NOT consider intent, context, or explanations.
+// SYSTEM_PROMPT: Fixed prompt that defines output format and verdict rules.
+// This is NOT user-editable - it ensures consistent behavior.
+const SYSTEM_PROMPT = `You are an automated code reviewer for a CI pipeline.
 
-## INSTANT FAIL - if ANY of these patterns exist in the diff:
-- \`throw new Error\` or \`throw\` statements
-- \`process.exit\`
-- Uncaught exceptions
-- \`console.log\` (use proper logging)
-- TODO or FIXME comments
-- Commented-out code
-- Hardcoded secrets/passwords/tokens
-- SQL without parameterization
-- eval() or Function()
+## Your Task
+Analyze the pull request and determine if it should PASS or FAIL based on the review criteria provided.
 
-## You must output VERDICT: FAIL if ANY pattern above is found.
-## You must output VERDICT: PASS only if NONE of the patterns exist.
+## Output Format (REQUIRED)
+Your response MUST start with one of these exact strings:
+- **VERDICT: PASS** - if the code meets all criteria
+- **VERDICT: FAIL** - if there are blocking issues
 
-Do NOT reason about WHY the code exists.
-Do NOT consider if it's "intentional" or "for testing".
-Do NOT suggest improvements.
-Just pattern match and output the verdict.
+After the verdict, provide a brief explanation (2-5 bullet points max).
 
-Format:
-**VERDICT: FAIL**
-- Found: \`throw new Error\` in crash-test.js line 5
+## Rules
+1. Be objective and consistent
+2. Focus on the criteria provided
+3. Do not suggest improvements unless they are blocking issues
+4. When in doubt, FAIL - it's safer to ask for fixes than to let bugs through`;
 
-Or:
-**VERDICT: PASS**
-- No blocking patterns found.`;
+// DEFAULT_USER_PROMPT: Default review criteria, stored in DB, can be overridden per-repo.
+const DEFAULT_USER_PROMPT = `## Review Criteria
+
+### Automatic FAIL (blocking issues):
+- Security vulnerabilities (SQL injection, XSS, exposed secrets, hardcoded credentials)
+- Code that will crash or throw unhandled exceptions in production
+- Breaking changes without migration path
+- Incomplete implementations (placeholder code, TODO without issue reference)
+- Test/debug code that shouldn't be merged to production
+
+### Automatic PASS:
+- Code is production-ready
+- Changes are coherent and complete
+- No security issues
+- Error handling is appropriate
+
+### Not blocking (don't fail for these):
+- Style preferences
+- Minor refactoring suggestions
+- Documentation improvements (unless critically missing)
+- Performance optimizations (unless severe)
+
+Be pragmatic. The goal is to catch real problems, not to be pedantic.`;
 
 async function initDatabase() {
   const client = await pool.connect();
@@ -136,9 +151,9 @@ async function initDatabase() {
 
     await client.query(`
       INSERT INTO jean_ci_config (key, value) 
-      VALUES ('global_prompt', $1) 
+      VALUES ('user_prompt', $1) 
       ON CONFLICT (key) DO NOTHING
-    `, [DEFAULT_GLOBAL_PROMPT]);
+    `, [DEFAULT_USER_PROMPT]);
 
     console.log('✅ Database initialized');
   } finally {
@@ -498,11 +513,14 @@ async function updateCheck(octokit, owner, repo, checkRunId, updates) {
 // OpenClaw Integration
 // =============================================================================
 
-async function callOpenClaw(prompt, context = '') {
+async function callOpenClaw(userPrompt, context = '') {
   if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
     console.log('[MOCK] Would call OpenClaw');
     return { success: true, response: '**VERDICT: PASS**\n\n[Mock mode] Code looks good!' };
   }
+
+  // Combine user criteria with PR context
+  const userMessage = `## Review Criteria\n${userPrompt}\n\n## Pull Request Details\n${context}`;
 
   try {
     const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
@@ -514,8 +532,8 @@ async function callOpenClaw(prompt, context = '') {
       body: JSON.stringify({
         model: 'default',
         messages: [
-          { role: 'system', content: prompt },
-          { role: 'user', content: context },
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
         ],
       }),
     });
@@ -556,11 +574,11 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
 
   // Fetch check files from repo
   const checkFiles = await fetchPRCheckFiles(octokit, owner, repo, headSha);
-  const globalPrompt = await getConfig('global_prompt') || DEFAULT_GLOBAL_PROMPT;
+  const userPrompt = await getConfig('user_prompt') || DEFAULT_USER_PROMPT;
 
   // Build checks to run
   const checks = [
-    { name: 'Code Review', prompt: globalPrompt, isGlobal: true },
+    { name: 'Code Review', prompt: userPrompt, isGlobal: true },
     ...checkFiles.map(f => ({ name: f.name, prompt: f.content, isGlobal: false })),
   ];
 
@@ -1081,14 +1099,14 @@ app.get('/api/me', (req, res) => {
 });
 
 app.get('/api/config', requireAdmin, async (req, res) => {
-  const globalPrompt = await getConfig('global_prompt') || DEFAULT_GLOBAL_PROMPT;
-  res.json({ global_prompt: globalPrompt });
+  const userPrompt = await getConfig('user_prompt') || DEFAULT_USER_PROMPT;
+  res.json({ user_prompt: userPrompt });
 });
 
 app.put('/api/config', requireAdmin, async (req, res) => {
-  const { global_prompt } = req.body;
-  if (global_prompt !== undefined) {
-    await setConfig('global_prompt', global_prompt);
+  const { user_prompt } = req.body;
+  if (user_prompt !== undefined) {
+    await setConfig('user_prompt', user_prompt);
   }
   res.json({ success: true });
 });
@@ -1200,7 +1218,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.3' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.12.0' });
 });
 
 app.get('/', (req, res) => {
@@ -1338,14 +1356,14 @@ app.get('/admin', (req, res) => {
     async function loadConfig() {
       const res = await fetch('/api/config');
       const data = await res.json();
-      document.getElementById('global-prompt').value = data.global_prompt;
+      document.getElementById('global-prompt').value = data.user_prompt;
     }
     
     async function savePrompt() {
       await fetch('/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ global_prompt: document.getElementById('global-prompt').value }),
+        body: JSON.stringify({ user_prompt: document.getElementById('global-prompt').value }),
       });
       document.getElementById('save-status').textContent = 'Saved!';
       setTimeout(() => document.getElementById('save-status').textContent = '', 2000);
@@ -1435,7 +1453,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.11.3 starting...`);
+  console.log(`jean-ci v0.12.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
