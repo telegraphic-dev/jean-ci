@@ -893,37 +893,39 @@ app.post('/webhook', async (req, res) => {
 app.post('/webhook/coolify', express.json(), async (req, res) => {
   const payload = req.body;
   
-  console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 200));
+  console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 300));
   
-  // Coolify sends events like: deployment_success, deployment_failed, etc.
-  const { type, application, status, message } = payload;
-  const appUuid = application?.uuid;
+  // Coolify payload: { event, message, application_uuid, application_name, deployment_uuid, ... }
+  const { event, message, application_uuid } = payload;
   
-  if (!appUuid) {
+  if (!application_uuid) {
     return res.status(200).json({ received: true, ignored: 'no app uuid' });
   }
   
   // Look up pending GitHub deployment
-  const pending = pendingDeployments.get(appUuid);
+  const pending = pendingDeployments.get(application_uuid);
   if (!pending) {
-    console.log(`[Coolify] No pending deployment for ${appUuid}`);
+    console.log(`[Coolify] No pending deployment for ${application_uuid}`);
     return res.status(200).json({ received: true, ignored: 'no pending deployment' });
   }
   
   const { octokit, owner, repo, deploymentId, logsUrl, appUrl } = pending;
   
-  // Map Coolify status to GitHub deployment status
+  // Map Coolify event to GitHub deployment status
   let ghState = 'in_progress';
   let description = message || 'Deploying...';
   
-  if (type === 'deployment_success' || status === 'finished') {
+  if (event === 'deployment_success') {
     ghState = 'success';
-    description = 'Deployment successful';
-    pendingDeployments.delete(appUuid);
-  } else if (type === 'deployment_failed' || status === 'failed') {
+    description = message || 'Deployment successful';
+    pendingDeployments.delete(application_uuid);
+  } else if (event === 'deployment_failed') {
     ghState = 'failure';
     description = message || 'Deployment failed';
-    pendingDeployments.delete(appUuid);
+    pendingDeployments.delete(application_uuid);
+  } else {
+    // Other events (test, etc.) - just acknowledge
+    return res.status(200).json({ received: true, event });
   }
   
   await updateDeploymentStatus(octokit, owner, repo, deploymentId, ghState, description, logsUrl, appUrl);
@@ -1358,7 +1360,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.9.0 starting...`);
+  console.log(`jean-ci v0.9.1 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
