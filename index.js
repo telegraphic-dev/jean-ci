@@ -41,6 +41,9 @@ const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
 // Event retention
 const MAX_EVENTS = 1000;
 
+// Pending deployments for Coolify webhook
+const pendingDeployments = new Map();
+
 const githubApp = new App({
   appId: APP_ID,
   privateKey: PRIVATE_KEY,
@@ -781,21 +784,25 @@ async function handleRegistryPackage(payload) {
     return;
   }
 
-  // Poll for deployment completion (fire and forget - don't block webhook response)
-  // Note: This won't complete if jean-ci is deploying itself
+  // Store pending deployment for Coolify webhook to update
   if (ghDeployment) {
-    pollCoolifyDeployment(deployment.coolify_app, 30, 2000).then(pollResult => {
-      if (pollResult.success) {
-        updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'success',
-          `Deployed ${packageVersion}`, logsUrl, appUrl);
-        console.log(`✅ Deployment successful for ${repository.full_name}`);
-      } else {
-        updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'failure',
-          `Deploy failed: ${pollResult.status}`, logsUrl, appUrl);
-        console.error(`❌ Deployment failed: ${pollResult.status}`);
+    pendingDeployments.set(deployment.coolify_app, {
+      octokit, owner, repo, 
+      deploymentId: ghDeployment.id,
+      logsUrl, appUrl,
+      createdAt: Date.now(),
+    });
+    
+    // Auto-cleanup after 10 minutes (in case webhook never arrives)
+    setTimeout(() => {
+      if (pendingDeployments.has(deployment.coolify_app)) {
+        pendingDeployments.delete(deployment.coolify_app);
+        console.log(`[Cleanup] Removed stale pending deployment for ${deployment.coolify_app}`);
       }
-    }).catch(e => console.error('Poll error:', e.message));
+    }, 10 * 60 * 1000);
   }
+  
+  console.log(`✅ Deploy triggered for ${repository.full_name}, waiting for Coolify webhook...`);
 }
 
 async function handleEvent(event, payload) {
@@ -877,6 +884,52 @@ app.post('/webhook', async (req, res) => {
   } catch (error) {
     console.error('Error handling event:', error);
   }
+});
+
+// =============================================================================
+// Routes - Coolify Webhook (for deployment status updates)
+// =============================================================================
+
+app.post('/webhook/coolify', express.json(), async (req, res) => {
+  const payload = req.body;
+  
+  console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 200));
+  
+  // Coolify sends events like: deployment_success, deployment_failed, etc.
+  const { type, application, status, message } = payload;
+  const appUuid = application?.uuid;
+  
+  if (!appUuid) {
+    return res.status(200).json({ received: true, ignored: 'no app uuid' });
+  }
+  
+  // Look up pending GitHub deployment
+  const pending = pendingDeployments.get(appUuid);
+  if (!pending) {
+    console.log(`[Coolify] No pending deployment for ${appUuid}`);
+    return res.status(200).json({ received: true, ignored: 'no pending deployment' });
+  }
+  
+  const { octokit, owner, repo, deploymentId, logsUrl, appUrl } = pending;
+  
+  // Map Coolify status to GitHub deployment status
+  let ghState = 'in_progress';
+  let description = message || 'Deploying...';
+  
+  if (type === 'deployment_success' || status === 'finished') {
+    ghState = 'success';
+    description = 'Deployment successful';
+    pendingDeployments.delete(appUuid);
+  } else if (type === 'deployment_failed' || status === 'failed') {
+    ghState = 'failure';
+    description = message || 'Deployment failed';
+    pendingDeployments.delete(appUuid);
+  }
+  
+  await updateDeploymentStatus(octokit, owner, repo, deploymentId, ghState, description, logsUrl, appUrl);
+  console.log(`[Coolify] Updated GitHub deployment ${deploymentId} to ${ghState}`);
+  
+  res.status(200).json({ received: true, state: ghState });
 });
 
 // =============================================================================
@@ -1070,7 +1123,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.8.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.9.0' });
 });
 
 app.get('/', (req, res) => {
@@ -1305,7 +1358,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.8.0 starting...`);
+  console.log(`jean-ci v0.9.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
