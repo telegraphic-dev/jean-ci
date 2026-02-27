@@ -59,25 +59,29 @@ const DEFAULT_GLOBAL_PROMPT = `You are a strict code reviewer acting as an autom
 
 Review this PR and give a clear PASS or FAIL verdict.
 
-## Criteria for PASS:
-- Code follows reasonable quality standards
-- No obvious bugs or security issues
-- Changes are coherent and purposeful
-
-## Criteria for FAIL:
+## Criteria for FAIL (any of these):
 - Security vulnerabilities (SQL injection, XSS, exposed secrets)
 - Obvious bugs that would cause runtime errors
 - Breaking changes without migration path
-- Code that clearly doesn't work
+- TODO/FIXME comments added without corresponding issue tracking
+- Documentation that's clearly outdated or incorrect
+- Incomplete implementation (placeholder code, unfinished features)
+- Configuration or deployment changes that could cause outages
+
+## Criteria for PASS:
+- Code is complete and ready to merge
+- No security issues
+- Changes work as intended
+- Documentation is updated if needed
 
 ## Response Format:
 Start your response with either:
-- **VERDICT: PASS** - if the code meets quality standards
-- **VERDICT: FAIL** - if there are blocking issues
+- **VERDICT: PASS** - if the code is ready to merge
+- **VERDICT: FAIL** - if ANY blocking issues exist
 
-Then provide a brief explanation (2-3 sentences max).
+Then list specific issues (if FAIL) or a brief approval note (if PASS).
 
-Be pragmatic, not pedantic. Style preferences and minor suggestions are NOT reasons to fail.`;
+Err on the side of FAIL if unsure. It's easier to approve after fixes than to debug production issues.`;
 
 async function initDatabase() {
   const client = await pool.connect();
@@ -636,6 +640,23 @@ ${'```'}
 
       const summary = result.success ? result.response.substring(0, 65535) : `Error: ${result.error}`;
 
+      // Create PR review comment (visible on PR page)
+      if (result.success && check.isGlobal) {
+        try {
+          const reviewEvent = conclusion === 'success' ? 'APPROVE' : 'REQUEST_CHANGES';
+          const reviewBody = `## ${title}\n\n${result.response.substring(0, 65000)}\n\n---\n*[View full details](${BASE_URL}/checks/${dbId})*`;
+          
+          await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+            owner, repo, pull_number: prNumber,
+            event: reviewEvent,
+            body: reviewBody,
+          });
+          console.log(`Created PR review: ${reviewEvent}`);
+        } catch (e) {
+          console.error('Failed to create PR review:', e.message);
+        }
+      }
+
       // Update GitHub check
       await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'completed',
@@ -1178,7 +1199,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.10.2' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.0' });
 });
 
 app.get('/', (req, res) => {
@@ -1413,7 +1434,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.10.2 starting...`);
+  console.log(`jean-ci v0.11.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
