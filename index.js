@@ -444,7 +444,7 @@ ${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
 
       const result = await callOpenClaw(check.prompt, context);
       
-      // Parse verdict from response
+      // Parse verdict from response - only PASS or FAIL, no neutral
       let conclusion = 'success';
       let title = '✅ Approved';
       
@@ -453,16 +453,14 @@ ${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
         title = '❌ Review failed';
       } else {
         const response = result.response.toUpperCase();
+        // Only fail if explicitly FAIL verdict found
         if (response.includes('VERDICT: FAIL') || response.includes('VERDICT:FAIL')) {
           conclusion = 'failure';
           title = '❌ Changes requested';
-        } else if (response.includes('VERDICT: PASS') || response.includes('VERDICT:PASS')) {
+        } else {
+          // Default to pass (no neutral)
           conclusion = 'success';
           title = '✅ Approved';
-        } else {
-          // No clear verdict - default to neutral
-          conclusion = 'neutral';
-          title = '⚠️ Review complete';
         }
       }
 
@@ -809,7 +807,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.6.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.6.1' });
 });
 
 app.get('/', (req, res) => {
@@ -1060,7 +1058,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.6.0 starting...`);
+  console.log(`jean-ci v0.6.1 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
