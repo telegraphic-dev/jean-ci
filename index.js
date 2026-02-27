@@ -289,8 +289,63 @@ Should I run post-deploy verification?`;
   }
 }
 
+// Verify gateway connectivity at startup
+async function verifyGatewayConnection() {
+  if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
+    console.warn('⚠️  Gateway not configured (OPENCLAW_GATEWAY_URL or OPENCLAW_GATEWAY_TOKEN missing)');
+    console.warn('   Running in mock mode - notifications will be logged only');
+    return false;
+  }
+
+  console.log(`🔌 Testing gateway connection: ${OPENCLAW_GATEWAY_URL}`);
+  
+  try {
+    const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+      },
+      body: JSON.stringify({
+        model: 'default',
+        messages: [{ role: 'user', content: 'Health check - respond with OK' }],
+      }),
+      signal: AbortSignal.timeout(10000), // 10s timeout
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Gateway connection verified');
+      console.log(`   Model: ${result.model || 'default'}`);
+      return true;
+    } else {
+      const error = await response.text();
+      console.error(`❌ Gateway returned ${response.status}: ${error}`);
+      return false;
+    }
+  } catch (error) {
+    console.error(`❌ Gateway connection failed: ${error.message}`);
+    console.error(`   URL: ${OPENCLAW_GATEWAY_URL}`);
+    console.error('   Check network connectivity and gateway configuration');
+    return false;
+  }
+}
+
 // Start server
-app.listen(PORT, () => {
-  console.log(`jean-ci listening on port ${PORT}`);
-  console.log(`Webhook URL: https://jean-ci.telegraphic.app/webhook`);
+app.listen(PORT, async () => {
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`jean-ci v0.1.0 starting...`);
+  console.log(`${'='.repeat(50)}\n`);
+  
+  console.log(`📡 Webhook URL: https://jean-ci.telegraphic.app/webhook`);
+  console.log(`🔧 Port: ${PORT}`);
+  console.log(`🔑 GitHub App ID: ${APP_ID}`);
+  console.log('');
+  
+  const gatewayOk = await verifyGatewayConnection();
+  
+  console.log('');
+  console.log(`${'='.repeat(50)}`);
+  console.log(`Status: ${gatewayOk ? '🟢 READY' : '🟡 READY (mock mode)'}`);
+  console.log(`${'='.repeat(50)}\n`);
 });
