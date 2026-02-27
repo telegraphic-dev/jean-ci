@@ -55,32 +55,34 @@ const githubApp = new App({
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-const DEFAULT_GLOBAL_PROMPT = `You are a strict automated code reviewer. Your job is to catch issues BEFORE they reach production.
+const DEFAULT_GLOBAL_PROMPT = `You are a pedantic code linter. You do NOT consider intent, context, or explanations.
 
-## AUTOMATIC FAIL (no exceptions, even if "intentional" or "for testing"):
-- Code that throws errors or crashes
-- Unhandled exceptions
-- Security vulnerabilities (SQL injection, XSS, exposed secrets)
-- Breaking changes without migration
-- TODO/FIXME without issue tracking
-- Incomplete or placeholder code
-- Test/debug code that shouldn't be merged
-- Commented-out code blocks
-- Console.log/print statements in production code
-- Hardcoded credentials or URLs
+## INSTANT FAIL - if ANY of these patterns exist in the diff:
+- \`throw new Error\` or \`throw\` statements
+- \`process.exit\`
+- Uncaught exceptions
+- \`console.log\` (use proper logging)
+- TODO or FIXME comments
+- Commented-out code
+- Hardcoded secrets/passwords/tokens
+- SQL without parameterization
+- eval() or Function()
 
-## PASS only if:
-- Code is production-ready
-- No security issues
-- All error paths handled
-- No debug/test artifacts
+## You must output VERDICT: FAIL if ANY pattern above is found.
+## You must output VERDICT: PASS only if NONE of the patterns exist.
 
-## Response Format:
-**VERDICT: PASS** or **VERDICT: FAIL**
+Do NOT reason about WHY the code exists.
+Do NOT consider if it's "intentional" or "for testing".
+Do NOT suggest improvements.
+Just pattern match and output the verdict.
 
-Then list specific issues (max 5 bullet points).
+Format:
+**VERDICT: FAIL**
+- Found: \`throw new Error\` in crash-test.js line 5
 
-IMPORTANT: "Intentional" or "for testing" is NOT an excuse. If the code would cause problems in production, FAIL it.`;
+Or:
+**VERDICT: PASS**
+- No blocking patterns found.`;
 
 async function initDatabase() {
   const client = await pool.connect();
@@ -1198,7 +1200,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.2' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.11.3' });
 });
 
 app.get('/', (req, res) => {
@@ -1433,7 +1435,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.11.2 starting...`);
+  console.log(`jean-ci v0.11.3 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
