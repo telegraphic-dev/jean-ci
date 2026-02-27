@@ -7,7 +7,7 @@ import fs from 'fs';
 
 const { Pool } = pg;
 const app = express();
-app.set('trust proxy', 1); // Trust first proxy (Traefik)
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // =============================================================================
@@ -22,7 +22,6 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const ADMIN_GITHUB_ID = process.env.ADMIN_GITHUB_ID;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-// Private key handling
 let PRIVATE_KEY;
 if (process.env.GITHUB_APP_PRIVATE_KEY) {
   PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY;
@@ -32,11 +31,9 @@ if (process.env.GITHUB_APP_PRIVATE_KEY) {
   PRIVATE_KEY = fs.readFileSync(process.env.GITHUB_APP_PRIVATE_KEY_PATH || '/app/private-key.pem', 'utf8');
 }
 
-// OpenClaw integration
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 
-// Initialize GitHub App
 const githubApp = new App({
   appId: APP_ID,
   privateKey: PRIVATE_KEY,
@@ -48,13 +45,29 @@ const githubApp = new App({
 
 const pool = new Pool({ connectionString: DATABASE_URL });
 
-const DEFAULT_GLOBAL_PROMPT = `You are a code reviewer. Review this PR for:
-- Code quality and best practices
-- Potential bugs or issues
-- Security concerns
-- Performance implications
+const DEFAULT_GLOBAL_PROMPT = `You are a strict code reviewer acting as an automated CI check.
 
-Be constructive and specific. If the code looks good, say so briefly.`;
+Review this PR and give a clear PASS or FAIL verdict.
+
+## Criteria for PASS:
+- Code follows reasonable quality standards
+- No obvious bugs or security issues
+- Changes are coherent and purposeful
+
+## Criteria for FAIL:
+- Security vulnerabilities (SQL injection, XSS, exposed secrets)
+- Obvious bugs that would cause runtime errors
+- Breaking changes without migration path
+- Code that clearly doesn't work
+
+## Response Format:
+Start your response with either:
+- **VERDICT: PASS** - if the code meets quality standards
+- **VERDICT: FAIL** - if there are blocking issues
+
+Then provide a brief explanation (2-3 sentences max).
+
+Be pragmatic, not pedantic. Style preferences and minor suggestions are NOT reasons to fail.`;
 
 async function initDatabase() {
   const client = await pool.connect();
@@ -85,21 +98,8 @@ async function initDatabase() {
         processed BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
-
-      CREATE TABLE IF NOT EXISTS jean_ci_check_runs (
-        id SERIAL PRIMARY KEY,
-        repo TEXT NOT NULL,
-        pr_number INTEGER NOT NULL,
-        check_name TEXT NOT NULL,
-        github_check_id BIGINT,
-        status TEXT DEFAULT 'queued',
-        conclusion TEXT,
-        output TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
     `);
 
-    // Initialize default config
     await client.query(`
       INSERT INTO jean_ci_config (key, value) 
       VALUES ('global_prompt', $1) 
@@ -163,7 +163,7 @@ async function insertEvent(eventType, deliveryId, repo, action, payload) {
       VALUES ($1, $2, $3, $4, $5)
     `, [eventType, deliveryId, repo, action, JSON.stringify(payload)]);
   } catch (e) {
-    // Duplicate delivery, ignore
+    // Duplicate delivery
   }
 }
 
@@ -178,48 +178,65 @@ async function getRecentEvents(limit = 50) {
 }
 
 // =============================================================================
-// Middleware
-// =============================================================================
-
-app.use(express.json({
-  verify: (req, res, buf) => {
-    req.rawBody = buf;
-  }
-}));
-
-app.use(session({
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 }
-}));
-
-function requireAdmin(req, res, next) {
-  if (!req.session.user || req.session.user.id !== ADMIN_GITHUB_ID) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  next();
-}
-
-// =============================================================================
-// Webhook Signature Verification
-// =============================================================================
-
-function verifySignature(req) {
-  const signature = req.headers['x-hub-signature-256'];
-  if (!signature) return false;
-  
-  const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
-  const digest = 'sha256=' + hmac.update(req.rawBody).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
-}
-
-// =============================================================================
 // GitHub API Helpers
 // =============================================================================
 
 async function getInstallationOctokit(installationId) {
   return await githubApp.getInstallationOctokit(installationId);
+}
+
+async function syncReposFromInstallations() {
+  console.log('🔄 Syncing repositories from GitHub App installations...');
+  
+  try {
+    // Get all installations
+    const octokit = await githubApp.getInstallationOctokit(undefined);
+    
+    // Use the App's JWT to list installations
+    const jwt = await githubApp.getSignedJsonWebToken();
+    
+    const installationsRes = await fetch('https://api.github.com/app/installations', {
+      headers: {
+        'Authorization': `Bearer ${jwt}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'jean-ci',
+      },
+    });
+    
+    if (!installationsRes.ok) {
+      console.error('Failed to fetch installations:', await installationsRes.text());
+      return [];
+    }
+    
+    const installations = await installationsRes.json();
+    const allRepos = [];
+    
+    for (const installation of installations) {
+      // Get repos for this installation
+      const reposRes = await fetch(`https://api.github.com/installation/repositories`, {
+        headers: {
+          'Authorization': `Bearer ${await (await githubApp.getInstallationOctokit(installation.id)).auth()}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'jean-ci',
+        },
+      });
+      
+      // Use installation token instead
+      const installationOctokit = await githubApp.getInstallationOctokit(installation.id);
+      const { data } = await installationOctokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 });
+      
+      for (const repo of data.repositories) {
+        await upsertRepo(repo.full_name, installation.id, false);
+        allRepos.push({ full_name: repo.full_name, installation_id: installation.id });
+      }
+    }
+    
+    console.log(`✅ Synced ${allRepos.length} repositories`);
+    return allRepos;
+  } catch (error) {
+    console.error('Error syncing repos:', error.message);
+    return [];
+  }
 }
 
 async function fetchPRCheckFiles(octokit, owner, repo, ref) {
@@ -268,8 +285,8 @@ async function getPRInfo(octokit, owner, repo, prNumber) {
 
 async function callOpenClaw(prompt, context = '') {
   if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
-    console.log('[MOCK] Would call OpenClaw:', prompt.substring(0, 100) + '...');
-    return { success: true, response: '[Mock] Code looks good!' };
+    console.log('[MOCK] Would call OpenClaw');
+    return { success: true, response: '**VERDICT: PASS**\n\n[Mock mode] Code looks good!' };
   }
 
   try {
@@ -314,27 +331,48 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
 
   const octokit = await getInstallationOctokit(installationId);
   
-  const [prInfo, diff] = await Promise.all([
-    getPRInfo(octokit, owner, repo, prNumber),
-    getPRDiff(octokit, owner, repo, prNumber),
-  ]);
-
+  // Fetch check files from repo
   const checkFiles = await fetchPRCheckFiles(octokit, owner, repo, headSha);
   const globalPrompt = await getConfig('global_prompt') || DEFAULT_GLOBAL_PROMPT;
 
+  // Build checks to run
   const checks = [
-    { name: 'Global Standards', prompt: globalPrompt, isGlobal: true },
+    { name: 'Code Review', prompt: globalPrompt, isGlobal: true },
     ...checkFiles.map(f => ({ name: f.name, prompt: f.content, isGlobal: false })),
   ];
 
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
+  // Create ALL checks as pending first
+  const checkRuns = [];
   for (const check of checks) {
     try {
       const { data: checkRun } = await octokit.rest.checks.create({
         owner, repo,
         name: `jean-ci / ${check.name}`,
         head_sha: headSha,
+        status: 'queued',
+      });
+      checkRuns.push({ check, checkRun });
+      console.log(`Created pending check: ${check.name}`);
+    } catch (error) {
+      console.error(`Error creating check "${check.name}":`, error.message);
+    }
+  }
+
+  // Now get PR info and diff
+  const [prInfo, diff] = await Promise.all([
+    getPRInfo(octokit, owner, repo, prNumber),
+    getPRDiff(octokit, owner, repo, prNumber),
+  ]);
+
+  // Run each check
+  for (const { check, checkRun } of checkRuns) {
+    try {
+      // Mark as in_progress
+      await octokit.rest.checks.update({
+        owner, repo,
+        check_run_id: checkRun.id,
         status: 'in_progress',
         started_at: new Date().toISOString(),
       });
@@ -345,24 +383,34 @@ async function runPRReview(installationId, owner, repo, prNumber, headSha) {
 ## Description
 ${prInfo.body || 'No description provided'}
 
-## Changed Files
-${diff.substring(0, 50000)} ${diff.length > 50000 ? '\n\n[Diff truncated...]' : ''}
+## Diff
+\`\`\`diff
+${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
+\`\`\`
 `;
 
       const result = await callOpenClaw(check.prompt, context);
       
+      // Parse verdict from response
       let conclusion = 'success';
-      let title = 'Looks good!';
+      let title = '✅ Approved';
       
       if (!result.success) {
         conclusion = 'failure';
-        title = 'Review failed';
-      } else if (/error|critical|must fix/i.test(result.response)) {
-        conclusion = 'failure';
-        title = 'Issues found';
-      } else if (/warning|consider|suggest/i.test(result.response)) {
-        conclusion = 'neutral';
-        title = 'Suggestions available';
+        title = '❌ Review failed';
+      } else {
+        const response = result.response.toUpperCase();
+        if (response.includes('VERDICT: FAIL') || response.includes('VERDICT:FAIL')) {
+          conclusion = 'failure';
+          title = '❌ Changes requested';
+        } else if (response.includes('VERDICT: PASS') || response.includes('VERDICT:PASS')) {
+          conclusion = 'success';
+          title = '✅ Approved';
+        } else {
+          // No clear verdict - default to neutral
+          conclusion = 'neutral';
+          title = '⚠️ Review complete';
+        }
       }
 
       await octokit.rest.checks.update({
@@ -380,6 +428,23 @@ ${diff.substring(0, 50000)} ${diff.length > 50000 ? '\n\n[Diff truncated...]' : 
       console.log(`Check "${check.name}" completed: ${conclusion}`);
     } catch (error) {
       console.error(`Error running check "${check.name}":`, error.message);
+      
+      // Mark as failed on error
+      try {
+        await octokit.rest.checks.update({
+          owner, repo,
+          check_run_id: checkRun.id,
+          status: 'completed',
+          conclusion: 'failure',
+          completed_at: new Date().toISOString(),
+          output: {
+            title: '❌ Check failed',
+            summary: `Error: ${error.message}`,
+          },
+        });
+      } catch (e) {
+        console.error('Failed to update check status:', e.message);
+      }
     }
   }
 }
@@ -394,9 +459,11 @@ async function handlePullRequest(payload) {
   
   await upsertRepo(repo, installation.id, false);
   
-  if (action === 'opened' || action === 'synchronize') {
+  if (action === 'opened' || action === 'synchronize' || action === 'reopened') {
     const [owner, repoName] = repo.split('/');
-    await runPRReview(installation.id, owner, repoName, pull_request.number, pull_request.head.sha);
+    // Run asynchronously - don't block webhook response
+    runPRReview(installation.id, owner, repoName, pull_request.number, pull_request.head.sha)
+      .catch(err => console.error('PR review error:', err));
   }
 }
 
@@ -421,8 +488,41 @@ async function handleEvent(event, payload) {
       await handleInstallation(payload);
       break;
     default:
-      console.log(`Unhandled event: ${event}`);
+      console.log(`Event: ${event}`);
   }
+}
+
+// =============================================================================
+// Middleware
+// =============================================================================
+
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 }
+}));
+
+function requireAdmin(req, res, next) {
+  if (!req.session.user || req.session.user.id !== ADMIN_GITHUB_ID) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+function verifySignature(req) {
+  const signature = req.headers['x-hub-signature-256'];
+  if (!signature) return false;
+  
+  const hmac = crypto.createHmac('sha256', WEBHOOK_SECRET);
+  const digest = 'sha256=' + hmac.update(req.rawBody).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
 }
 
 // =============================================================================
@@ -459,7 +559,6 @@ app.get('/auth/github', (req, res) => {
   const state = crypto.randomBytes(16).toString('hex');
   req.session.oauthState = state;
   
-  // Use X-Forwarded-Proto from proxy, default to https in production
   const protocol = req.get('x-forwarded-proto') || req.protocol || 'https';
   
   const params = new URLSearchParams({
@@ -541,6 +640,12 @@ app.get('/api/repos', requireAdmin, async (req, res) => {
   res.json(repos);
 });
 
+app.post('/api/repos/sync', requireAdmin, async (req, res) => {
+  await syncReposFromInstallations();
+  const repos = await getAllRepos();
+  res.json({ success: true, count: repos.length, repos });
+});
+
 app.put('/api/repos/:owner/:repo', requireAdmin, async (req, res) => {
   const fullName = `${req.params.owner}/${req.params.repo}`;
   const { pr_review_enabled } = req.body;
@@ -562,7 +667,7 @@ app.get('/api/events', requireAdmin, async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.3.0' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.0' });
 });
 
 app.get('/', (req, res) => {
@@ -581,7 +686,7 @@ app.get('/', (req, res) => {
 </head>
 <body>
   <h1>🤖 jean-ci</h1>
-  <p>GitHub webhook handler for automated PR reviews.</p>
+  <p>GitHub CI checks powered by LLM code review.</p>
   <p><a href="/admin" class="btn">Admin Dashboard →</a></p>
 </body>
 </html>
@@ -606,7 +711,8 @@ app.get('/admin', (req, res) => {
     .btn { display: inline-block; padding: 10px 20px; background: #333; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; font-size: 14px; }
     .btn:hover { background: #444; }
     .btn-success { background: #28a745; }
-    textarea { width: 100%; height: 200px; font-family: monospace; font-size: 13px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+    .btn-primary { background: #007bff; }
+    textarea { width: 100%; height: 300px; font-family: monospace; font-size: 13px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; }
     th { background: #f9f9f9; }
@@ -618,6 +724,8 @@ app.get('/admin', (req, res) => {
     .event-type { display: inline-block; padding: 2px 8px; background: #e9ecef; border-radius: 3px; font-size: 12px; }
     .hidden { display: none; }
     #loading { text-align: center; padding: 40px; color: #666; }
+    .header-row { display: flex; justify-content: space-between; align-items: center; }
+    .sync-status { font-size: 12px; color: #666; margin-left: 10px; }
   </style>
 </head>
 <body>
@@ -640,8 +748,8 @@ app.get('/admin', (req, res) => {
       </div>
       
       <div class="card">
-        <h2>📝 Global PR Review Prompt</h2>
-        <p style="color: #666; font-size: 14px;">This prompt is sent to the LLM for every PR review.</p>
+        <h2>📝 Global Review Prompt</h2>
+        <p style="color: #666; font-size: 14px;">This prompt determines how PRs are reviewed. Use <code>VERDICT: PASS</code> or <code>VERDICT: FAIL</code> format.</p>
         <textarea id="global-prompt"></textarea>
         <br><br>
         <button class="btn btn-success" onclick="savePrompt()">Save Prompt</button>
@@ -649,8 +757,14 @@ app.get('/admin', (req, res) => {
       </div>
       
       <div class="card">
-        <h2>📦 Repositories</h2>
-        <p style="color: #666; font-size: 14px;">Enable PR reviews per repository. Add custom checks via <code>.jean-ci/pr-checks/*.md</code></p>
+        <div class="header-row">
+          <h2 style="margin: 0; border: none; padding: 0;">📦 Repositories</h2>
+          <div>
+            <button class="btn btn-primary" onclick="syncRepos()">🔄 Sync from GitHub</button>
+            <span id="sync-status" class="sync-status"></span>
+          </div>
+        </div>
+        <p style="color: #666; font-size: 14px; margin-top: 15px;">Enable PR reviews per repository. Add custom checks via <code>.jean-ci/pr-checks/*.md</code></p>
         <table>
           <thead><tr><th>Repository</th><th>PR Reviews</th></tr></thead>
           <tbody id="repos-list"></tbody>
@@ -709,7 +823,7 @@ app.get('/admin', (req, res) => {
       const repos = await res.json();
       
       document.getElementById('repos-list').innerHTML = repos.length === 0 
-        ? '<tr><td colspan="2" style="color: #666;">No repositories yet.</td></tr>'
+        ? '<tr><td colspan="2" style="color: #666;">No repositories yet. Click "Sync from GitHub" to load them.</td></tr>'
         : repos.map(r => \`
           <tr>
             <td><a href="https://github.com/\${r.full_name}" target="_blank">\${r.full_name}</a></td>
@@ -720,6 +834,15 @@ app.get('/admin', (req, res) => {
             </td>
           </tr>
         \`).join('');
+    }
+    
+    async function syncRepos() {
+      document.getElementById('sync-status').textContent = 'Syncing...';
+      const res = await fetch('/api/repos/sync', { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('sync-status').textContent = \`Synced \${data.count} repos!\`;
+      setTimeout(() => document.getElementById('sync-status').textContent = '', 3000);
+      loadRepos();
     }
     
     async function toggleRepo(fullName, enabled) {
@@ -795,7 +918,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.3.0 starting...`);
+  console.log(`jean-ci v0.4.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
@@ -808,6 +931,9 @@ async function start() {
   console.log('');
   
   const gatewayOk = await verifyGatewayConnection();
+  
+  // Sync repos on startup
+  await syncReposFromInstallations();
   
   console.log('');
   console.log(`${'='.repeat(50)}`);
