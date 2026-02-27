@@ -845,8 +845,12 @@ app.use(session({
 }));
 
 function requireAdmin(req, res, next) {
-  if (!req.session.user || req.session.user.id !== ADMIN_GITHUB_ID) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (!req.session.user) {
+    return res.status(401).json({ error: 'Not logged in' });
+  }
+  if (ADMIN_GITHUB_ID && String(req.session.user.id) !== String(ADMIN_GITHUB_ID)) {
+    console.log(`[Auth] Access denied: ${req.session.user.id} !== ${ADMIN_GITHUB_ID}`);
+    return res.status(401).json({ error: 'Access denied - not an admin' });
   }
   next();
 }
@@ -1363,7 +1367,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.9.2 starting...`);
+  console.log(`jean-ci v0.9.3 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
