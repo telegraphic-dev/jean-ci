@@ -728,9 +728,14 @@ async function handleRegistryPackage(payload) {
   }
 
   const octokit = await getInstallationOctokit(repoConfig.installation_id);
+  const [owner, repo] = repository.full_name.split('/');
   
-  // Fetch coolify.yml config from repo
-  const coolifyConfig = await fetchCoolifyConfig(octokit, ...repository.full_name.split('/'));
+  // Get the ref from the package (master/main/etc)
+  const ref = registry_package?.package_version?.target_commitish || repository.default_branch || 'main';
+  const headSha = registry_package?.package_version?.target_oid;
+  
+  // Fetch coolify.yml config from repo using correct ref
+  const coolifyConfig = await fetchCoolifyConfig(octokit, owner, repo, ref);
   
   if (!coolifyConfig || !coolifyConfig.deployments.length) {
     console.log(`No .jean-ci/coolify.yml found for ${repository.full_name}`);
@@ -749,15 +754,30 @@ async function handleRegistryPackage(payload) {
     return;
   }
 
-  const [owner, repo] = repository.full_name.split('/');
   const environment = deployment.environment || 'production';
-  const ref = registry_package?.package_version?.target_commitish || 'main';
 
   // Get Coolify app details for real URLs
   const appDetails = await getCoolifyAppDetails(deployment.coolify_app);
   const appUrl = appDetails?.fqdn || `https://${repo}.telegraphic.app`;
   const coolifyDashboard = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
   const logsUrl = `${coolifyDashboard}/project/${appDetails?.projectUuid || 'default'}/${appDetails?.environmentName || 'production'}/application/${deployment.coolify_app}`;
+
+  // Create GitHub Check Run (like Vercel does - shows in PR checks)
+  let checkRun = null;
+  if (headSha) {
+    try {
+      checkRun = await createCheck(octokit, owner, repo, 'Coolify', headSha, 'in_progress');
+      await updateCheck(octokit, owner, repo, checkRun.id, {
+        status: 'in_progress',
+        output: {
+          title: 'Deploying to Coolify',
+          summary: `Deploying ${packageVersion} to ${environment}...`,
+        },
+      });
+    } catch (e) {
+      console.error('Error creating check run:', e.message);
+    }
+  }
 
   // Create GitHub deployment with real URLs
   const ghDeployment = await createGitHubDeployment(
@@ -780,18 +800,25 @@ async function handleRegistryPackage(payload) {
       await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'failure',
         `Deploy failed: ${result.error}`, logsUrl, appUrl);
     }
+    if (checkRun) {
+      await updateCheck(octokit, owner, repo, checkRun.id, {
+        status: 'completed',
+        conclusion: 'failure',
+        output: { title: 'Deploy failed', summary: result.error },
+      });
+    }
     console.error(`❌ Deployment failed: ${result.error}`);
     return;
   }
 
   // Store pending deployment for Coolify webhook to update
-  if (ghDeployment) {
-    pendingDeployments.set(deployment.coolify_app, {
-      octokit, owner, repo, 
-      deploymentId: ghDeployment.id,
-      logsUrl, appUrl,
-      createdAt: Date.now(),
-    });
+  pendingDeployments.set(deployment.coolify_app, {
+    octokit, owner, repo, 
+    deploymentId: ghDeployment?.id,
+    checkRunId: checkRun?.id,
+    logsUrl, appUrl,
+    createdAt: Date.now(),
+  });
     
     // Auto-cleanup after 10 minutes (in case webhook never arrives)
     setTimeout(() => {
@@ -913,7 +940,7 @@ app.post('/webhook/coolify', express.json(), async (req, res) => {
     return res.status(200).json({ received: true, ignored: 'no pending deployment' });
   }
   
-  const { octokit, owner, repo, deploymentId, appUrl } = pending;
+  const { octokit, owner, repo, deploymentId, checkRunId, appUrl } = pending;
   
   // Use deployment_url from Coolify for logs link (it has full path with project/env/app/deployment)
   const logsUrl = deployment_url || pending.logsUrl;
@@ -921,13 +948,16 @@ app.post('/webhook/coolify', express.json(), async (req, res) => {
   // Map Coolify event to GitHub deployment status
   let ghState = 'in_progress';
   let description = message || 'Deploying...';
+  let checkConclusion = null;
   
   if (event === 'deployment_success') {
     ghState = 'success';
+    checkConclusion = 'success';
     description = message || 'Deployment successful';
     pendingDeployments.delete(application_uuid);
   } else if (event === 'deployment_failed') {
     ghState = 'failure';
+    checkConclusion = 'failure';
     description = message || 'Deployment failed';
     pendingDeployments.delete(application_uuid);
   } else {
@@ -935,8 +965,25 @@ app.post('/webhook/coolify', express.json(), async (req, res) => {
     return res.status(200).json({ received: true, event });
   }
   
-  await updateDeploymentStatus(octokit, owner, repo, deploymentId, ghState, description, logsUrl, appUrl);
-  console.log(`[Coolify] Updated GitHub deployment ${deploymentId} to ${ghState} (logs: ${logsUrl})`);
+  // Update GitHub Deployment status
+  if (deploymentId) {
+    await updateDeploymentStatus(octokit, owner, repo, deploymentId, ghState, description, logsUrl, appUrl);
+    console.log(`[Coolify] Updated GitHub deployment ${deploymentId} to ${ghState}`);
+  }
+  
+  // Update GitHub Check Run (like Vercel)
+  if (checkRunId) {
+    await updateCheck(octokit, owner, repo, checkRunId, {
+      status: 'completed',
+      conclusion: checkConclusion,
+      details_url: logsUrl,
+      output: {
+        title: checkConclusion === 'success' ? 'Deployment successful' : 'Deployment failed',
+        summary: `${description}\n\n[View deployment](${appUrl}) | [View logs](${logsUrl})`,
+      },
+    });
+    console.log(`[Coolify] Updated GitHub check ${checkRunId} to ${checkConclusion}`);
+  }
   
   res.status(200).json({ received: true, state: ghState });
 });
@@ -1367,7 +1414,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.9.3 starting...`);
+  console.log(`jean-ci v0.10.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
