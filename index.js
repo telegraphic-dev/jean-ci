@@ -47,37 +47,54 @@ function verifySignature(req) {
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest));
 }
 
-// Send message to Jean via OpenClaw
-async function notifyJean(message, context = {}) {
-  if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
-    console.log('[MOCK] Would notify Jean:', message);
-    return;
-  }
+// Event queue for Jean to poll
+const eventQueue = [];
+const MAX_QUEUE_SIZE = 100;
 
-  try {
-    const response = await fetch(`${OPENCLAW_GATEWAY_URL}/api/chat`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-      },
-      body: JSON.stringify({
-        message,
-        context,
-      }),
-    });
-    
-    if (!response.ok) {
-      console.error('Failed to notify Jean:', await response.text());
-    }
-  } catch (error) {
-    console.error('Error notifying Jean:', error.message);
+// Send message to Jean via queue (polled by Jean)
+async function notifyJean(message, context = {}) {
+  const event = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    timestamp: new Date().toISOString(),
+    message,
+    context,
+  };
+  
+  eventQueue.push(event);
+  if (eventQueue.length > MAX_QUEUE_SIZE) {
+    eventQueue.shift(); // Remove oldest
   }
+  
+  console.log(`[QUEUED] ${context.type || 'unknown'}: ${event.id}`);
 }
 
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', app: 'jean-ci', version: '0.1.0' });
+});
+
+// Get queued events (for Jean to poll)
+app.get('/events', (req, res) => {
+  // Simple auth check
+  const token = req.headers['authorization']?.replace('Bearer ', '');
+  if (token !== OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  const events = [...eventQueue];
+  res.json({ events, count: events.length });
+});
+
+// Clear events after processing
+app.delete('/events', (req, res) => {
+  const token = req.headers['authorization']?.replace('Bearer ', '');
+  if (token !== OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  const cleared = eventQueue.length;
+  eventQueue.length = 0;
+  res.json({ cleared });
 });
 
 // Webhook endpoint
