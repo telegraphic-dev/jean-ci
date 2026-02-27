@@ -34,6 +34,13 @@ if (process.env.GITHUB_APP_PRIVATE_KEY) {
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 
+// Coolify integration
+const COOLIFY_URL = process.env.COOLIFY_URL || 'https://apps.telegraphic.app';
+const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
+
+// Event retention
+const MAX_EVENTS = 1000;
+
 const githubApp = new App({
   appId: APP_ID,
   privateKey: PRIVATE_KEY,
@@ -222,6 +229,124 @@ async function getRecentEvents(limit = 50) {
     LIMIT $1
   `, [limit]);
   return result.rows;
+}
+
+async function cleanupOldEvents() {
+  const result = await pool.query(`
+    DELETE FROM jean_ci_webhook_events 
+    WHERE id NOT IN (
+      SELECT id FROM jean_ci_webhook_events 
+      ORDER BY created_at DESC 
+      LIMIT $1
+    )
+  `, [MAX_EVENTS]);
+  if (result.rowCount > 0) {
+    console.log(`🧹 Cleaned up ${result.rowCount} old events`);
+  }
+  return result.rowCount;
+}
+
+// =============================================================================
+// Coolify Deployment
+// =============================================================================
+
+async function fetchCoolifyConfig(octokit, owner, repo, ref = 'main') {
+  try {
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
+      owner, repo, path: '.jean-ci/coolify.yml', ref,
+    });
+    const content = Buffer.from(data.content, 'base64').toString('utf8');
+    // Simple YAML parsing (key: value format)
+    return parseSimpleYaml(content);
+  } catch (e) {
+    if (e.status !== 404) console.error('Error fetching coolify.yml:', e.message);
+    return null;
+  }
+}
+
+function parseSimpleYaml(content) {
+  // Parse simple YAML structure for coolify.yml
+  const config = { deployments: [] };
+  let currentDeployment = null;
+  
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    
+    const indent = line.search(/\S/);
+    
+    if (trimmed.startsWith('- package:')) {
+      if (currentDeployment) config.deployments.push(currentDeployment);
+      currentDeployment = { package: trimmed.replace('- package:', '').trim() };
+    } else if (currentDeployment && trimmed.includes(':')) {
+      const [key, ...valueParts] = trimmed.split(':');
+      const value = valueParts.join(':').trim();
+      if (key.trim() === 'coolify_app') {
+        currentDeployment.coolify_app = value;
+      } else if (key.trim() === 'environment') {
+        currentDeployment.environment = value;
+      }
+    }
+  }
+  if (currentDeployment) config.deployments.push(currentDeployment);
+  
+  return config;
+}
+
+async function triggerCoolifyDeploy(appUuid) {
+  if (!COOLIFY_TOKEN) {
+    console.log('[MOCK] Would trigger Coolify deploy for:', appUuid);
+    return { success: true, mock: true };
+  }
+
+  try {
+    const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}/restart`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${COOLIFY_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      const error = await response.text();
+      return { success: false, error };
+    }
+    
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+async function createGitHubDeployment(octokit, owner, repo, ref, environment, description) {
+  try {
+    const { data: deployment } = await octokit.request('POST /repos/{owner}/{repo}/deployments', {
+      owner, repo, ref,
+      environment,
+      description,
+      auto_merge: false,
+      required_contexts: [],
+    });
+    return deployment;
+  } catch (error) {
+    console.error('Error creating deployment:', error.message);
+    return null;
+  }
+}
+
+async function updateDeploymentStatus(octokit, owner, repo, deploymentId, state, description, logUrl) {
+  try {
+    await octokit.request('POST /repos/{owner}/{repo}/deployments/{deployment_id}/statuses', {
+      owner, repo, deployment_id: deploymentId,
+      state, // pending, success, error, failure, inactive, in_progress, queued
+      description,
+      log_url: logUrl,
+      environment_url: logUrl,
+    });
+  } catch (error) {
+    console.error('Error updating deployment status:', error.message);
+  }
 }
 
 // =============================================================================
@@ -535,6 +660,83 @@ async function handleInstallation(payload) {
   }
 }
 
+async function handleRegistryPackage(payload) {
+  const { action, registry_package, repository, sender } = payload;
+  
+  if (action !== 'published') {
+    console.log(`Registry package action: ${action} (ignoring)`);
+    return;
+  }
+
+  const packageName = registry_package?.name;
+  const packageVersion = registry_package?.package_version?.version;
+  const packageUrl = registry_package?.package_version?.package_url || 
+                     `ghcr.io/${repository.full_name.toLowerCase()}`;
+  
+  console.log(`📦 Package published: ${packageUrl}:${packageVersion}`);
+
+  // Get installation for this repo
+  const repoConfig = await getRepo(repository.full_name);
+  if (!repoConfig) {
+    console.log(`No config for ${repository.full_name}, skipping deploy`);
+    return;
+  }
+
+  const octokit = await getInstallationOctokit(repoConfig.installation_id);
+  
+  // Fetch coolify.yml config from repo
+  const coolifyConfig = await fetchCoolifyConfig(octokit, ...repository.full_name.split('/'));
+  
+  if (!coolifyConfig || !coolifyConfig.deployments.length) {
+    console.log(`No .jean-ci/coolify.yml found for ${repository.full_name}`);
+    return;
+  }
+
+  // Find matching deployment config
+  const deployment = coolifyConfig.deployments.find(d => {
+    const configPackage = d.package.toLowerCase();
+    return packageUrl.toLowerCase().includes(configPackage) || 
+           configPackage.includes(packageName?.toLowerCase());
+  });
+
+  if (!deployment || !deployment.coolify_app) {
+    console.log(`No matching Coolify app for package ${packageUrl}`);
+    return;
+  }
+
+  const [owner, repo] = repository.full_name.split('/');
+  const environment = deployment.environment || 'production';
+  const ref = registry_package?.package_version?.target_commitish || 'main';
+
+  // Create GitHub deployment
+  const ghDeployment = await createGitHubDeployment(
+    octokit, owner, repo, ref, environment,
+    `Deploy ${packageVersion} to Coolify`
+  );
+
+  if (ghDeployment) {
+    // Set status to in_progress
+    await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'in_progress',
+      'Deploying to Coolify...', `${COOLIFY_URL}/project`);
+  }
+
+  // Trigger Coolify deploy
+  console.log(`🚀 Triggering Coolify deploy for ${deployment.coolify_app}`);
+  const result = await triggerCoolifyDeploy(deployment.coolify_app);
+
+  if (ghDeployment) {
+    if (result.success) {
+      await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'success',
+        `Deployed ${packageVersion}`, `${COOLIFY_URL}/project`);
+      console.log(`✅ Deployment successful for ${repository.full_name}`);
+    } else {
+      await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'failure',
+        `Deploy failed: ${result.error}`, `${COOLIFY_URL}/project`);
+      console.error(`❌ Deployment failed: ${result.error}`);
+    }
+  }
+}
+
 async function handleEvent(event, payload) {
   switch (event) {
     case 'pull_request':
@@ -543,6 +745,9 @@ async function handleEvent(event, payload) {
     case 'installation':
     case 'installation_repositories':
       await handleInstallation(payload);
+      break;
+    case 'registry_package':
+      await handleRegistryPackage(payload);
       break;
     default:
       console.log(`Event: ${event}`);
@@ -807,7 +1012,7 @@ app.get('/checks/:id', async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.6.1' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.7.0' });
 });
 
 app.get('/', (req, res) => {
@@ -1058,7 +1263,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.6.1 starting...`);
+  console.log(`jean-ci v0.7.0 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
@@ -1068,12 +1273,19 @@ async function start() {
   console.log(`🔑 App ID: ${APP_ID}`);
   console.log(`👤 Admin: ${ADMIN_GITHUB_ID || '(anyone)'}`);
   console.log(`🗄️  Database: PostgreSQL`);
+  console.log(`🚀 Coolify: ${COOLIFY_TOKEN ? COOLIFY_URL : '(not configured)'}`);
   console.log('');
   
   const gatewayOk = await verifyGatewayConnection();
   
   // Sync repos on startup
   await syncReposFromInstallations();
+  
+  // Cleanup old events on startup
+  await cleanupOldEvents();
+  
+  // Schedule periodic cleanup (every hour)
+  setInterval(() => cleanupOldEvents().catch(console.error), 60 * 60 * 1000);
   
   console.log('');
   console.log(`${'='.repeat(50)}`);

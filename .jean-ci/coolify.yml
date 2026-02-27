@@ -1,0 +1,7 @@
+# jean-ci Coolify Deployment Config
+# Triggered on registry_package:published events
+
+deployments:
+  - package: ghcr.io/telegraphic-dev/jean-ci
+    coolify_app: ycksco4oogggw4kog80sc4cw
+    environment: production
