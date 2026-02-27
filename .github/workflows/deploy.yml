@@ -38,9 +38,6 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-
-      - name: Trigger Coolify deployment
-        run: |
-          curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}" \
-            "${{ secrets.COOLIFY_URL }}/api/v1/applications/${{ secrets.COOLIFY_APP_UUID }}/restart"
+      
+      # Deployment is triggered automatically via jean-ci
+      # when registry_package:published webhook is received
