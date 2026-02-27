@@ -1,10 +1,14 @@
-const express = require('express');
-const crypto = require('crypto');
-const session = require('express-session');
-const { App } = require('@octokit/app');
-const Database = require('better-sqlite3');
-const fs = require('fs');
-const path = require('path');
+import express from 'express';
+import crypto from 'crypto';
+import session from 'express-session';
+import { App } from '@octokit/app';
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;

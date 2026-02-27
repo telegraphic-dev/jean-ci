@@ -2,6 +2,7 @@
   "name": "jean-ci",
   "version": "0.2.0",
   "description": "GitHub webhook handler for Jean - PR reviews and CI notifications",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
