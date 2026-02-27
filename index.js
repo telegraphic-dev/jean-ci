@@ -189,12 +189,13 @@ async function syncReposFromInstallations() {
   console.log('🔄 Syncing repositories from GitHub App installations...');
   
   try {
-    // Use octokit's eachInstallation to iterate all installations
     const allRepos = [];
     
-    for await (const { installation, octokit } of githubApp.eachInstallation.iterator()) {
+    for await (const { installation } of githubApp.eachInstallation.iterator()) {
       try {
-        const { data } = await octokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 });
+        // Get a fresh octokit for this installation
+        const octokit = await githubApp.getInstallationOctokit(installation.id);
+        const { data } = await octokit.request('GET /installation/repositories', { per_page: 100 });
         
         console.log(`Installation ${installation.id} (${installation.account?.login}): ${data.repositories.length} repos`);
         
@@ -643,7 +644,7 @@ app.get('/api/events', requireAdmin, async (req, res) => {
 // =============================================================================
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.2' });
+  res.json({ status: 'ok', app: 'jean-ci', version: '0.4.3' });
 });
 
 app.get('/', (req, res) => {
@@ -894,7 +895,7 @@ async function verifyGatewayConnection() {
 
 async function start() {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`jean-ci v0.4.2 starting...`);
+  console.log(`jean-ci v0.4.3 starting...`);
   console.log(`${'='.repeat(50)}\n`);
   
   await initDatabase();
