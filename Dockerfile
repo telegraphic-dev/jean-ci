@@ -28,11 +28,9 @@ RUN apk add --no-cache wget
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Copy standalone build (includes server.js and all bundled code)
-COPY --from=builder /app/.next/standalone ./
+# Copy standalone build - Next.js puts files in /app relative path
+COPY --from=builder /app/.next/standalone/. ./
 COPY --from=builder /app/.next/static ./.next/static
-
-# Copy public folder
 COPY --from=builder /app/public ./public
 
 USER nextjs
@@ -46,5 +44,5 @@ ENV HOSTNAME="0.0.0.0"
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
-# Use the standalone server.js (bundled by Next.js)
+# Use the standalone server.js
 CMD ["node", "server.js"]
