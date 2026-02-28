@@ -1,3 +1,13 @@
 node_modules/
 .env
 *.pem
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
