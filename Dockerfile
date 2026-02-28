@@ -30,9 +30,9 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-# Health check
+# Health check - use /api/health
 HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
   CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
-# Start using npm (handles the build output properly)
-CMD ["npm", "start"]
+# Use standalone server (required with output: standalone)
+CMD ["node", ".next/standalone/server.js"]
