@@ -4,9 +4,6 @@ FROM node:22-alpine AS base
 FROM base AS deps
 WORKDIR /app
 
-# Install wget for healthcheck
-RUN apk add --no-cache wget
-
 COPY package*.json ./
 RUN npm ci
 
@@ -31,13 +28,12 @@ RUN apk add --no-cache wget
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Copy standalone build
+# Copy standalone build (includes server.js and all bundled code)
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
 
-# Copy lib files (needed for server.js)
-COPY --from=builder /app/lib ./lib
+# Copy public folder
+COPY --from=builder /app/public ./public
 
 USER nextjs
 
@@ -50,4 +46,5 @@ ENV HOSTNAME="0.0.0.0"
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
+# Use the standalone server.js (bundled by Next.js)
 CMD ["node", "server.js"]
