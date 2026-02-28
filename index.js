@@ -1154,14 +1154,14 @@ app.get('/checks/:id', async (req, res) => {
     return res.status(404).send('Check not found');
   }
 
-  const statusColors = {
-    success: '#28a745',
-    failure: '#dc3545',
-    neutral: '#6c757d',
-    queued: '#ffc107',
-    in_progress: '#007bff',
+  const statusConfig = {
+    success: { bg: 'var(--green)', label: 'Success' },
+    failure: { bg: 'var(--red)', label: 'Failed' },
+    neutral: { bg: 'var(--text-muted)', label: 'Neutral' },
+    queued: { bg: 'var(--yellow)', label: 'Queued' },
+    in_progress: { bg: 'var(--purple)', label: 'In Progress' },
   };
-  const statusColor = statusColors[checkRun.conclusion] || statusColors[checkRun.status] || '#6c757d';
+  const status = statusConfig[checkRun.conclusion] || statusConfig[checkRun.status] || statusConfig.neutral;
 
   res.send(`
 <!DOCTYPE html>
@@ -1169,48 +1169,84 @@ app.get('/checks/:id', async (req, res) => {
 <head>
   <title>${checkRun.check_name} - jean-ci</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui; margin: 0; padding: 20px; background: #f5f5f5; }
-    .container { max-width: 900px; margin: 0 auto; }
-    .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    h1 { margin: 0 0 10px 0; font-size: 1.5rem; }
-    .meta { color: #666; font-size: 14px; margin-bottom: 20px; }
-    .meta a { color: #0066cc; }
-    .status { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: 600; color: white; background: ${statusColor}; }
-    h2 { font-size: 1.1rem; margin: 20px 0 10px; color: #333; }
-    .summary { background: #f8f9fa; padding: 15px; border-radius: 4px; white-space: pre-wrap; font-family: system-ui; line-height: 1.6; }
-    .prompt { background: #fff3cd; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 13px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; }
-    .diff { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre; overflow-x: auto; max-height: 400px; }
-    .diff .add { color: #4ec9b0; }
-    .diff .del { color: #f14c4c; }
-    .back { display: inline-block; margin-bottom: 15px; color: #0066cc; text-decoration: none; }
-    .back:hover { text-decoration: underline; }
+    :root {
+      --bg-primary: #fcf8f3;
+      --bg-secondary: #f6efe4;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f8f1e8;
+      --border: #e2d5c2;
+      --text-primary: #2f2115;
+      --text-secondary: #5c4632;
+      --text-muted: #745d47;
+      --accent: #b7642b;
+      --accent-hover: #9f5522;
+      --on-accent: #ffffff;
+      --green: #2f7d4f;
+      --red: #b8473a;
+      --yellow: #9a6f00;
+      --purple: #7350ba;
+    }
+    body { background: var(--bg-primary); color: var(--text-primary); }
   </style>
 </head>
-<body>
-  <div class="container">
-    <a href="javascript:history.back()" class="back">← Back</a>
+<body class="min-h-screen">
+  <div class="max-w-4xl mx-auto px-4 py-8">
+    <a href="javascript:history.back()" class="inline-block text-[var(--accent)] hover:text-[var(--accent-hover)] mb-6 transition-colors">
+      ← Back
+    </a>
     
-    <div class="card">
-      <h1>jean-ci / ${checkRun.check_name}</h1>
-      <div class="meta">
-        <span class="status">${checkRun.conclusion || checkRun.status}</span>
-        &nbsp;&nbsp;
-        <a href="https://github.com/${checkRun.repo}/pull/${checkRun.pr_number}" target="_blank">${checkRun.repo}#${checkRun.pr_number}</a>
-        &nbsp;·&nbsp;
-        ${checkRun.pr_title || 'PR'}
-        &nbsp;·&nbsp;
-        ${new Date(checkRun.created_at).toLocaleString()}
+    <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-sm">
+      <!-- Header -->
+      <div class="mb-6">
+        <h1 class="text-2xl font-bold mb-3">jean-ci / ${checkRun.check_name}</h1>
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+          <span class="inline-block px-3 py-1 rounded-full text-white font-medium" style="background: ${status.bg}">
+            ${status.label}
+          </span>
+          <span class="text-[var(--text-muted)]">·</span>
+          <a href="https://github.com/${checkRun.repo}/pull/${checkRun.pr_number}" target="_blank" class="text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors">
+            ${checkRun.repo}#${checkRun.pr_number}
+          </a>
+          <span class="text-[var(--text-muted)]">·</span>
+          <span class="text-[var(--text-secondary)]">${checkRun.pr_title || 'PR'}</span>
+          <span class="text-[var(--text-muted)]">·</span>
+          <span class="text-[var(--text-muted)]">${new Date(checkRun.created_at).toLocaleString()}</span>
+        </div>
       </div>
       
-      <h2>📝 Review Result</h2>
-      <div class="summary">${checkRun.summary || 'No summary available'}</div>
+      <!-- Review Result -->
+      <div class="mb-6">
+        <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+          <span>📝</span> Review Result
+        </h2>
+        <div class="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4 whitespace-pre-wrap leading-relaxed text-sm">
+${checkRun.summary || 'No summary available'}
+        </div>
+      </div>
       
-      <h2>🎯 Prompt Used</h2>
-      <div class="prompt">${checkRun.prompt || 'Default prompt'}</div>
+      <!-- Prompt Used -->
+      <div class="mb-6">
+        <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+          <span>🎯</span> Prompt Used
+        </h2>
+        <div class="bg-[var(--yellow)]/10 border border-[var(--yellow)]/20 rounded-xl p-4 font-mono text-xs whitespace-pre-wrap overflow-x-auto max-h-80">
+${checkRun.prompt || 'Default prompt'}
+        </div>
+      </div>
       
-      ${checkRun.diff_preview ? '<h2>📄 Diff Preview</h2><div class="diff">' + checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>' : ''}
+      ${checkRun.diff_preview ? `
+      <!-- Diff Preview -->
+      <div>
+        <h2 class="text-lg font-semibold mb-3 flex items-center gap-2">
+          <span>📄</span> Diff Preview
+        </h2>
+        <div class="bg-[#1e293b] border border-[var(--border)] rounded-xl p-4 font-mono text-xs whitespace-pre overflow-x-auto max-h-96 text-slate-200">
+${checkRun.diff_preview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+        </div>
+      </div>
+      ` : ''}
     </div>
   </div>
 </body>
@@ -1231,19 +1267,85 @@ app.get('/', (req, res) => {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>jean-ci</title>
+  <title>jean-ci - LLM-Powered CI</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body { font-family: system-ui; max-width: 600px; margin: 50px auto; padding: 20px; }
-    h1 { color: #333; }
-    a { color: #0066cc; }
-    .btn { display: inline-block; padding: 10px 20px; background: #333; color: white; text-decoration: none; border-radius: 5px; }
+    :root {
+      --bg-primary: #fcf8f3;
+      --bg-secondary: #f6efe4;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f8f1e8;
+      --border: #e2d5c2;
+      --text-primary: #2f2115;
+      --text-secondary: #5c4632;
+      --text-muted: #745d47;
+      --accent: #b7642b;
+      --accent-hover: #9f5522;
+      --on-accent: #ffffff;
+      --green: #2f7d4f;
+      --red: #b8473a;
+      --yellow: #9a6f00;
+      --purple: #7350ba;
+    }
+    body { background: var(--bg-primary); color: var(--text-primary); }
   </style>
 </head>
-<body>
-  <h1>🤖 jean-ci</h1>
-  <p>GitHub CI checks powered by LLM code review.</p>
-  <p><a href="/admin" class="btn">Admin Dashboard →</a></p>
+<body class="min-h-screen">
+  <!-- Hero Section -->
+  <div class="relative overflow-hidden py-24 px-4">
+    <div class="absolute inset-0 bg-gradient-to-b from-[#b7642b]/8 via-[#9f5522]/5 to-transparent"></div>
+    <div class="max-w-3xl mx-auto text-center relative">
+      <div class="inline-flex items-center gap-2 bg-[var(--bg-card)] border border-[var(--border)] rounded-full px-4 py-1.5 text-sm text-[var(--text-secondary)] mb-8 shadow-sm">
+        <span class="w-2 h-2 rounded-full bg-[var(--green)] animate-pulse"></span>
+        GitHub App powered by LLM code review
+      </div>
+      <h1 class="text-5xl md:text-6xl font-bold tracking-tight mb-6">
+        <span class="bg-gradient-to-r from-[#b7642b] to-[#9f5522] bg-clip-text text-transparent">jean-ci</span>
+      </h1>
+      <p class="text-xl text-[var(--text-secondary)] mb-10 max-w-xl mx-auto leading-relaxed">
+        Automated pull request reviews with intelligent code analysis. 
+        Catch issues early, maintain quality standards, and ship with confidence.
+      </p>
+      <a href="/admin" class="inline-block bg-[var(--accent)] text-[var(--on-accent)] px-8 py-3 rounded-full font-medium hover:bg-[var(--accent-hover)] transition-colors shadow-lg">
+        Admin Dashboard →
+      </a>
+    </div>
+  </div>
+
+  <!-- Features -->
+  <div class="py-16 px-4 border-t border-[var(--border)]">
+    <div class="max-w-5xl mx-auto">
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 hover:shadow-lg transition-shadow">
+          <div class="text-3xl mb-3">🔍</div>
+          <h3 class="font-semibold text-lg mb-2">Smart Reviews</h3>
+          <p class="text-sm text-[var(--text-secondary)] leading-relaxed">
+            LLM-powered code analysis catches security issues, bugs, and incomplete implementations automatically.
+          </p>
+        </div>
+        <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 hover:shadow-lg transition-shadow">
+          <div class="text-3xl mb-3">⚙️</div>
+          <h3 class="font-semibold text-lg mb-2">Customizable</h3>
+          <p class="text-sm text-[var(--text-secondary)] leading-relaxed">
+            Define your own review criteria globally or per-repo. Add custom checks via <code class="text-xs bg-[var(--bg-secondary)] px-1 py-0.5 rounded">.jean-ci/pr-checks/*.md</code>
+          </p>
+        </div>
+        <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 hover:shadow-lg transition-shadow">
+          <div class="text-3xl mb-3">🚀</div>
+          <h3 class="font-semibold text-lg mb-2">Auto-Deploy</h3>
+          <p class="text-sm text-[var(--text-secondary)] leading-relaxed">
+            Trigger Coolify deployments when packages are published. GitHub deployments integration with live status.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="py-8 px-4 text-center text-sm text-[var(--text-muted)] border-t border-[var(--border)] mt-16">
+    <p>jean-ci v0.12.0 · Part of the OpenClaw ecosystem</p>
+  </div>
 </body>
 </html>
   `);
@@ -1254,85 +1356,145 @@ app.get('/admin', (req, res) => {
 <!DOCTYPE html>
 <html>
 <head>
-  <title>jean-ci Admin</title>
+  <title>jean-ci Admin Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui; margin: 0; padding: 20px; background: #f5f5f5; }
-    .container { max-width: 900px; margin: 0 auto; }
-    .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    h1 { margin-top: 0; }
-    h2 { margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-    .login-prompt { text-align: center; padding: 40px; }
-    .btn { display: inline-block; padding: 10px 20px; background: #333; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; font-size: 14px; }
-    .btn:hover { background: #444; }
-    .btn-success { background: #28a745; }
-    .btn-primary { background: #007bff; }
-    textarea { width: 100%; height: 300px; font-family: monospace; font-size: 13px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; }
-    th { background: #f9f9f9; }
-    .toggle { cursor: pointer; }
-    .toggle.on { color: #28a745; }
-    .toggle.off { color: #dc3545; }
-    .user-info { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-    .user-info img { width: 40px; height: 40px; border-radius: 50%; }
-    .event-type { display: inline-block; padding: 2px 8px; background: #e9ecef; border-radius: 3px; font-size: 12px; }
-    .hidden { display: none; }
-    #loading { text-align: center; padding: 40px; color: #666; }
-    .header-row { display: flex; justify-content: space-between; align-items: center; }
-    .sync-status { font-size: 12px; color: #666; margin-left: 10px; }
+    :root {
+      --bg-primary: #fcf8f3;
+      --bg-secondary: #f6efe4;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f8f1e8;
+      --border: #e2d5c2;
+      --text-primary: #2f2115;
+      --text-secondary: #5c4632;
+      --text-muted: #745d47;
+      --accent: #b7642b;
+      --accent-hover: #9f5522;
+      --on-accent: #ffffff;
+      --green: #2f7d4f;
+      --red: #b8473a;
+      --yellow: #9a6f00;
+      --purple: #7350ba;
+    }
+    body { background: var(--bg-primary); color: var(--text-primary); }
   </style>
 </head>
-<body>
-  <div class="container">
-    <div id="loading">Loading...</div>
-    
-    <div id="login-section" class="card login-prompt hidden">
-      <h1>🤖 jean-ci Admin</h1>
-      <p>Sign in with GitHub to manage PR reviews.</p>
-      <a href="/auth/github" class="btn">Sign in with GitHub</a>
+<body class="min-h-screen">
+  <div class="max-w-6xl mx-auto px-4 py-8">
+    <!-- Loading State -->
+    <div id="loading" class="text-center py-20 text-[var(--text-muted)]">
+      <div class="inline-block w-8 h-8 border-4 border-[var(--accent)] border-t-transparent rounded-full animate-spin mb-4"></div>
+      <p>Loading...</p>
     </div>
     
-    <div id="admin-section" class="hidden">
-      <div class="user-info">
-        <img id="user-avatar" src="" alt="avatar">
-        <div>
-          <strong id="user-name"></strong>
-          <a href="/auth/logout" style="margin-left: 10px; font-size: 12px;">Logout</a>
+    <!-- Login Section -->
+    <div id="login-section" class="hidden">
+      <div class="max-w-md mx-auto">
+        <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-8 text-center shadow-lg">
+          <h1 class="text-3xl font-bold mb-4">
+            <span class="bg-gradient-to-r from-[#b7642b] to-[#9f5522] bg-clip-text text-transparent">jean-ci Admin</span>
+          </h1>
+          <p class="text-[var(--text-secondary)] mb-6">Sign in with GitHub to manage PR reviews and deployments.</p>
+          <a href="/auth/github" class="inline-block bg-[var(--accent)] text-[var(--on-accent)] px-8 py-3 rounded-full font-medium hover:bg-[var(--accent-hover)] transition-colors">
+            Sign in with GitHub
+          </a>
         </div>
       </div>
-      
-      <div class="card">
-        <h2>📝 Global Review Prompt</h2>
-        <p style="color: #666; font-size: 14px;">This prompt determines how PRs are reviewed. Use <code>VERDICT: PASS</code> or <code>VERDICT: FAIL</code> format.</p>
-        <textarea id="user-prompt"></textarea>
-        <br><br>
-        <button class="btn btn-success" onclick="savePrompt()">Save Prompt</button>
-        <span id="save-status" style="margin-left: 10px; color: #28a745;"></span>
-      </div>
-      
-      <div class="card">
-        <div class="header-row">
-          <h2 style="margin: 0; border: none; padding: 0;">📦 Repositories</h2>
+    </div>
+    
+    <!-- Admin Section -->
+    <div id="admin-section" class="hidden">
+      <!-- Header -->
+      <div class="flex items-center justify-between mb-8 pb-6 border-b border-[var(--border)]">
+        <div class="flex items-center gap-3">
+          <img id="user-avatar" src="" alt="avatar" class="w-12 h-12 rounded-full border-2 border-[var(--border)]">
           <div>
-            <button class="btn btn-primary" onclick="syncRepos()">🔄 Sync from GitHub</button>
-            <span id="sync-status" class="sync-status"></span>
+            <div class="font-semibold" id="user-name"></div>
+            <a href="/auth/logout" class="text-sm text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors">Logout</a>
           </div>
         </div>
-        <p style="color: #666; font-size: 14px; margin-top: 15px;">Enable PR reviews per repository. Add custom checks via <code>.jean-ci/pr-checks/*.md</code></p>
-        <table>
-          <thead><tr><th>Repository</th><th>PR Reviews</th></tr></thead>
-          <tbody id="repos-list"></tbody>
-        </table>
+        <a href="/" class="text-sm text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors">← Back to Home</a>
       </div>
       
-      <div class="card">
-        <h2>📋 Recent Events</h2>
-        <table>
-          <thead><tr><th>Time</th><th>Event</th><th>Repository</th><th>Action</th></tr></thead>
-          <tbody id="events-list"></tbody>
-        </table>
+      <!-- PR Review Prompt Card -->
+      <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 mb-6 shadow-sm">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="text-2xl">📝</span>
+          <h2 class="text-xl font-bold">Global Review Prompt</h2>
+        </div>
+        <p class="text-sm text-[var(--text-secondary)] mb-4">
+          This prompt determines how PRs are reviewed. Use <code class="text-xs bg-[var(--bg-secondary)] px-2 py-1 rounded border border-[var(--border)]">VERDICT: PASS</code> or <code class="text-xs bg-[var(--bg-secondary)] px-2 py-1 rounded border border-[var(--border)]">VERDICT: FAIL</code> format.
+        </p>
+        <textarea 
+          id="user-prompt" 
+          class="w-full h-64 font-mono text-sm p-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/20 focus:border-[var(--accent)]"
+        ></textarea>
+        <div class="flex items-center gap-3 mt-4">
+          <button 
+            onclick="savePrompt()" 
+            class="bg-[var(--green)] text-white px-6 py-2 rounded-full font-medium hover:opacity-90 transition-opacity"
+          >
+            Save Prompt
+          </button>
+          <span id="save-status" class="text-sm text-[var(--green)] font-medium"></span>
+        </div>
+      </div>
+      
+      <!-- Repositories Card -->
+      <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 mb-6 shadow-sm">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <span class="text-2xl">📦</span>
+            <h2 class="text-xl font-bold">Repositories</h2>
+          </div>
+          <div class="flex items-center gap-3">
+            <span id="sync-status" class="text-sm text-[var(--text-muted)]"></span>
+            <button 
+              onclick="syncRepos()" 
+              class="bg-[var(--accent)] text-[var(--on-accent)] px-4 py-2 rounded-full text-sm font-medium hover:bg-[var(--accent-hover)] transition-colors"
+            >
+              🔄 Sync from GitHub
+            </button>
+          </div>
+        </div>
+        <p class="text-sm text-[var(--text-secondary)] mb-4">
+          Enable PR reviews per repository. Add custom checks via <code class="text-xs bg-[var(--bg-secondary)] px-2 py-1 rounded border border-[var(--border)]">.jean-ci/pr-checks/*.md</code>
+        </p>
+        <div class="overflow-x-auto -mx-6 px-6">
+          <table class="w-full">
+            <thead>
+              <tr class="border-b border-[var(--border)]">
+                <th class="text-left py-3 pr-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
+                <th class="text-left py-3 text-sm font-semibold text-[var(--text-secondary)]">PR Reviews</th>
+              </tr>
+            </thead>
+            <tbody id="repos-list" class="text-sm">
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      <!-- Recent Events Card -->
+      <div class="bg-[var(--bg-card)] border border-[var(--border)] rounded-2xl p-6 shadow-sm">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="text-2xl">📋</span>
+          <h2 class="text-xl font-bold">Recent Events</h2>
+        </div>
+        <div class="overflow-x-auto -mx-6 px-6">
+          <table class="w-full">
+            <thead>
+              <tr class="border-b border-[var(--border)]">
+                <th class="text-left py-3 pr-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
+                <th class="text-left py-3 pr-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
+                <th class="text-left py-3 pr-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
+                <th class="text-left py-3 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
+              </tr>
+            </thead>
+            <tbody id="events-list" class="text-sm">
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -1370,7 +1532,7 @@ app.get('/admin', (req, res) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_prompt: document.getElementById('user-prompt').value }),
       });
-      document.getElementById('save-status').textContent = 'Saved!';
+      document.getElementById('save-status').textContent = '✓ Saved!';
       setTimeout(() => document.getElementById('save-status').textContent = '', 2000);
     }
     
@@ -1379,22 +1541,38 @@ app.get('/admin', (req, res) => {
       const repos = await res.json();
       
       document.getElementById('repos-list').innerHTML = repos.length === 0 
-        ? '<tr><td colspan="2" style="color: #666;">No repositories yet. Click "Sync from GitHub" to load them.</td></tr>'
-        : repos.map(r => '<tr><td><a href="https://github.com/' + r.full_name + '" target="_blank">' + r.full_name + '</a></td><td><span class="toggle ' + (r.pr_review_enabled ? 'on' : 'off') + '" onclick="toggleRepo(\\''+r.full_name+'\\', '+ !r.pr_review_enabled+')">' + (r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled') + '</span></td></tr>').join('');
+        ? '<tr><td colspan="2" class="py-8 text-center text-[var(--text-muted)]">No repositories yet. Click "Sync from GitHub" to load them.</td></tr>'
+        : repos.map(r => \`
+            <tr class="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+              <td class="py-3 pr-4">
+                <a href="https://github.com/\${r.full_name}" target="_blank" class="text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors">
+                  \${r.full_name}
+                </a>
+              </td>
+              <td class="py-3">
+                <button 
+                  onclick="toggleRepo('\${r.full_name}', \${!r.pr_review_enabled})" 
+                  class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all \${r.pr_review_enabled ? 'bg-[var(--green)]/10 text-[var(--green)] border border-[var(--green)]/20 hover:bg-[var(--green)]/20' : 'bg-[var(--red)]/10 text-[var(--red)] border border-[var(--red)]/20 hover:bg-[var(--red)]/20'}"
+                >
+                  \${r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled'}
+                </button>
+              </td>
+            </tr>
+          \`).join('');
     }
     
     async function syncRepos() {
       document.getElementById('sync-status').textContent = 'Syncing...';
       const res = await fetch('/api/repos/sync', { method: 'POST' });
       const data = await res.json();
-      document.getElementById('sync-status').textContent = 'Synced ' + data.count + ' repos!';
+      document.getElementById('sync-status').textContent = \`✓ Synced \${data.count} repos!\`;
       setTimeout(() => document.getElementById('sync-status').textContent = '', 3000);
       loadRepos();
     }
     
     async function toggleRepo(fullName, enabled) {
       const [owner, repo] = fullName.split('/');
-      await fetch('/api/repos/' + owner + '/' + repo, {
+      await fetch(\`/api/repos/\${owner}/\${repo}\`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pr_review_enabled: enabled }),
@@ -1407,8 +1585,19 @@ app.get('/admin', (req, res) => {
       const events = await res.json();
       
       document.getElementById('events-list').innerHTML = events.length === 0
-        ? '<tr><td colspan="4" style="color: #666;">No events yet.</td></tr>'
-        : events.map(e => '<tr><td>' + new Date(e.created_at).toLocaleString() + '</td><td><span class="event-type">' + e.event_type + '</span></td><td>' + (e.repo || '-') + '</td><td>' + (e.action || '-') + '</td></tr>').join('');
+        ? '<tr><td colspan="4" class="py-8 text-center text-[var(--text-muted)]">No events yet.</td></tr>'
+        : events.map(e => \`
+            <tr class="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+              <td class="py-3 pr-4 text-[var(--text-muted)]">\${new Date(e.created_at).toLocaleString()}</td>
+              <td class="py-3 pr-4">
+                <span class="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
+                  \${e.event_type}
+                </span>
+              </td>
+              <td class="py-3 pr-4 text-[var(--text-secondary)]">\${e.repo || '-'}</td>
+              <td class="py-3 text-[var(--text-secondary)]">\${e.action || '-'}</td>
+            </tr>
+          \`).join('');
     }
     
     init();
