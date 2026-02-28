@@ -10,7 +10,7 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-24.04-arm  # Native ARM64 runner
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -27,8 +27,9 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest .
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+                       -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA .
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-      
-      # Deployment is triggered automatically via jean-ci
-      # when registry_package:published webhook is received
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA
+          echo "Pushed: sha-$SHORT_SHA"
