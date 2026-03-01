@@ -561,6 +561,12 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
     let url: string | undefined;
 
     if (row.event_type === 'workflow_run') {
+      // Only include build/deploy workflows, not tests or other CI jobs
+      const workflowName = (payload?.workflow_run?.name || payload?.workflow?.name || '').toLowerCase();
+      if (!workflowName.includes('build') && !workflowName.includes('deploy') && !workflowName.includes('release')) {
+        continue; // Skip non-build workflows like E2E tests
+      }
+      
       sha = payload?.workflow_run?.head_sha;
       message = payload?.workflow_run?.head_commit?.message?.split('\n')[0];
       author = payload?.workflow_run?.head_commit?.author?.name || payload?.sender?.login;
@@ -712,6 +718,12 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
     let url: string | undefined;
 
     if (row.event_type === 'workflow_run') {
+      // Only include build/deploy workflows, not tests or other CI jobs
+      const workflowName = (payload?.workflow_run?.name || payload?.workflow?.name || '').toLowerCase();
+      if (!workflowName.includes('build') && !workflowName.includes('deploy') && !workflowName.includes('release')) {
+        continue;
+      }
+      
       sha = payload?.workflow_run?.head_sha;
       message = payload?.workflow_run?.head_commit?.message?.split('\n')[0];
       author = payload?.workflow_run?.head_commit?.author?.name || payload?.sender?.login;
