@@ -635,3 +635,90 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
   
   return { items, total, page, limit, totalPages };
 }
+
+export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit = 20): Promise<PaginatedResult<Pipeline>> {
+  // Get deployment-related events for this repo
+  const result = await pool.query(
+    `SELECT id, event_type, repo, action, payload, created_at 
+     FROM jean_ci_webhook_events 
+     WHERE repo = $1
+     AND event_type IN ('workflow_run', 'registry_package', 'coolify_deployment_success', 'coolify_deployment_failed', 'coolify_deployment_started')
+     ORDER BY created_at DESC
+     LIMIT 200`,
+    [repo]
+  );
+
+  // Group by commit SHA
+  const pipelineMap = new Map<string, Pipeline>();
+
+  for (const row of result.rows) {
+    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    
+    let sha: string | undefined;
+    let message: string | undefined;
+    let author: string | undefined;
+    let url: string | undefined;
+
+    if (row.event_type === 'workflow_run') {
+      sha = payload?.workflow_run?.head_sha;
+      message = payload?.workflow_run?.head_commit?.message?.split('\n')[0];
+      author = payload?.workflow_run?.head_commit?.author?.name || payload?.sender?.login;
+      url = payload?.workflow_run?.html_url;
+    } else if (row.event_type === 'registry_package') {
+      sha = payload?.registry_package?.package_version?.target_oid;
+      url = payload?.registry_package?.package_version?.html_url;
+    } else if (row.event_type?.startsWith('coolify_')) {
+      sha = payload?._source_sha;
+      url = payload?.deployment_url;
+    }
+
+    if (!sha) continue;
+
+    const shortSha = sha.substring(0, 7);
+    const key = sha;
+
+    if (!pipelineMap.has(key)) {
+      pipelineMap.set(key, {
+        sha,
+        shortSha,
+        repo,
+        message,
+        author,
+        build: { status: 'pending' },
+        package: { status: 'pending' },
+        deploy: { status: 'pending' },
+        createdAt: row.created_at,
+      });
+    }
+
+    const pipeline = pipelineMap.get(key)!;
+    if (message && !pipeline.message) pipeline.message = message;
+    if (author && !pipeline.author) pipeline.author = author;
+
+    if (row.event_type === 'workflow_run') {
+      const conclusion = payload?.workflow_run?.conclusion;
+      const status = payload?.workflow_run?.status;
+      pipeline.build = {
+        status: conclusion === 'success' ? 'success' : conclusion === 'failure' ? 'failure' : status === 'in_progress' ? 'running' : 'pending',
+        timestamp: row.created_at,
+        url,
+      };
+    } else if (row.event_type === 'registry_package') {
+      pipeline.package = { status: 'success', timestamp: row.created_at, url };
+    } else if (row.event_type === 'coolify_deployment_success') {
+      pipeline.deploy = { status: 'success', timestamp: row.created_at, url };
+    } else if (row.event_type === 'coolify_deployment_failed') {
+      pipeline.deploy = { status: 'failure', timestamp: row.created_at, url };
+    }
+  }
+
+  const allPipelines = Array.from(pipelineMap.values())
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  
+  const total = allPipelines.length;
+  const totalPages = Math.ceil(total / limit);
+  const offset = (page - 1) * limit;
+  const items = allPipelines.slice(offset, offset + limit);
+  
+  return { items, total, page, limit, totalPages };
+}
