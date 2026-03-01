@@ -64,9 +64,9 @@ function StageCell({ stage, label }: { stage: PipelineStage; label: string }) {
       case 'running':
         return <span className="text-yellow-500 animate-pulse">⏳</span>;
       case 'pending':
-        return <span className="text-[var(--text-muted)]">○</span>;
+        return <span className="text-[var(--text-muted)]">⚪</span>;
       case 'skipped':
-        return <span className="text-[var(--text-muted)]">⊘</span>;
+        return <span className="text-[var(--text-muted)]">➖</span>;
     }
   };
 
@@ -204,7 +204,8 @@ export default function DeploymentsPage() {
         <span className="flex items-center gap-1"><span className="text-[var(--green)]">✅</span> Success</span>
         <span className="flex items-center gap-1"><span className="text-[var(--red)]">❌</span> Failed</span>
         <span className="flex items-center gap-1"><span className="text-yellow-500">⏳</span> Running</span>
-        <span className="flex items-center gap-1"><span>○</span> Pending</span>
+        <span className="flex items-center gap-1"><span>⚪</span> Pending</span>
+        <span className="flex items-center gap-1"><span>➖</span> Skipped</span>
       </div>
     </div>
   );
