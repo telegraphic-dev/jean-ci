@@ -87,13 +87,13 @@ export default function EventsPage() {
         </div>
       </div>
 
-      {/* Filter by event type */}
+      {/* Filter by event type (counts are for current page only) */}
       <div className="flex flex-wrap gap-2 mb-6">
         <button
           onClick={() => setFilter('')}
           className={`px-3 py-1.5 rounded-lg text-sm ${!filter ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
         >
-          All ({events.length})
+          All
         </button>
         {eventTypes.map(type => (
           <button
@@ -101,8 +101,7 @@ export default function EventsPage() {
             onClick={() => setFilter(type)}
             className={`px-3 py-1.5 rounded-lg text-sm ${filter === type ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
           >
-            {type} ({events.filter(e => e.event_type === type).length})
-          </button>
+            {type}
         ))}
       </div>
 
