@@ -203,6 +203,7 @@ export async function handleRegistryPackage(payload: any) {
     headSha,
     deploymentId: ghDeployment?.id,
     checkRunId: checkRun?.id,
+    coolifyDeploymentUuid: result.deploymentUuid,
     logsUrl, appUrl,
     installationId: repoConfig.installation_id,
   });

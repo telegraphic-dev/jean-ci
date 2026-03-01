@@ -102,6 +102,7 @@ export interface PendingDeploymentInput {
   headSha?: string;
   deploymentId?: number;
   checkRunId?: number;
+  coolifyDeploymentUuid?: string;
   logsUrl: string;
   appUrl: string;
   installationId: number;
@@ -116,11 +117,12 @@ export async function registerPendingDeployment(appUuid: string, deployment: Pen
     head_sha: deployment.headSha,
     deployment_id: deployment.deploymentId,
     check_run_id: deployment.checkRunId,
+    coolify_deployment_uuid: deployment.coolifyDeploymentUuid,
     logs_url: deployment.logsUrl,
     app_url: deployment.appUrl,
     installation_id: deployment.installationId,
   });
-  console.log(`[Coolify] Registered pending deployment for ${appUuid} (${deployment.owner}/${deployment.repo}@${deployment.headSha?.substring(0, 7) || 'unknown'})`);
+  console.log(`[Coolify] Registered pending deployment for ${appUuid} (${deployment.owner}/${deployment.repo}@${deployment.headSha?.substring(0, 7) || 'unknown'}, deploy: ${deployment.coolifyDeploymentUuid || 'unknown'})`);
 }
 
 // Get pending deployment from database
