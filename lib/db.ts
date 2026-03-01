@@ -538,11 +538,21 @@ export interface Pipeline {
 
 export async function getDeploymentPipelines(page = 1, limit = 20): Promise<PaginatedResult<Pipeline>> {
   // Get recent deployment-related events
-  // We fetch more events and group them, then paginate the result
+  // Filter workflow_run to only build/deploy workflows in SQL for proper pagination
   const result = await pool.query(
     `SELECT id, event_type, repo, action, payload, created_at 
      FROM jean_ci_webhook_events 
-     WHERE event_type IN ('workflow_run', 'registry_package', 'coolify_deployment_success', 'coolify_deployment_failed', 'coolify_deployment_started')
+     WHERE (
+       event_type IN ('registry_package', 'coolify_deployment_success', 'coolify_deployment_failed', 'coolify_deployment_started')
+       OR (
+         event_type = 'workflow_run' 
+         AND (
+           LOWER(payload->'workflow_run'->>'name') LIKE '%build%'
+           OR LOWER(payload->'workflow_run'->>'name') LIKE '%deploy%'
+           OR LOWER(payload->'workflow_run'->>'name') LIKE '%release%'
+         )
+       )
+     )
      ORDER BY created_at DESC
      LIMIT 500` // Fetch enough to build pipeline history
   );
@@ -561,6 +571,7 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
     let url: string | undefined;
 
     if (row.event_type === 'workflow_run') {
+      // Build/deploy filter already applied in SQL query
       sha = payload?.workflow_run?.head_sha;
       message = payload?.workflow_run?.head_commit?.message?.split('\n')[0];
       author = payload?.workflow_run?.head_commit?.author?.name || payload?.sender?.login;
@@ -690,11 +701,22 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
 
 export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit = 20): Promise<PaginatedResult<Pipeline>> {
   // Get deployment-related events for this repo
+  // Filter workflow_run to only build/deploy workflows in SQL
   const result = await pool.query(
     `SELECT id, event_type, repo, action, payload, created_at 
      FROM jean_ci_webhook_events 
      WHERE repo = $1
-     AND event_type IN ('workflow_run', 'registry_package', 'coolify_deployment_success', 'coolify_deployment_failed', 'coolify_deployment_started')
+     AND (
+       event_type IN ('registry_package', 'coolify_deployment_success', 'coolify_deployment_failed', 'coolify_deployment_started')
+       OR (
+         event_type = 'workflow_run' 
+         AND (
+           LOWER(payload->'workflow_run'->>'name') LIKE '%build%'
+           OR LOWER(payload->'workflow_run'->>'name') LIKE '%deploy%'
+           OR LOWER(payload->'workflow_run'->>'name') LIKE '%release%'
+         )
+       )
+     )
      ORDER BY created_at DESC
      LIMIT 200`,
     [repo]
@@ -712,6 +734,7 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
     let url: string | undefined;
 
     if (row.event_type === 'workflow_run') {
+      // Build/deploy filter already applied in SQL query
       sha = payload?.workflow_run?.head_sha;
       message = payload?.workflow_run?.head_commit?.message?.split('\n')[0];
       author = payload?.workflow_run?.head_commit?.author?.name || payload?.sender?.login;
