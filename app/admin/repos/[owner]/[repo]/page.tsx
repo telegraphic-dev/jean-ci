@@ -11,31 +11,47 @@ interface Repo {
   pr_review_enabled: boolean;
 }
 
-interface Event {
+interface CheckRun {
+  id: number;
+  github_check_id?: number;
+  repo: string;
+  pr_number: number;
+  check_name: string;
+  status: string;
+  conclusion?: string;
+  title?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+interface Deployment {
   id: number;
   event_type: string;
   action?: string;
-  pr_number?: number;
+  payload?: any;
   created_at: string;
 }
 
-type Tab = 'events' | 'deployments' | 'reviews';
+type Tab = 'checks' | 'deployments';
 
 export default function RepoDetailPage() {
   const params = useParams();
   const fullName = `${params.owner}/${params.repo}`;
   const [repo, setRepo] = useState<Repo | null>(null);
-  const [events, setEvents] = useState<Event[]>([]);
+  const [checks, setChecks] = useState<CheckRun[]>([]);
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>('events');
+  const [activeTab, setActiveTab] = useState<Tab>('checks');
 
   useEffect(() => {
     Promise.all([
       fetch(`/api/repos/${fullName}`).then(r => r.json()),
-      fetch(`/api/events?repo=${fullName}`).then(r => r.json()),
-    ]).then(([repoData, eventsData]) => {
-      setRepo(repoData);
-      setEvents(eventsData);
+      fetch(`/api/repos/${fullName}/checks`).then(r => r.json()),
+      fetch(`/api/repos/${fullName}/deployments`).then(r => r.json()),
+    ]).then(([repoData, checksData, deploymentsData]) => {
+      setRepo(repoData.error ? null : repoData);
+      setChecks(Array.isArray(checksData) ? checksData : []);
+      setDeployments(Array.isArray(deploymentsData) ? deploymentsData : []);
       setLoading(false);
     });
   }, [fullName]);
@@ -64,18 +80,24 @@ export default function RepoDetailPage() {
     );
   }
 
-  const deploymentEvents = events.filter(e => e.event_type === 'deployment_status' || e.event_type === 'registry_package');
-  const reviewEvents = events.filter(e => e.event_type === 'pull_request' || e.event_type === 'check_run');
-
   const tabs: { id: Tab; label: string; count: number }[] = [
-    { id: 'events', label: 'All Events', count: events.length },
-    { id: 'deployments', label: 'Deployments', count: deploymentEvents.length },
-    { id: 'reviews', label: 'PR Reviews', count: reviewEvents.length },
+    { id: 'checks', label: 'PR Reviews', count: checks.length },
+    { id: 'deployments', label: 'Deployments', count: deployments.length },
   ];
 
-  const displayEvents = activeTab === 'deployments' ? deploymentEvents 
-    : activeTab === 'reviews' ? reviewEvents 
-    : events;
+  const getStatusBadge = (status: string, conclusion?: string) => {
+    if (status === 'completed') {
+      if (conclusion === 'success') {
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--green)]/10 text-[var(--green)]">✅ Passed</span>;
+      } else if (conclusion === 'failure') {
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--red)]/10 text-[var(--red)]">❌ Failed</span>;
+      } else if (conclusion === 'skipped') {
+        return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--text-muted)]/10 text-[var(--text-muted)]">⏭️ Skipped</span>;
+      }
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-[var(--text-secondary)]/10">{conclusion || 'Done'}</span>;
+    }
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-yellow-500/10 text-yellow-600">⏳ {status}</span>;
+  };
 
   return (
     <div>
@@ -128,50 +150,133 @@ export default function RepoDetailPage() {
         ))}
       </div>
 
-      {/* Events table */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
-            </tr>
-          </thead>
-          <tbody className="text-sm">
-            {displayEvents.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
+      {/* PR Reviews Tab */}
+      {activeTab === 'checks' && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Check</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
               </tr>
-            ) : (
-              displayEvents.slice(0, 50).map(e => (
-                <tr key={e.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                  <td className="py-3 px-4 text-[var(--text-muted)]">{new Date(e.created_at).toLocaleString()}</td>
-                  <td className="py-3 px-4">
-                    <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                      {e.event_type}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-[var(--text-secondary)]">{e.action || '-'}</td>
-                  <td className="py-3 px-4 text-[var(--text-secondary)]">
-                    {e.pr_number && (
+            </thead>
+            <tbody className="text-sm">
+              {checks.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No PR reviews yet.</td>
+                </tr>
+              ) : (
+                checks.map(c => (
+                  <tr key={c.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                    <td className="py-3 px-4">
                       <a 
-                        href={`https://github.com/${fullName}/pull/${e.pr_number}`}
+                        href={`https://github.com/${fullName}/pull/${c.pr_number}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[var(--accent)] hover:underline"
+                        className="text-[var(--accent)] hover:underline font-medium"
                       >
-                        PR #{e.pr_number}
+                        #{c.pr_number}
                       </a>
-                    )}
-                  </td>
+                    </td>
+                    <td className="py-3 px-4">
+                      <Link href={`/checks/${c.id}`} className="text-[var(--accent)] hover:underline">
+                        {c.check_name || 'jean-ci'}
+                      </Link>
+                      {c.github_check_id && (
+                        <a 
+                          href={`https://github.com/${fullName}/runs/${c.github_check_id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ml-2 text-xs text-[var(--text-muted)] hover:text-[var(--accent)]"
+                        >
+                          (GitHub →)
+                        </a>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      {getStatusBadge(c.status, c.conclusion)}
+                    </td>
+                    <td className="py-3 px-4 text-[var(--text-secondary)] max-w-xs truncate">
+                      {c.title || '-'}
+                    </td>
+                    <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
+                      {new Date(c.created_at).toLocaleString()}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Deployments Tab */}
+      {activeTab === 'deployments' && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Type</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {deployments.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No deployments yet.</td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                deployments.map(d => {
+                  const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
+                  const deploymentUrl = payload?.deployment?.url || payload?.check_run?.html_url;
+                  const status = d.action || payload?.deployment_status?.state || 'unknown';
+                  
+                  return (
+                    <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                      <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
+                        {new Date(d.created_at).toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
+                          {d.event_type}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        {status === 'success' ? (
+                          <span className="text-[var(--green)]">✅ Success</span>
+                        ) : status === 'failure' || status === 'error' ? (
+                          <span className="text-[var(--red)]">❌ Failed</span>
+                        ) : status === 'pending' || status === 'in_progress' ? (
+                          <span className="text-yellow-600">⏳ {status}</span>
+                        ) : (
+                          <span className="text-[var(--text-secondary)]">{status}</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        {deploymentUrl && (
+                          <a 
+                            href={deploymentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[var(--accent)] hover:underline"
+                          >
+                            View on GitHub →
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
