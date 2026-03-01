@@ -286,8 +286,6 @@ export async function cleanupOldEvents(): Promise<number> {
 }
 
 export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<CheckRun[]> {
-
-export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<CheckRun[]> {
   const result = await pool.query(
     'SELECT * FROM check_runs WHERE repo = $1 ORDER BY created_at DESC LIMIT $2',
     [repo, limit]
