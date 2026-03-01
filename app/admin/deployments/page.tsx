@@ -9,20 +9,54 @@ interface Deployment {
   repo: string;
   action?: string;
   payload?: any;
+  source?: string;
   created_at: string;
 }
 
+interface PaginatedResult {
+  items: Deployment[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 mt-4">
+      <button
+        onClick={() => onPageChange(page - 1)}
+        disabled={page <= 1}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        ← Prev
+      </button>
+      <span className="text-sm text-[var(--text-secondary)]">
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={() => onPageChange(page + 1)}
+        disabled={page >= totalPages}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        Next →
+      </button>
+    </div>
+  );
+}
+
 export default function DeploymentsPage() {
-  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [loading, setLoading] = useState(true);
 
+  const fetchPage = async (page: number) => {
+    const result = await fetch(`/api/deployments?page=${page}`).then(r => r.json());
+    setData(result.items ? result : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  };
+
   useEffect(() => {
-    fetch('/api/deployments')
-      .then(r => r.json())
-      .then(data => {
-        setDeployments(Array.isArray(data) ? data : []);
-        setLoading(false);
-      });
+    fetchPage(1).then(() => setLoading(false));
   }, []);
 
   if (loading) {
@@ -31,7 +65,7 @@ export default function DeploymentsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">All Deployments</h1>
+      <h1 className="text-2xl font-bold mb-6">All Deployments ({data.total})</h1>
       
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
         <table className="w-full">
@@ -45,60 +79,38 @@ export default function DeploymentsPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {deployments.length === 0 ? (
+            {data.items.length === 0 ? (
               <tr>
                 <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No deployments yet.</td>
               </tr>
             ) : (
-              deployments.map(d => {
+              data.items.map((d, idx) => {
                 const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
                 
-                // Extract URLs based on event type
                 let githubUrl: string | undefined;
                 let coolifyUrl: string | undefined;
                 
-                // For workflow_run events - link to GitHub Actions
                 if (payload?.workflow_run?.html_url) {
                   githubUrl = payload.workflow_run.html_url;
                 } else if (payload?.workflow_run?.id && d.repo) {
                   githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.workflow_run.id}`;
                 }
                 
-                // For deployment_status events - link to workflow run via deployment
-                if (d.event_type === 'deployment_status' && payload?.deployment?.payload?.workflow_run_id && d.repo) {
-                  githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.deployment.payload.workflow_run_id}`;
-                } else if (d.event_type === 'deployment_status' && payload?.workflow?.id && d.repo) {
-                  githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.workflow.id}`;
-                }
-                
-                // For registry_package events
-                if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
-                  githubUrl = payload.registry_package.html_url;
-                }
-                
-                // Coolify deployment URL
                 if (d.event_type?.startsWith('coolify_') && payload?.deployment_url) {
                   coolifyUrl = payload.deployment_url;
-                } else if (payload?.deployment?.payload?.coolify_url) {
-                  coolifyUrl = payload.deployment.payload.coolify_url;
                 }
                 
-                // Determine status
                 let status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
                 if (d.event_type === 'coolify_deployment_success') status = 'success';
                 if (d.event_type === 'coolify_deployment_failed') status = 'failure';
                 
-                // Determine display name
-                let workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
-                                   payload?.deployment?.environment || d.event_type;
-                if (d.event_type?.startsWith('coolify_')) {
-                  workflowName = payload?.application_name || 'Coolify';
-                }
+                const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
+                                    payload?.deployment?.environment || payload?.application_name || d.event_type;
                 
                 return (
-                  <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                  <tr key={d.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                     <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                      {new Date(d.created_at).toLocaleString()}
+                      {d.created_at ? new Date(d.created_at).toLocaleString() : '-'}
                     </td>
                     <td className="py-3 px-4">
                       {d.repo ? (
@@ -127,28 +139,16 @@ export default function DeploymentsPage() {
                     </td>
                     <td className="py-3 px-4 flex gap-2">
                       {githubUrl && (
-                        <a 
-                          href={githubUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[var(--accent)] hover:underline"
-                        >
+                        <a href={githubUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
                           GitHub →
                         </a>
                       )}
                       {coolifyUrl && (
-                        <a 
-                          href={coolifyUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[var(--accent)] hover:underline"
-                        >
+                        <a href={coolifyUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
                           Coolify →
                         </a>
                       )}
-                      {!githubUrl && !coolifyUrl && (
-                        <span className="text-[var(--text-muted)]">-</span>
-                      )}
+                      {!githubUrl && !coolifyUrl && <span className="text-[var(--text-muted)]">-</span>}
                     </td>
                   </tr>
                 );
@@ -157,6 +157,7 @@ export default function DeploymentsPage() {
           </tbody>
         </table>
       </div>
+      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={fetchPage} />
     </div>
   );
 }

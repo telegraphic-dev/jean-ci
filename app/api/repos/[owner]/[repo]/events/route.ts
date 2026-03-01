@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getEventsByRepo } from '@/lib/db';
+import { getEventsByRepoPaginated } from '@/lib/db';
 
 type Params = { params: Promise<{ owner: string; repo: string }> };
 
@@ -13,6 +13,10 @@ export async function GET(req: NextRequest, { params }: Params) {
   const { owner, repo } = await params;
   const fullName = `${owner}/${repo}`;
   
-  const events = await getEventsByRepo(fullName);
-  return NextResponse.json(events);
+  const url = new URL(req.url);
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  
+  const result = await getEventsByRepoPaginated(fullName, page, limit);
+  return NextResponse.json(result);
 }

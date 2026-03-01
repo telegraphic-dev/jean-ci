@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getDeploymentsByRepoPaginated } from '@/lib/db';
+import { getCheckRunsByRepoCount, getDeploymentsByRepoCount, getEventsByRepoCount } from '@/lib/db';
 
 type Params = { params: Promise<{ owner: string; repo: string }> };
 
@@ -13,10 +13,11 @@ export async function GET(req: NextRequest, { params }: Params) {
   const { owner, repo } = await params;
   const fullName = `${owner}/${repo}`;
   
-  const url = new URL(req.url);
-  const page = parseInt(url.searchParams.get('page') || '1');
-  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const [checks, deployments, events] = await Promise.all([
+    getCheckRunsByRepoCount(fullName),
+    getDeploymentsByRepoCount(fullName),
+    getEventsByRepoCount(fullName),
+  ]);
   
-  const result = await getDeploymentsByRepoPaginated(fullName, page, limit);
-  return NextResponse.json(result);
+  return NextResponse.json({ checks, deployments, events });
 }

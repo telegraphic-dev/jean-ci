@@ -349,3 +349,168 @@ export async function getEventsByRepo(repo: string, limit = 100): Promise<any[]>
   );
   return result.rows;
 }
+
+// Pagination helpers
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export async function getEventsByRepoCount(repo: string): Promise<number> {
+  const result = await pool.query(
+    'SELECT COUNT(*) FROM jean_ci_webhook_events WHERE repo = $1',
+    [repo]
+  );
+  return parseInt(result.rows[0].count);
+}
+
+export async function getEventsByRepoPaginated(repo: string, page = 1, limit = 50): Promise<PaginatedResult<any>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      `SELECT * FROM jean_ci_webhook_events 
+       WHERE repo = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [repo, limit, offset]
+    ),
+    pool.query('SELECT COUNT(*) FROM jean_ci_webhook_events WHERE repo = $1', [repo])
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getCheckRunsByRepoCount(repo: string): Promise<number> {
+  const result = await pool.query(
+    'SELECT COUNT(*) FROM jean_ci_check_runs WHERE repo = $1',
+    [repo]
+  );
+  return parseInt(result.rows[0].count);
+}
+
+export async function getCheckRunsByRepoPaginated(repo: string, page = 1, limit = 50): Promise<PaginatedResult<CheckRun>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      'SELECT * FROM jean_ci_check_runs WHERE repo = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [repo, limit, offset]
+    ),
+    pool.query('SELECT COUNT(*) FROM jean_ci_check_runs WHERE repo = $1', [repo])
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getDeploymentsByRepoCount(repo: string): Promise<number> {
+  const result = await pool.query(
+    `SELECT COUNT(*) FROM jean_ci_webhook_events 
+     WHERE repo = $1 
+     AND (event_type = 'deployment_status' 
+          OR event_type = 'registry_package' 
+          OR event_type = 'workflow_run'
+          OR event_type LIKE 'coolify_%')`,
+    [repo]
+  );
+  return parseInt(result.rows[0].count);
+}
+
+export async function getDeploymentsByRepoPaginated(repo: string, page = 1, limit = 50): Promise<PaginatedResult<any>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      `SELECT * FROM jean_ci_webhook_events 
+       WHERE repo = $1 
+       AND (event_type = 'deployment_status' 
+            OR event_type = 'registry_package' 
+            OR event_type = 'workflow_run'
+            OR event_type LIKE 'coolify_%')
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [repo, limit, offset]
+    ),
+    pool.query(
+      `SELECT COUNT(*) FROM jean_ci_webhook_events 
+       WHERE repo = $1 
+       AND (event_type = 'deployment_status' 
+            OR event_type = 'registry_package' 
+            OR event_type = 'workflow_run'
+            OR event_type LIKE 'coolify_%')`,
+      [repo]
+    )
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getAllDeploymentsCount(): Promise<number> {
+  const result = await pool.query(
+    `SELECT COUNT(*) FROM jean_ci_webhook_events 
+     WHERE event_type = 'deployment_status' 
+        OR event_type = 'registry_package' 
+        OR event_type = 'workflow_run'
+        OR event_type LIKE 'coolify_%'`
+  );
+  return parseInt(result.rows[0].count);
+}
+
+export async function getAllDeploymentsPaginated(page = 1, limit = 50): Promise<PaginatedResult<any>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      `SELECT * FROM jean_ci_webhook_events 
+       WHERE event_type = 'deployment_status' 
+          OR event_type = 'registry_package' 
+          OR event_type = 'workflow_run'
+          OR event_type LIKE 'coolify_%'
+       ORDER BY created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    ),
+    pool.query(
+      `SELECT COUNT(*) FROM jean_ci_webhook_events 
+       WHERE event_type = 'deployment_status' 
+          OR event_type = 'registry_package' 
+          OR event_type = 'workflow_run'
+          OR event_type LIKE 'coolify_%'`
+    )
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getAllCheckRunsCount(): Promise<number> {
+  const result = await pool.query('SELECT COUNT(*) FROM jean_ci_check_runs');
+  return parseInt(result.rows[0].count);
+}
+
+export async function getAllCheckRunsPaginated(page = 1, limit = 50): Promise<PaginatedResult<CheckRun>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      'SELECT * FROM jean_ci_check_runs ORDER BY created_at DESC LIMIT $1 OFFSET $2',
+      [limit, offset]
+    ),
+    pool.query('SELECT COUNT(*) FROM jean_ci_check_runs')
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getRecentEventsPaginated(page = 1, limit = 50): Promise<PaginatedResult<WebhookEvent>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      `SELECT id, event_type, delivery_id, repo, action, processed, source, created_at 
+       FROM jean_ci_webhook_events 
+       ORDER BY created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    ),
+    pool.query('SELECT COUNT(*) FROM jean_ci_webhook_events')
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
