@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getAllRepos } from '@/lib/db';
+import { getReposWithActivity } from '@/lib/db';
 
 export async function GET() {
   const auth = await requireAuth();
@@ -8,6 +8,6 @@ export async function GET() {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
   
-  const repos = await getAllRepos();
+  const repos = await getReposWithActivity();
   return NextResponse.json(repos);
 }

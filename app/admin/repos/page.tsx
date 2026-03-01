@@ -9,6 +9,21 @@ interface Repo {
   full_name: string;
   installation_id: number;
   pr_review_enabled: boolean;
+  last_activity?: string;
+}
+
+type SortOrder = 'activity' | 'name';
+
+function formatRelativeTime(timestamp: string): string {
+  const now = Date.now();
+  const then = new Date(timestamp).getTime();
+  const diff = now - then;
+  
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+  return `${Math.floor(diff / 604800000)}w ago`;
 }
 
 export default function ReposPage() {
@@ -16,6 +31,7 @@ export default function ReposPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [sortOrder, setSortOrder] = useState<SortOrder>('activity');
   const searchParams = useSearchParams();
   const filter = searchParams.get('filter') ?? 'enabled'; // Default to enabled
 
@@ -48,11 +64,22 @@ export default function ReposPage() {
     ));
   }
 
-  const filteredRepos = repos.filter(r => {
-    const matchesSearch = r.full_name.toLowerCase().includes(search.toLowerCase());
-    const matchesFilter = filter === 'all' ? true : r.pr_review_enabled;
-    return matchesSearch && matchesFilter;
-  });
+  const filteredRepos = repos
+    .filter(r => {
+      const matchesSearch = r.full_name.toLowerCase().includes(search.toLowerCase());
+      const matchesFilter = filter === 'all' ? true : r.pr_review_enabled;
+      return matchesSearch && matchesFilter;
+    })
+    .sort((a, b) => {
+      if (sortOrder === 'activity') {
+        // Sort by last activity (most recent first), repos without activity at the end
+        const aTime = a.last_activity ? new Date(a.last_activity).getTime() : 0;
+        const bTime = b.last_activity ? new Date(b.last_activity).getTime() : 0;
+        return bTime - aTime;
+      } else {
+        return a.full_name.localeCompare(b.full_name);
+      }
+    });
 
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
@@ -62,92 +89,110 @@ export default function ReposPage() {
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Repositories</h1>
+          <h1 className="text-2xl font-bold">Repositories ({filteredRepos.length})</h1>
           <p className="text-[var(--text-secondary)] mt-1">
-            {repos.length} repositories • {repos.filter(r => r.pr_review_enabled).length} with PR reviews enabled
+            Manage PR reviews and deployments for your repositories
           </p>
         </div>
         <button
           onClick={syncRepos}
           disabled={syncing}
-          className="bg-[var(--bg-secondary)] border border-[var(--border)] px-4 py-2 rounded-lg font-medium hover:bg-[var(--border)] transition-colors disabled:opacity-50 flex items-center gap-2"
+          className="bg-[var(--accent)] text-white px-4 py-2 rounded-lg hover:bg-[var(--accent-hover)] disabled:opacity-50 flex items-center gap-2"
         >
-          <span className={syncing ? 'animate-spin' : ''}>🔄</span>
-          {syncing ? 'Syncing...' : 'Sync Repos'}
+          {syncing ? '⏳ Syncing...' : '🔄 Sync Repos'}
         </button>
       </div>
 
-      {/* Search */}
-      <div className="mb-6">
+      {/* Filters and Sort */}
+      <div className="flex flex-wrap items-center gap-4 mb-6">
+        <div className="flex gap-2">
+          <Link
+            href="/admin/repos?filter=enabled"
+            className={`px-3 py-1.5 rounded-lg text-sm ${filter === 'enabled' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
+          >
+            Enabled
+          </Link>
+          <Link
+            href="/admin/repos?filter=all"
+            className={`px-3 py-1.5 rounded-lg text-sm ${filter === 'all' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
+          >
+            All
+          </Link>
+        </div>
+
+        <div className="h-4 w-px bg-[var(--border)]" />
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => setSortOrder('activity')}
+            className={`px-3 py-1.5 rounded-lg text-sm ${sortOrder === 'activity' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
+          >
+            Recent Activity
+          </button>
+          <button
+            onClick={() => setSortOrder('name')}
+            className={`px-3 py-1.5 rounded-lg text-sm ${sortOrder === 'name' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
+          >
+            Name
+          </button>
+        </div>
+
+        <div className="flex-1" />
+
         <input
           type="text"
-          placeholder="Search repositories..."
+          placeholder="Search repos..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full max-w-md px-4 py-2 bg-[var(--bg-card)] border border-[var(--border)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/50"
+          className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-sm w-64"
         />
       </div>
 
-      {/* Filter tabs */}
-      <div className="flex gap-2 mb-4">
-        <Link
-          href="/admin/repos"
-          className={`px-3 py-1.5 rounded-lg text-sm ${filter !== 'all' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
-        >
-          Enabled ({repos.filter(r => r.pr_review_enabled).length})
-        </Link>
-        <Link
-          href="/admin/repos?filter=all"
-          className={`px-3 py-1.5 rounded-lg text-sm ${filter === 'all' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
-        >
-          All ({repos.length})
-        </Link>
-      </div>
-
-      {/* Repository list */}
+      {/* Repos table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR Reviews</th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Last Activity</th>
+              <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR Review</th>
               <th className="text-right py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Actions</th>
             </tr>
           </thead>
           <tbody className="text-sm">
             {filteredRepos.length === 0 ? (
               <tr>
-                <td colSpan={3} className="py-8 text-center text-[var(--text-muted)]">
-                  {search ? 'No repositories match your search.' : 'No repositories found.'}
+                <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">
+                  {filter === 'enabled' ? 'No repos enabled yet.' : 'No repos found.'}
                 </td>
               </tr>
             ) : (
-              filteredRepos.map(r => (
-                <tr key={r.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+              filteredRepos.map(repo => (
+                <tr key={repo.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                   <td className="py-3 px-4">
-                    <Link href={`/admin/repos/${r.full_name}`} className="font-medium hover:text-[var(--accent)]">
-                      {r.full_name}
+                    <Link href={`/admin/repos/${repo.full_name}`} className="text-[var(--accent)] hover:underline font-medium">
+                      {repo.full_name}
                     </Link>
                   </td>
-                  <td className="py-3 px-4">
-                    <button 
-                      onClick={() => toggleRepo(r.full_name, !r.pr_review_enabled)}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                        r.pr_review_enabled 
-                          ? 'bg-[var(--green)]/10 text-[var(--green)] border border-[var(--green)]/20 hover:bg-[var(--green)]/20' 
-                          : 'bg-[var(--red)]/10 text-[var(--red)] border border-[var(--red)]/20 hover:bg-[var(--red)]/20'
-                      }`}
-                    >
-                      {r.pr_review_enabled ? '✅ Enabled' : '❌ Disabled'}
-                    </button>
+                  <td className="py-3 px-4 text-[var(--text-muted)]">
+                    {repo.last_activity ? formatRelativeTime(repo.last_activity) : '—'}
+                  </td>
+                  <td className="py-3 px-4 text-center">
+                    <span className={repo.pr_review_enabled ? 'text-[var(--green)]' : 'text-[var(--text-muted)]'}>
+                      {repo.pr_review_enabled ? '✅' : '⚪'}
+                    </span>
                   </td>
                   <td className="py-3 px-4 text-right">
-                    <Link 
-                      href={`/admin/repos/${r.full_name}`}
-                      className="text-[var(--accent)] hover:underline"
+                    <button
+                      onClick={() => toggleRepo(repo.full_name, !repo.pr_review_enabled)}
+                      className={`px-3 py-1 rounded text-xs ${
+                        repo.pr_review_enabled
+                          ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
+                          : 'bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20'
+                      }`}
                     >
-                      Details →
-                    </Link>
+                      {repo.pr_review_enabled ? 'Disable' : 'Enable'}
+                    </button>
                   </td>
                 </tr>
               ))
