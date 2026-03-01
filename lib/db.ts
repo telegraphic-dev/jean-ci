@@ -604,7 +604,7 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
       }
       
       // Priority: success/failure > running > pending
-      const priority = { pending: 0, running: 1, success: 2, failure: 2 };
+      const priority: Record<string, number> = { pending: 0, running: 1, success: 2, failure: 2, skipped: 0 };
       if (priority[newStatus] >= priority[currentStatus]) {
         pipeline.build = { status: newStatus, timestamp: row.created_at, url };
       }
@@ -722,7 +722,7 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
         newStatus = 'running';
       }
       
-      const priority = { pending: 0, running: 1, success: 2, failure: 2 };
+      const priority: Record<string, number> = { pending: 0, running: 1, success: 2, failure: 2, skipped: 0 };
       if (priority[newStatus] >= priority[currentStatus]) {
         pipeline.build = { status: newStatus, timestamp: row.created_at, url };
       }
