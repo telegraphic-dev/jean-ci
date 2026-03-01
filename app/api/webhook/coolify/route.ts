@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pendingDeployments } from '@/lib/coolify';
-import { updateDeploymentStatus, updateCheck } from '@/lib/github';
+import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
+import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
 import { insertEvent } from '@/lib/db';
 
 export async function POST(req: NextRequest) {
@@ -10,20 +10,19 @@ export async function POST(req: NextRequest) {
   
   const { event, message, application_uuid, deployment_url, application_name, deployment_uuid } = payload;
   
-  // Get pending deployment info to find the actual repo and SHA
-  const pending = application_uuid ? pendingDeployments.get(application_uuid) : null;
+  // Get pending deployment from database
+  const pending = application_uuid ? await getPendingDeployment(application_uuid) : null;
   const actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
-  const headSha = pending?.headSha;
+  const headSha = pending?.head_sha;
   
   // Store Coolify event in database with the actual repo that triggered the deploy
   await insertEvent(
     `coolify_${event || 'unknown'}`,
     deployment_uuid || null,
-    actualRepo || application_name || null,  // Prefer actual repo over app name
+    actualRepo || application_name || null,
     event || null,
     {
       ...payload,
-      // Add actual repo info for display and pipeline tracking
       _source_repo: actualRepo,
       _source_sha: headSha,
       _app_name: application_name,
@@ -40,8 +39,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, ignored: 'no pending deployment' });
   }
   
-  const { octokit, owner, repo, deploymentId, checkRunId, appUrl } = pending;
-  const logsUrl = deployment_url || pending.logsUrl;
+  // Get Octokit for this installation
+  const octokit = await getInstallationOctokit(pending.installation_id);
+  const { owner, repo, deployment_id: deploymentId, check_run_id: checkRunId, app_url: appUrl, logs_url: pendingLogsUrl } = pending;
+  const logsUrl = deployment_url || pendingLogsUrl;
   
   let ghState = 'in_progress';
   let description = message || 'Deploying...';
@@ -51,12 +52,12 @@ export async function POST(req: NextRequest) {
     ghState = 'success';
     checkConclusion = 'success';
     description = message || 'Deployment successful';
-    pendingDeployments.delete(application_uuid);
+    await completePendingDeployment(application_uuid);
   } else if (event === 'deployment_failed') {
     ghState = 'failure';
     checkConclusion = 'failure';
     description = message || 'Deployment failed';
-    pendingDeployments.delete(application_uuid);
+    await completePendingDeployment(application_uuid);
   } else {
     return NextResponse.json({ received: true, event });
   }

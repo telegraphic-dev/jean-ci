@@ -89,8 +89,14 @@ export async function triggerCoolifyDeploy(appUuid: string) {
   }
 }
 
-export interface PendingDeployment {
-  octokit: any;
+import { 
+  savePendingDeployment as dbSavePendingDeployment, 
+  getPendingDeployment as dbGetPendingDeployment,
+  deletePendingDeployment as dbDeletePendingDeployment,
+  PendingDeployment as DbPendingDeployment
+} from './db';
+
+export interface PendingDeploymentInput {
   owner: string;
   repo: string;
   headSha?: string;
@@ -98,20 +104,34 @@ export interface PendingDeployment {
   checkRunId?: number;
   logsUrl: string;
   appUrl: string;
-  createdAt: number;
+  installationId: number;
 }
 
-// Store pending deployments
-export const pendingDeployments = new Map<string, PendingDeployment>();
-
-// Auto-cleanup after 10 minutes
-export function registerPendingDeployment(appUuid: string, deployment: PendingDeployment) {
-  pendingDeployments.set(appUuid, deployment);
-  
-  setTimeout(() => {
-    if (pendingDeployments.has(appUuid)) {
-      pendingDeployments.delete(appUuid);
-      console.log(`[Cleanup] Removed stale pending deployment for ${appUuid}`);
-    }
-  }, 10 * 60 * 1000);
+// Persist pending deployment to database
+export async function registerPendingDeployment(appUuid: string, deployment: PendingDeploymentInput) {
+  await dbSavePendingDeployment({
+    app_uuid: appUuid,
+    owner: deployment.owner,
+    repo: deployment.repo,
+    head_sha: deployment.headSha,
+    deployment_id: deployment.deploymentId,
+    check_run_id: deployment.checkRunId,
+    logs_url: deployment.logsUrl,
+    app_url: deployment.appUrl,
+    installation_id: deployment.installationId,
+  });
+  console.log(`[Coolify] Registered pending deployment for ${appUuid} (${deployment.owner}/${deployment.repo}@${deployment.headSha?.substring(0, 7) || 'unknown'})`);
 }
+
+// Get pending deployment from database
+export async function getPendingDeployment(appUuid: string): Promise<DbPendingDeployment | null> {
+  return dbGetPendingDeployment(appUuid);
+}
+
+// Delete pending deployment after completion
+export async function completePendingDeployment(appUuid: string) {
+  await dbDeletePendingDeployment(appUuid);
+}
+
+// Legacy compatibility - keep the Map export for now but it's deprecated
+export const pendingDeployments = new Map<string, any>();
