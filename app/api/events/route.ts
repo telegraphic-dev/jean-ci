@@ -9,8 +9,15 @@ export async function GET(req: NextRequest) {
   }
   
   const { searchParams } = new URL(req.url);
-  const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 200);
+  const limit = Math.min(parseInt(searchParams.get('limit') || '100'), 500);
+  const repo = searchParams.get('repo');
   
-  const events = await getRecentEvents(limit);
+  let events = await getRecentEvents(limit);
+  
+  // Filter by repo if specified
+  if (repo) {
+    events = events.filter((e: any) => e.repo === repo);
+  }
+  
   return NextResponse.json(events);
 }
