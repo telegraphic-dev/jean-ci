@@ -973,3 +973,53 @@ export async function getLatestCheckForPR(repo: string, prNumber: number): Promi
   );
   return result.rows[0] || null;
 }
+
+export async function getOpenPRsFromEvents(): Promise<OpenPR[]> {
+  // Get latest PR events per repo/pr_number, excluding closed PRs
+  const result = await pool.query(`
+    WITH latest_pr_events AS (
+      SELECT DISTINCT ON (repo, (payload->>'number')::int)
+        repo,
+        (payload->>'number')::int as pr_number,
+        payload,
+        created_at
+      FROM jean_ci_webhook_events
+      WHERE event_type = 'pull_request'
+        AND repo IN (SELECT full_name FROM jean_ci_repos WHERE pr_review_enabled = TRUE)
+      ORDER BY repo, (payload->>'number')::int, created_at DESC
+    )
+    SELECT * FROM latest_pr_events
+    WHERE payload->>'action' != 'closed'
+    ORDER BY created_at DESC
+  `);
+
+  const prs: OpenPR[] = [];
+  
+  for (const row of result.rows) {
+    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    const pr = payload.pull_request || payload;
+    
+    // Get latest check status for this PR
+    const check = await getLatestCheckForPR(row.repo, row.pr_number);
+    
+    let checkStatus: 'pending' | 'success' | 'failure' = 'pending';
+    if (check) {
+      if (check.status === 'completed') {
+        checkStatus = check.conclusion === 'success' ? 'success' : 'failure';
+      }
+    }
+    
+    prs.push({
+      repo: row.repo,
+      number: row.pr_number,
+      title: pr.title || `PR #${row.pr_number}`,
+      author: pr.user?.login || payload.sender?.login || 'unknown',
+      headSha: (pr.head?.sha || '').substring(0, 7),
+      url: pr.html_url || `https://github.com/${row.repo}/pull/${row.pr_number}`,
+      checkStatus,
+      updatedAt: pr.updated_at || row.created_at,
+    });
+  }
+  
+  return prs;
+}
