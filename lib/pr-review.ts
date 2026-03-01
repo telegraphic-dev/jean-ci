@@ -4,6 +4,31 @@ import { callOpenClaw } from './llm';
 
 const BASE_URL = process.env.BASE_URL || 'https://jean-ci.telegraphic.app';
 
+// Configurable diff limits with generous defaults
+// Can be overridden via environment variables
+const DIFF_PREVIEW_LIMIT = parseInt(process.env.DIFF_PREVIEW_LIMIT || '50000');  // 50K for DB storage
+const DIFF_LLM_LIMIT = parseInt(process.env.DIFF_LLM_LIMIT || '200000');          // 200K for LLM context
+
+/**
+ * Truncate diff with informative message about what was cut
+ */
+function truncateDiff(diff: string, limit: number): string {
+  if (diff.length <= limit) {
+    return diff;
+  }
+  
+  const truncated = diff.substring(0, limit);
+  const remaining = diff.length - limit;
+  const remainingKB = Math.round(remaining / 1024);
+  
+  // Try to cut at a file boundary for cleaner output
+  const lastFileStart = truncated.lastIndexOf('\ndiff --git');
+  const cutPoint = lastFileStart > limit * 0.8 ? lastFileStart : limit;
+  
+  return truncated.substring(0, cutPoint) + 
+    `\n\n... [truncated: ${remainingKB}KB remaining, ${diff.split('\ndiff --git').length - truncated.substring(0, cutPoint).split('\ndiff --git').length} files not shown]`;
+}
+
 export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string) {
   const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
@@ -20,6 +45,8 @@ export async function runPRReview(installationId: number, owner: string, repo: s
     getPRInfo(octokit, owner, repo, prNumber),
     getPRDiff(octokit, owner, repo, prNumber),
   ]);
+
+  console.log(`Diff size: ${Math.round(diff.length / 1024)}KB (limits: preview=${DIFF_PREVIEW_LIMIT}, llm=${DIFF_LLM_LIMIT})`);
 
   // Fetch check files from repo
   const checkFiles = await fetchPRCheckFiles(octokit, owner, repo, headSha);
@@ -46,7 +73,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         prompt: check.prompt,
         pr_title: prInfo.title,
         pr_body: prInfo.body || '',
-        diff_preview: diff.substring(0, 10000),
+        diff_preview: truncateDiff(diff, DIFF_PREVIEW_LIMIT),
       });
 
       // Create GitHub check with details URL
@@ -72,6 +99,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         details_url: `${BASE_URL}/checks/${dbId}`,
       });
 
+      const truncatedDiff = truncateDiff(diff, DIFF_LLM_LIMIT);
       const context = `
 # Pull Request: ${prInfo.title}
 
@@ -80,7 +108,7 @@ ${prInfo.body || 'No description provided'}
 
 ## Diff
 ${'```'}diff
-${diff.substring(0, 50000)}${diff.length > 50000 ? '\n... [truncated]' : ''}
+${truncatedDiff}
 ${'```'}
 `;
 
