@@ -74,13 +74,22 @@ export async function initDatabase() {
       CREATE TABLE IF NOT EXISTS jean_ci_webhook_events (
         id SERIAL PRIMARY KEY,
         event_type TEXT NOT NULL,
-        delivery_id TEXT UNIQUE,
+        delivery_id TEXT,
         repo TEXT,
         action TEXT,
         payload JSONB,
         processed BOOLEAN DEFAULT FALSE,
+        source TEXT DEFAULT 'github',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+      
+      -- Add source column if it doesn't exist (migration)
+      DO $$ 
+      BEGIN 
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_webhook_events' AND column_name='source') THEN
+          ALTER TABLE jean_ci_webhook_events ADD COLUMN source TEXT DEFAULT 'github';
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS jean_ci_check_runs (
         id SERIAL PRIMARY KEY,
@@ -249,12 +258,12 @@ export interface WebhookEvent {
   created_at: Date;
 }
 
-export async function insertEvent(eventType: string, deliveryId: string, repo: string | null, action: string | null, payload: any) {
+export async function insertEvent(eventType: string, deliveryId: string | null, repo: string | null, action: string | null, payload: any, source: string = 'github') {
   try {
     await pool.query(`
-      INSERT INTO jean_ci_webhook_events (event_type, delivery_id, repo, action, payload)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [eventType, deliveryId, repo, action, JSON.stringify(payload)]);
+      INSERT INTO jean_ci_webhook_events (event_type, delivery_id, repo, action, payload, source)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [eventType, deliveryId, repo, action, JSON.stringify(payload), source]);
   } catch (e) {
     // Duplicate delivery - ignore
   }
@@ -298,7 +307,10 @@ export async function getDeploymentsByRepo(repo: string, limit = 20): Promise<an
   const result = await pool.query(
     `SELECT * FROM jean_ci_webhook_events 
      WHERE repo = $1 
-     AND (event_type = 'deployment_status' OR event_type = 'registry_package' OR event_type = 'workflow_run')
+     AND (event_type = 'deployment_status' 
+          OR event_type = 'registry_package' 
+          OR event_type = 'workflow_run'
+          OR event_type LIKE 'coolify_%')
      ORDER BY created_at DESC
      LIMIT $2`,
     [repo, limit]
@@ -309,7 +321,10 @@ export async function getDeploymentsByRepo(repo: string, limit = 20): Promise<an
 export async function getAllDeployments(limit = 100): Promise<any[]> {
   const result = await pool.query(
     `SELECT * FROM jean_ci_webhook_events 
-     WHERE event_type = 'deployment_status' OR event_type = 'registry_package' OR event_type = 'workflow_run'
+     WHERE event_type = 'deployment_status' 
+        OR event_type = 'registry_package' 
+        OR event_type = 'workflow_run'
+        OR event_type LIKE 'coolify_%'
      ORDER BY created_at DESC
      LIMIT $1`,
     [limit]

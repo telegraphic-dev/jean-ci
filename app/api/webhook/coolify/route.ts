@@ -1,13 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pendingDeployments } from '@/lib/coolify';
 import { updateDeploymentStatus, updateCheck } from '@/lib/github';
+import { insertEvent } from '@/lib/db';
 
 export async function POST(req: NextRequest) {
   const payload = await req.json();
   
   console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 500));
   
-  const { event, message, application_uuid, deployment_url } = payload;
+  const { event, message, application_uuid, deployment_url, application_name, deployment_uuid } = payload;
+  
+  // Store Coolify event in database
+  await insertEvent(
+    `coolify_${event || 'unknown'}`,
+    deployment_uuid || null,
+    application_name || null,
+    event || null,
+    payload,
+    'coolify'
+  );
   
   if (!application_uuid) {
     return NextResponse.json({ received: true, ignored: 'no app uuid' });

@@ -76,14 +76,24 @@ export default function DeploymentsPage() {
                   githubUrl = payload.registry_package.html_url;
                 }
                 
-                // Coolify deployment URL (if stored in deployment payload)
-                if (payload?.deployment?.payload?.coolify_url) {
+                // Coolify deployment URL
+                if (d.event_type?.startsWith('coolify_') && payload?.deployment_url) {
+                  coolifyUrl = payload.deployment_url;
+                } else if (payload?.deployment?.payload?.coolify_url) {
                   coolifyUrl = payload.deployment.payload.coolify_url;
                 }
                 
-                const status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
-                const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
-                                    payload?.deployment?.environment || d.event_type;
+                // Determine status
+                let status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
+                if (d.event_type === 'coolify_deployment_success') status = 'success';
+                if (d.event_type === 'coolify_deployment_failed') status = 'failure';
+                
+                // Determine display name
+                let workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
+                                   payload?.deployment?.environment || d.event_type;
+                if (d.event_type?.startsWith('coolify_')) {
+                  workflowName = payload?.application_name || 'Coolify';
+                }
                 
                 return (
                   <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
