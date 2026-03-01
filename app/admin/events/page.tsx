@@ -49,32 +49,46 @@ function Pagination({ page, totalPages, onPageChange }: { page: number; totalPag
 
 export default function EventsPage() {
   const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [eventTypes, setEventTypes] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('');
 
-  const fetchPage = async (page: number) => {
-    const result = await fetch(`/api/events?page=${page}`).then(r => r.json());
-    // Handle both old array format and new paginated format
-    if (Array.isArray(result)) {
-      setData({ items: result, total: result.length, page: 1, limit: result.length, totalPages: 1 });
-    } else if (result.items) {
+  const fetchPage = async (page: number, eventType?: string) => {
+    let url = `/api/events?page=${page}`;
+    if (eventType) {
+      url += `&eventType=${encodeURIComponent(eventType)}`;
+    }
+    const result = await fetch(url).then(r => r.json());
+    if (result.items) {
       setData(result);
     } else {
       setData({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
     }
   };
 
+  const fetchEventTypes = async () => {
+    const result = await fetch('/api/events', { method: 'OPTIONS' }).then(r => r.json());
+    if (result.types) {
+      setEventTypes(result.types);
+    }
+  };
+
   useEffect(() => {
-    fetchPage(1).then(() => setLoading(false));
+    Promise.all([fetchPage(1), fetchEventTypes()]).then(() => setLoading(false));
   }, []);
+
+  const handleFilterChange = (newFilter: string) => {
+    setFilter(newFilter);
+    fetchPage(1, newFilter || undefined);
+  };
+
+  const handlePageChange = (page: number) => {
+    fetchPage(page, filter || undefined);
+  };
 
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
   }
-
-  const events = data.items;
-  const eventTypes = [...new Set(events.map(e => e.event_type))];
-  const filteredEvents = filter ? events.filter(e => e.event_type === filter) : events;
 
   return (
     <div>
@@ -87,10 +101,10 @@ export default function EventsPage() {
         </div>
       </div>
 
-      {/* Filter by event type (counts are for current page only) */}
+      {/* Filter by event type */}
       <div className="flex flex-wrap gap-2 mb-6">
         <button
-          onClick={() => setFilter('')}
+          onClick={() => handleFilterChange('')}
           className={`px-3 py-1.5 rounded-lg text-sm ${!filter ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
         >
           All
@@ -98,7 +112,7 @@ export default function EventsPage() {
         {eventTypes.map(type => (
           <button
             key={type}
-            onClick={() => setFilter(type)}
+            onClick={() => handleFilterChange(type)}
             className={`px-3 py-1.5 rounded-lg text-sm ${filter === type ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
           >
             {type}
@@ -119,12 +133,12 @@ export default function EventsPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {filteredEvents.length === 0 ? (
+            {data.items.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
+                <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No events found.</td>
               </tr>
             ) : (
-              filteredEvents.map(e => (
+              data.items.map(e => (
                 <tr key={e.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                   <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">{new Date(e.created_at).toLocaleString()}</td>
                   <td className="py-3 px-4">
@@ -155,7 +169,7 @@ export default function EventsPage() {
           </tbody>
         </table>
       </div>
-      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={fetchPage} />
+      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={handlePageChange} />
     </div>
   );
 }
