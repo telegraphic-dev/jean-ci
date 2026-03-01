@@ -96,6 +96,66 @@ Features:
 - Enable/disable PR reviews per repository
 - View recent webhook events
 
+## Coolify Auto-Deploy
+
+jean-ci can automatically deploy to Coolify when new container images are published to GHCR.
+
+### Setup
+
+1. **Add `.jean-ci/coolify.yml`** to your repository:
+
+```yaml
+# jean-ci Coolify Deployment Config
+deployments:
+  - package: ghcr.io/your-org/your-repo
+    coolify_app: your-coolify-app-uuid
+    environment: production
+```
+
+2. **Configure GitHub Actions** to build and push to GHCR on push to main.
+
+3. **Install the jean-ci GitHub App** on your repository.
+
+When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and triggers a Coolify deployment.
+
+### Docker Compose Support
+
+For apps that need volumes or custom networking, use Coolify's `dockercompose` buildpack:
+
+1. **Set build_pack to `dockercompose`** in Coolify UI
+
+2. **Add `docker-compose.yml`** to your repo:
+
+```yaml
+services:
+  app:
+    image: ghcr.io/your-org/your-repo:latest  # Use pre-built GHCR image
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - /host/path:/container/path  # Volumes work!
+    restart: unless-stopped
+    networks:
+      - coolify
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.your-app.rule=Host(`your-app.example.com`)
+      - traefik.http.routers.your-app.entrypoints=https
+      - traefik.http.routers.your-app.tls=true
+      - traefik.http.routers.your-app.tls.certresolver=letsencrypt
+      - traefik.http.services.your-app.loadbalancer.server.port=3000
+
+networks:
+  coolify:
+    external: true
+```
+
+Key points:
+- Use `image:` with GHCR URL (not `build:`) - GitHub Actions builds, not Coolify
+- Add Traefik labels for routing (dockercompose doesn't auto-add them)
+- Join the `coolify` external network for Traefik discovery
+- Volumes defined here actually work (unlike `custom_docker_run_options`)
+
 ## Gateway Connection
 
 Uses the Coolify Traefik proxy bridge:
