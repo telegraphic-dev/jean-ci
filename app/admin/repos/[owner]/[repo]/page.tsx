@@ -233,7 +233,17 @@ export default function RepoDetailPage() {
               ) : (
                 deployments.map(d => {
                   const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
-                  const deploymentUrl = payload?.deployment?.url || payload?.check_run?.html_url;
+                  // Construct proper GitHub web URLs (not API URLs)
+                  let deploymentUrl: string | undefined;
+                  if (payload?.workflow_run?.html_url) {
+                    deploymentUrl = payload.workflow_run.html_url;
+                  } else if (payload?.check_run?.html_url) {
+                    deploymentUrl = payload.check_run.html_url;
+                  } else if (payload?.deployment?.id && payload?.repository?.full_name) {
+                    deploymentUrl = `https://github.com/${payload.repository.full_name}/deployments/${payload.deployment.id}`;
+                  } else if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
+                    deploymentUrl = payload.registry_package.html_url;
+                  }
                   const status = d.action || payload?.deployment_status?.state || 'unknown';
                   
                   return (
