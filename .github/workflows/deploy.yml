@@ -28,8 +28,10 @@ jobs:
       - name: Build and push Docker image
         run: |
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-                       -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA .
+          docker build \
+            --build-arg COMMIT_SHA=$SHORT_SHA \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA .
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-$SHORT_SHA
           echo "Pushed: sha-$SHORT_SHA"
