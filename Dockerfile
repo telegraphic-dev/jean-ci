@@ -9,7 +9,7 @@ RUN apk add --no-cache wget
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm ci --no-cache
 
 # Copy source
 COPY . .
