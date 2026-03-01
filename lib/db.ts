@@ -560,6 +560,7 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%deploy%'
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%release%'
          )
+         AND LOWER(payload->'workflow_run'->>'name') NOT LIKE '%test%'
        )
      )
      ORDER BY created_at DESC
@@ -740,6 +741,7 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%deploy%'
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%release%'
          )
+         AND LOWER(payload->'workflow_run'->>'name') NOT LIKE '%test%'
        )
      )
      ORDER BY created_at DESC
