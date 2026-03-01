@@ -65,7 +65,7 @@ export default function DeploymentsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">All Deployments ({data.total})</h1>
+      <h1 className="text-2xl font-bold mb-6">Coolify Deployments ({data.total})</h1>
       
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
         <table className="w-full">
@@ -73,7 +73,7 @@ export default function DeploymentsPage() {
             <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Type</th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">App</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
             </tr>
@@ -87,25 +87,14 @@ export default function DeploymentsPage() {
               data.items.map((d, idx) => {
                 const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
                 
-                let githubUrl: string | undefined;
-                let coolifyUrl: string | undefined;
+                // Get the actual repo (from _source_repo or repo field)
+                const actualRepo = payload?._source_repo || d.repo;
+                const appName = payload?._app_name || payload?.application_name || d.repo;
+                const coolifyUrl = payload?.deployment_url;
                 
-                if (payload?.workflow_run?.html_url) {
-                  githubUrl = payload.workflow_run.html_url;
-                } else if (payload?.workflow_run?.id && d.repo) {
-                  githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.workflow_run.id}`;
-                }
-                
-                if (d.event_type?.startsWith('coolify_') && payload?.deployment_url) {
-                  coolifyUrl = payload.deployment_url;
-                }
-                
-                let status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
-                if (d.event_type === 'coolify_deployment_success') status = 'success';
-                if (d.event_type === 'coolify_deployment_failed') status = 'failure';
-                
-                const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
-                                    payload?.deployment?.environment || payload?.application_name || d.event_type;
+                // Determine status from event type
+                const isSuccess = d.event_type === 'coolify_deployment_success';
+                const isFailed = d.event_type === 'coolify_deployment_failed';
                 
                 return (
                   <tr key={d.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
@@ -113,42 +102,36 @@ export default function DeploymentsPage() {
                       {d.created_at ? new Date(d.created_at).toLocaleString() : '-'}
                     </td>
                     <td className="py-3 px-4">
-                      {d.repo ? (
-                        <Link href={`/admin/repos/${d.repo}`} className="text-[var(--accent)] hover:underline">
-                          {d.repo}
+                      {actualRepo && actualRepo.includes('/') ? (
+                        <Link href={`/admin/repos/${actualRepo}`} className="text-[var(--accent)] hover:underline">
+                          {actualRepo}
                         </Link>
                       ) : (
-                        <span className="text-[var(--text-muted)]">-</span>
+                        <span className="text-[var(--text-muted)]">{actualRepo || '-'}</span>
                       )}
                     </td>
                     <td className="py-3 px-4">
-                      <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                        {workflowName}
+                      <span className="inline-block px-2 py-1 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded text-xs font-mono">
+                        {appName}
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      {status === 'success' || status === 'completed' ? (
+                      {isSuccess ? (
                         <span className="text-[var(--green)]">✅ Success</span>
-                      ) : status === 'failure' || status === 'error' ? (
+                      ) : isFailed ? (
                         <span className="text-[var(--red)]">❌ Failed</span>
-                      ) : status === 'pending' || status === 'in_progress' || status === 'queued' || status === 'requested' || status === 'created' ? (
-                        <span className="text-yellow-600">⏳ {status}</span>
                       ) : (
-                        <span className="text-[var(--text-secondary)]">{status}</span>
+                        <span className="text-yellow-600">⏳ {d.action || 'pending'}</span>
                       )}
                     </td>
-                    <td className="py-3 px-4 flex gap-2">
-                      {githubUrl && (
-                        <a href={githubUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                          GitHub →
-                        </a>
-                      )}
-                      {coolifyUrl && (
+                    <td className="py-3 px-4">
+                      {coolifyUrl ? (
                         <a href={coolifyUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
                           Coolify →
                         </a>
+                      ) : (
+                        <span className="text-[var(--text-muted)]">-</span>
                       )}
-                      {!githubUrl && !coolifyUrl && <span className="text-[var(--text-muted)]">-</span>}
                     </td>
                   </tr>
                 );
