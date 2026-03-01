@@ -1023,3 +1023,59 @@ export async function getOpenPRsFromEvents(): Promise<OpenPR[]> {
   
   return prs;
 }
+
+// Sensitive fields to mask in event payloads
+const SENSITIVE_PATTERNS = [
+  /token/i, /secret/i, /password/i, /key/i, /auth/i, /credential/i,
+  /email/i, /phone/i, /address/i, /ssn/i, /bearer/i
+];
+
+function maskSensitiveData(obj: any, depth = 0): any {
+  if (depth > 10) return obj; // Prevent infinite recursion
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') return obj;
+  if (typeof obj !== 'object') return obj;
+  
+  if (Array.isArray(obj)) {
+    return obj.map(item => maskSensitiveData(item, depth + 1));
+  }
+  
+  const masked: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const isSensitive = SENSITIVE_PATTERNS.some(pattern => pattern.test(key));
+    if (isSensitive && typeof value === 'string' && value.length > 0) {
+      masked[key] = '***MASKED***';
+    } else if (typeof value === 'object') {
+      masked[key] = maskSensitiveData(value, depth + 1);
+    } else {
+      masked[key] = value;
+    }
+  }
+  return masked;
+}
+
+export async function getEventById(id: number): Promise<{ event: any; payload: any } | null> {
+  const result = await pool.query(
+    `SELECT id, event_type, delivery_id, repo, action, payload, source, created_at 
+     FROM jean_ci_webhook_events WHERE id = $1`,
+    [id]
+  );
+  
+  if (result.rows.length === 0) return null;
+  
+  const row = result.rows[0];
+  const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+  
+  return {
+    event: {
+      id: row.id,
+      event_type: row.event_type,
+      delivery_id: row.delivery_id,
+      repo: row.repo,
+      action: row.action,
+      source: row.source,
+      created_at: row.created_at,
+    },
+    payload: maskSensitiveData(payload),
+  };
+}

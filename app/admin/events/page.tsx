@@ -22,6 +22,11 @@ interface PaginatedResult {
   totalPages: number;
 }
 
+interface EventDetail {
+  event: Event;
+  payload: any;
+}
+
 function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
   return (
@@ -47,11 +52,82 @@ function Pagination({ page, totalPages, onPageChange }: { page: number; totalPag
   );
 }
 
+function PayloadModal({ eventId, onClose }: { eventId: number; onClose: () => void }) {
+  const [data, setData] = useState<EventDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/events/${eventId}`)
+      .then(r => r.json())
+      .then(result => {
+        if (result.error) {
+          setError(result.error);
+        } else {
+          setData(result);
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, [eventId]);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div 
+        className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
+          <h2 className="text-lg font-semibold">Event Payload</h2>
+          <button 
+            onClick={onClose}
+            className="text-[var(--text-muted)] hover:text-[var(--text-primary)] text-2xl leading-none"
+          >
+            ×
+          </button>
+        </div>
+        <div className="p-4 overflow-auto flex-1">
+          {loading && <div className="text-center text-[var(--text-muted)]">Loading...</div>}
+          {error && <div className="text-center text-[var(--red)]">Error: {error}</div>}
+          {data && (
+            <div>
+              <div className="mb-4 flex flex-wrap gap-2 text-sm">
+                <span className="px-2 py-1 bg-[var(--bg-secondary)] rounded">
+                  <strong>Type:</strong> {data.event.event_type}
+                </span>
+                <span className="px-2 py-1 bg-[var(--bg-secondary)] rounded">
+                  <strong>Action:</strong> {data.event.action || '-'}
+                </span>
+                <span className="px-2 py-1 bg-[var(--bg-secondary)] rounded">
+                  <strong>Repo:</strong> {data.event.repo || '-'}
+                </span>
+                <span className="px-2 py-1 bg-[var(--bg-secondary)] rounded">
+                  <strong>Source:</strong> {data.event.source || 'github'}
+                </span>
+              </div>
+              <div className="text-xs text-[var(--text-muted)] mb-2">
+                ⚠️ Sensitive fields (tokens, secrets, emails, etc.) are masked
+              </div>
+              <pre className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 text-xs font-mono overflow-auto max-h-[50vh] whitespace-pre-wrap">
+                {JSON.stringify(data.payload, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function EventsPage() {
   const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [eventTypes, setEventTypes] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('');
+  const [selectedEventId, setSelectedEventId] = useState<number | null>(null);
 
   const fetchPage = async (page: number, eventType?: string) => {
     let url = `/api/events?page=${page}`;
@@ -130,12 +206,13 @@ export default function EventsPage() {
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Source</th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Payload</th>
             </tr>
           </thead>
           <tbody className="text-sm">
             {data.items.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No events found.</td>
+                <td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No events found.</td>
               </tr>
             ) : (
               data.items.map(e => (
@@ -163,6 +240,14 @@ export default function EventsPage() {
                       {e.source || 'github'}
                     </span>
                   </td>
+                  <td className="py-3 px-4">
+                    <button
+                      onClick={() => setSelectedEventId(e.id)}
+                      className="text-[var(--accent)] hover:underline text-sm"
+                    >
+                      View →
+                    </button>
+                  </td>
                 </tr>
               ))
             )}
@@ -170,6 +255,11 @@ export default function EventsPage() {
         </table>
       </div>
       <Pagination page={data.page} totalPages={data.totalPages} onPageChange={handlePageChange} />
+
+      {/* Payload Modal */}
+      {selectedEventId && (
+        <PayloadModal eventId={selectedEventId} onClose={() => setSelectedEventId(null)} />
+      )}
     </div>
   );
 }
