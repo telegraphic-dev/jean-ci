@@ -9,8 +9,9 @@ export async function GET(req: NextRequest) {
   }
   
   const url = new URL(req.url);
+  const page = parseInt(url.searchParams.get('page') || '1');
   const limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 50);
   
-  const pipelines = await getDeploymentPipelines(limit);
-  return NextResponse.json({ pipelines });
+  const result = await getDeploymentPipelines(page, limit);
+  return NextResponse.json(result);
 }

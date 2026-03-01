@@ -21,6 +21,39 @@ interface Pipeline {
   createdAt: string;
 }
 
+interface PaginatedResult {
+  items: Pipeline[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 mt-4">
+      <button
+        onClick={() => onPageChange(page - 1)}
+        disabled={page <= 1}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        ← Prev
+      </button>
+      <span className="text-sm text-[var(--text-secondary)]">
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={() => onPageChange(page + 1)}
+        disabled={page >= totalPages}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        Next →
+      </button>
+    </div>
+  );
+}
+
 function StageCell({ stage, label }: { stage: PipelineStage; label: string }) {
   const getStatusBadge = () => {
     switch (stage.status) {
@@ -71,27 +104,36 @@ function formatRelativeTime(timestamp: string): string {
 }
 
 export default function DeploymentsPage() {
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
+  const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [loading, setLoading] = useState(true);
 
+  const fetchPage = async (page: number) => {
+    const result = await fetch(`/api/pipelines?page=${page}`).then(r => r.json());
+    if (result.items) {
+      setData(result);
+    } else if (result.pipelines) {
+      // Handle old format
+      setData({ items: result.pipelines, total: result.pipelines.length, page: 1, limit: 20, totalPages: 1 });
+    } else {
+      setData({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+    }
+  };
+
   useEffect(() => {
-    fetch('/api/pipelines?limit=30')
-      .then(r => r.json())
-      .then(data => {
-        setPipelines(data.pipelines || []);
-        setLoading(false);
-      });
+    fetchPage(1).then(() => setLoading(false));
   }, []);
 
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
   }
 
+  const pipelines = data.items;
+
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold">Deployment Pipelines</h1>
+          <h1 className="text-2xl font-bold">Deployment Pipelines ({data.total})</h1>
           <p className="text-[var(--text-secondary)] mt-1">
             Build → Package → Deploy progress per commit
           </p>
@@ -154,6 +196,8 @@ export default function DeploymentsPage() {
           </tbody>
         </table>
       </div>
+
+      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={fetchPage} />
 
       <div className="mt-4 text-sm text-[var(--text-muted)] flex items-center gap-4">
         <span>Legend:</span>

@@ -522,15 +522,15 @@ export interface Pipeline {
   createdAt: string;
 }
 
-export async function getDeploymentPipelines(limit = 20): Promise<Pipeline[]> {
+export async function getDeploymentPipelines(page = 1, limit = 20): Promise<PaginatedResult<Pipeline>> {
   // Get recent deployment-related events
+  // We fetch more events and group them, then paginate the result
   const result = await pool.query(
     `SELECT id, event_type, repo, action, payload, created_at 
      FROM jean_ci_webhook_events 
      WHERE event_type IN ('workflow_run', 'registry_package', 'coolify_deployment_success', 'coolify_deployment_failed', 'coolify_deployment_started')
      ORDER BY created_at DESC
-     LIMIT $1`,
-    [limit * 10] // Fetch more to group by SHA
+     LIMIT 500` // Fetch enough to build pipeline history
   );
 
   // Group by commit SHA
@@ -624,8 +624,14 @@ export async function getDeploymentPipelines(limit = 20): Promise<Pipeline[]> {
     }
   }
 
-  // Sort by most recent and limit
-  return Array.from(pipelineMap.values())
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, limit);
+  // Sort by most recent
+  const allPipelines = Array.from(pipelineMap.values())
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  
+  const total = allPipelines.length;
+  const totalPages = Math.ceil(total / limit);
+  const offset = (page - 1) * limit;
+  const items = allPipelines.slice(offset, offset + limit);
+  
+  return { items, total, page, limit, totalPages };
 }
