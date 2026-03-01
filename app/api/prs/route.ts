@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
         const octokit = await getInstallationOctokit(repo.installation_id);
         const [owner, repoName] = repo.full_name.split('/');
         
-        const { data: prs } = await octokit.pulls.list({
+        const { data: prs } = await octokit.request('GET /repos/{owner}/{repo}/pulls', {
           owner,
           repo: repoName,
           state: 'open',
