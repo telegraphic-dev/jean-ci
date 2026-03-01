@@ -10,9 +10,10 @@ export async function POST(req: NextRequest) {
   
   const { event, message, application_uuid, deployment_url, application_name, deployment_uuid } = payload;
   
-  // Get pending deployment info to find the actual repo
+  // Get pending deployment info to find the actual repo and SHA
   const pending = application_uuid ? pendingDeployments.get(application_uuid) : null;
   const actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
+  const headSha = pending?.headSha;
   
   // Store Coolify event in database with the actual repo that triggered the deploy
   await insertEvent(
@@ -22,8 +23,9 @@ export async function POST(req: NextRequest) {
     event || null,
     {
       ...payload,
-      // Add actual repo info for display
+      // Add actual repo info for display and pipeline tracking
       _source_repo: actualRepo,
+      _source_sha: headSha,
       _app_name: application_name,
     },
     'coolify'

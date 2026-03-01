@@ -93,6 +93,7 @@ export interface PendingDeployment {
   octokit: any;
   owner: string;
   repo: string;
+  headSha?: string;
   deploymentId?: number;
   checkRunId?: number;
   logsUrl: string;

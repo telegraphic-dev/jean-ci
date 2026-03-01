@@ -3,60 +3,84 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
-interface Deployment {
-  id: number;
-  event_type: string;
+interface PipelineStage {
+  status: 'pending' | 'running' | 'success' | 'failure' | 'skipped';
+  timestamp?: string;
+  url?: string;
+}
+
+interface Pipeline {
+  sha: string;
+  shortSha: string;
   repo: string;
-  action?: string;
-  payload?: any;
-  source?: string;
-  created_at: string;
+  message?: string;
+  author?: string;
+  build: PipelineStage;
+  package: PipelineStage;
+  deploy: PipelineStage;
+  createdAt: string;
 }
 
-interface PaginatedResult {
-  items: Deployment[];
-  total: number;
-  page: number;
-  limit: number;
-  totalPages: number;
-}
+function StageCell({ stage, label }: { stage: PipelineStage; label: string }) {
+  const getStatusBadge = () => {
+    switch (stage.status) {
+      case 'success':
+        return <span className="text-[var(--green)]">✅</span>;
+      case 'failure':
+        return <span className="text-[var(--red)]">❌</span>;
+      case 'running':
+        return <span className="text-yellow-500 animate-pulse">⏳</span>;
+      case 'pending':
+        return <span className="text-[var(--text-muted)]">○</span>;
+      case 'skipped':
+        return <span className="text-[var(--text-muted)]">⊘</span>;
+    }
+  };
 
-function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
-  if (totalPages <= 1) return null;
-  return (
-    <div className="flex items-center justify-center gap-2 mt-4">
-      <button
-        onClick={() => onPageChange(page - 1)}
-        disabled={page <= 1}
-        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
-      >
-        ← Prev
-      </button>
-      <span className="text-sm text-[var(--text-secondary)]">
-        Page {page} of {totalPages}
-      </span>
-      <button
-        onClick={() => onPageChange(page + 1)}
-        disabled={page >= totalPages}
-        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
-      >
-        Next →
-      </button>
+  const content = (
+    <div className="flex items-center gap-1.5">
+      {getStatusBadge()}
+      {stage.timestamp && (
+        <span className="text-xs text-[var(--text-muted)]">
+          {formatRelativeTime(stage.timestamp)}
+        </span>
+      )}
     </div>
   );
+
+  if (stage.url) {
+    return (
+      <a href={stage.url} target="_blank" rel="noopener noreferrer" className="hover:bg-[var(--bg-secondary)] rounded px-1 -mx-1">
+        {content}
+      </a>
+    );
+  }
+
+  return content;
+}
+
+function formatRelativeTime(timestamp: string): string {
+  const now = Date.now();
+  const then = new Date(timestamp).getTime();
+  const diff = now - then;
+  
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
 }
 
 export default function DeploymentsPage() {
-  const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchPage = async (page: number) => {
-    const result = await fetch(`/api/deployments?page=${page}`).then(r => r.json());
-    setData(result.items ? result : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-  };
-
   useEffect(() => {
-    fetchPage(1).then(() => setLoading(false));
+    fetch('/api/pipelines?limit=30')
+      .then(r => r.json())
+      .then(data => {
+        setPipelines(data.pipelines || []);
+        setLoading(false);
+      });
   }, []);
 
   if (loading) {
@@ -65,82 +89,79 @@ export default function DeploymentsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Coolify Deployments ({data.total})</h1>
-      
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold">Deployment Pipelines</h1>
+          <p className="text-[var(--text-secondary)] mt-1">
+            Build → Package → Deploy progress per commit
+          </p>
+        </div>
+      </div>
+
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
+              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Commit</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">App</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
+              <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Build</th>
+              <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Package</th>
+              <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Deploy</th>
             </tr>
           </thead>
           <tbody className="text-sm">
-            {data.items.length === 0 ? (
+            {pipelines.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No deployments yet.</td>
+                <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No deployment pipelines yet.</td>
               </tr>
             ) : (
-              data.items.map((d, idx) => {
-                const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
-                
-                // Get the actual repo (from _source_repo or repo field)
-                const actualRepo = payload?._source_repo || d.repo;
-                const appName = payload?._app_name || payload?.application_name || d.repo;
-                const coolifyUrl = payload?.deployment_url;
-                
-                // Determine status from event type
-                const isSuccess = d.event_type === 'coolify_deployment_success';
-                const isFailed = d.event_type === 'coolify_deployment_failed';
-                
-                return (
-                  <tr key={d.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                    <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                      {d.created_at ? new Date(d.created_at).toLocaleString() : '-'}
-                    </td>
-                    <td className="py-3 px-4">
-                      {actualRepo && actualRepo.includes('/') ? (
-                        <Link href={`/admin/repos/${actualRepo}`} className="text-[var(--accent)] hover:underline">
-                          {actualRepo}
-                        </Link>
-                      ) : (
-                        <span className="text-[var(--text-muted)]">{actualRepo || '-'}</span>
+              pipelines.map((p, idx) => (
+                <tr key={`${p.repo}:${p.sha}`} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                  <td className="py-3 px-4">
+                    <div className="flex flex-col">
+                      <a 
+                        href={`https://github.com/${p.repo}/commit/${p.sha}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-[var(--accent)] hover:underline"
+                      >
+                        {p.shortSha}
+                      </a>
+                      {p.message && (
+                        <span className="text-xs text-[var(--text-muted)] truncate max-w-[200px]" title={p.message}>
+                          {p.message}
+                        </span>
                       )}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className="inline-block px-2 py-1 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded text-xs font-mono">
-                        {appName}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4">
-                      {isSuccess ? (
-                        <span className="text-[var(--green)]">✅ Success</span>
-                      ) : isFailed ? (
-                        <span className="text-[var(--red)]">❌ Failed</span>
-                      ) : (
-                        <span className="text-yellow-600">⏳ {d.action || 'pending'}</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      {coolifyUrl ? (
-                        <a href={coolifyUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                          Coolify →
-                        </a>
-                      ) : (
-                        <span className="text-[var(--text-muted)]">-</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
+                    </div>
+                  </td>
+                  <td className="py-3 px-4">
+                    <Link href={`/admin/repos/${p.repo}`} className="text-[var(--accent)] hover:underline">
+                      {p.repo.split('/')[1]}
+                    </Link>
+                  </td>
+                  <td className="py-3 px-4 text-center">
+                    <StageCell stage={p.build} label="Build" />
+                  </td>
+                  <td className="py-3 px-4 text-center">
+                    <StageCell stage={p.package} label="Package" />
+                  </td>
+                  <td className="py-3 px-4 text-center">
+                    <StageCell stage={p.deploy} label="Deploy" />
+                  </td>
+                </tr>
+              ))
             )}
           </tbody>
         </table>
       </div>
-      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={fetchPage} />
+
+      <div className="mt-4 text-sm text-[var(--text-muted)] flex items-center gap-4">
+        <span>Legend:</span>
+        <span className="flex items-center gap-1"><span className="text-[var(--green)]">✅</span> Success</span>
+        <span className="flex items-center gap-1"><span className="text-[var(--red)]">❌</span> Failed</span>
+        <span className="flex items-center gap-1"><span className="text-yellow-500">⏳</span> Running</span>
+        <span className="flex items-center gap-1"><span>○</span> Pending</span>
+      </div>
     </div>
   );
 }
