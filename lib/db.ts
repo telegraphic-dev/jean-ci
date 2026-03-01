@@ -405,13 +405,11 @@ export async function getCheckRunsByRepoPaginated(repo: string, page = 1, limit 
 }
 
 export async function getDeploymentsByRepoCount(repo: string): Promise<number> {
+  // Only count Coolify deployments (jean-ci triggered)
   const result = await pool.query(
     `SELECT COUNT(*) FROM jean_ci_webhook_events 
      WHERE repo = $1 
-     AND (event_type = 'deployment_status' 
-          OR event_type = 'registry_package' 
-          OR event_type = 'workflow_run'
-          OR event_type LIKE 'coolify_%')`,
+     AND event_type LIKE 'coolify_%'`,
     [repo]
   );
   return parseInt(result.rows[0].count);
@@ -419,14 +417,12 @@ export async function getDeploymentsByRepoCount(repo: string): Promise<number> {
 
 export async function getDeploymentsByRepoPaginated(repo: string, page = 1, limit = 50): Promise<PaginatedResult<any>> {
   const offset = (page - 1) * limit;
+  // Only show Coolify deployments (jean-ci triggered)
   const [items, countResult] = await Promise.all([
     pool.query(
       `SELECT * FROM jean_ci_webhook_events 
        WHERE repo = $1 
-       AND (event_type = 'deployment_status' 
-            OR event_type = 'registry_package' 
-            OR event_type = 'workflow_run'
-            OR event_type LIKE 'coolify_%')
+       AND event_type LIKE 'coolify_%'
        ORDER BY created_at DESC
        LIMIT $2 OFFSET $3`,
       [repo, limit, offset]
@@ -434,10 +430,7 @@ export async function getDeploymentsByRepoPaginated(repo: string, page = 1, limi
     pool.query(
       `SELECT COUNT(*) FROM jean_ci_webhook_events 
        WHERE repo = $1 
-       AND (event_type = 'deployment_status' 
-            OR event_type = 'registry_package' 
-            OR event_type = 'workflow_run'
-            OR event_type LIKE 'coolify_%')`,
+       AND event_type LIKE 'coolify_%'`,
       [repo]
     )
   ]);
@@ -458,23 +451,18 @@ export async function getAllDeploymentsCount(): Promise<number> {
 
 export async function getAllDeploymentsPaginated(page = 1, limit = 50): Promise<PaginatedResult<any>> {
   const offset = (page - 1) * limit;
+  // Only show Coolify deployments (jean-ci triggered)
   const [items, countResult] = await Promise.all([
     pool.query(
       `SELECT * FROM jean_ci_webhook_events 
-       WHERE event_type = 'deployment_status' 
-          OR event_type = 'registry_package' 
-          OR event_type = 'workflow_run'
-          OR event_type LIKE 'coolify_%'
+       WHERE event_type LIKE 'coolify_%'
        ORDER BY created_at DESC
        LIMIT $1 OFFSET $2`,
       [limit, offset]
     ),
     pool.query(
       `SELECT COUNT(*) FROM jean_ci_webhook_events 
-       WHERE event_type = 'deployment_status' 
-          OR event_type = 'registry_package' 
-          OR event_type = 'workflow_run'
-          OR event_type LIKE 'coolify_%'`
+       WHERE event_type LIKE 'coolify_%'`
     )
   ]);
   const total = parseInt(countResult.rows[0].count);
