@@ -42,7 +42,9 @@ export async function GET(req: NextRequest) {
     };
     await session.save();
     
-    return NextResponse.redirect(new URL('/admin', req.url));
+    // Use forwarded host/proto for proper redirect behind proxy
+    const adminUrl = `${protocol}://${host}/admin`;
+    return NextResponse.redirect(adminUrl);
   } catch (error) {
     console.error('OAuth error:', error);
     return new NextResponse('Authentication failed', { status: 500 });
