@@ -945,3 +945,31 @@ export function buildCoolifyDeploymentUrl(appUuid: string, deploymentUuid: strin
   const coolifyUrl = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
   return `${coolifyUrl}/deployments/${deploymentUuid}`;
 }
+
+export async function getReposWithPRReviewEnabled(): Promise<{ full_name: string; installation_id: number }[]> {
+  const result = await pool.query(
+    `SELECT full_name, installation_id FROM jean_ci_repos WHERE pr_review_enabled = TRUE ORDER BY full_name`
+  );
+  return result.rows;
+}
+
+export interface OpenPR {
+  repo: string;
+  number: number;
+  title: string;
+  author: string;
+  headSha: string;
+  url: string;
+  checkStatus: 'pending' | 'success' | 'failure';
+  updatedAt: string;
+}
+
+export async function getLatestCheckForPR(repo: string, prNumber: number): Promise<{ status: string; conclusion?: string } | null> {
+  const result = await pool.query(
+    `SELECT status, conclusion FROM jean_ci_check_runs 
+     WHERE repo = $1 AND pr_number = $2 
+     ORDER BY created_at DESC LIMIT 1`,
+    [repo, prNumber]
+  );
+  return result.rows[0] || null;
+}
