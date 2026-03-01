@@ -10,13 +10,22 @@ export async function POST(req: NextRequest) {
   
   const { event, message, application_uuid, deployment_url, application_name, deployment_uuid } = payload;
   
-  // Store Coolify event in database
+  // Get pending deployment info to find the actual repo
+  const pending = application_uuid ? pendingDeployments.get(application_uuid) : null;
+  const actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
+  
+  // Store Coolify event in database with the actual repo that triggered the deploy
   await insertEvent(
     `coolify_${event || 'unknown'}`,
     deployment_uuid || null,
-    application_name || null,
+    actualRepo || application_name || null,  // Prefer actual repo over app name
     event || null,
-    payload,
+    {
+      ...payload,
+      // Add actual repo info for display
+      _source_repo: actualRepo,
+      _app_name: application_name,
+    },
     'coolify'
   );
   
@@ -24,7 +33,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, ignored: 'no app uuid' });
   }
   
-  const pending = pendingDeployments.get(application_uuid);
   if (!pending) {
     console.log(`[Coolify] No pending deployment for ${application_uuid}`);
     return NextResponse.json({ received: true, ignored: 'no pending deployment' });
