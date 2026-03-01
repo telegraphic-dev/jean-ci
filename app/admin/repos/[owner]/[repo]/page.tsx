@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -34,32 +34,92 @@ interface WebhookEvent {
   created_at: string;
 }
 
+interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+interface Counts {
+  checks: number;
+  deployments: number;
+  events: number;
+}
+
 type Tab = 'checks' | 'deployments' | 'events';
+
+function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 mt-4">
+      <button
+        onClick={() => onPageChange(page - 1)}
+        disabled={page <= 1}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        ← Prev
+      </button>
+      <span className="text-sm text-[var(--text-secondary)]">
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={() => onPageChange(page + 1)}
+        disabled={page >= totalPages}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        Next →
+      </button>
+    </div>
+  );
+}
 
 export default function RepoDetailPage() {
   const params = useParams();
   const fullName = `${params.owner}/${params.repo}`;
   const [repo, setRepo] = useState<Repo | null>(null);
-  const [checks, setChecks] = useState<CheckRun[]>([]);
-  const [deployments, setDeployments] = useState<WebhookEvent[]>([]);
-  const [events, setEvents] = useState<WebhookEvent[]>([]);
+  const [counts, setCounts] = useState<Counts>({ checks: 0, deployments: 0, events: 0 });
+  const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [deployments, setDeployments] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [events, setEvents] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('checks');
 
-  useEffect(() => {
-    Promise.all([
+  const fetchData = useCallback(async (checksPage = 1, deploymentsPage = 1, eventsPage = 1) => {
+    const [repoData, countsData, checksData, deploymentsData, eventsData] = await Promise.all([
       fetch(`/api/repos/${fullName}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/checks`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/deployments`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/events`).then(r => r.json()),
-    ]).then(([repoData, checksData, deploymentsData, eventsData]) => {
-      setRepo(repoData.error ? null : repoData);
-      setChecks(Array.isArray(checksData) ? checksData : []);
-      setDeployments(Array.isArray(deploymentsData) ? deploymentsData : []);
-      setEvents(Array.isArray(eventsData) ? eventsData : []);
-      setLoading(false);
-    });
+      fetch(`/api/repos/${fullName}/counts`).then(r => r.json()),
+      fetch(`/api/repos/${fullName}/checks?page=${checksPage}`).then(r => r.json()),
+      fetch(`/api/repos/${fullName}/deployments?page=${deploymentsPage}`).then(r => r.json()),
+      fetch(`/api/repos/${fullName}/events?page=${eventsPage}`).then(r => r.json()),
+    ]);
+    setRepo(repoData.error ? null : repoData);
+    setCounts(countsData.error ? { checks: 0, deployments: 0, events: 0 } : countsData);
+    setChecks(checksData.items ? checksData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setDeployments(deploymentsData.items ? deploymentsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setEvents(eventsData.items ? eventsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setLoading(false);
   }, [fullName]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const handleChecksPageChange = async (page: number) => {
+    const data = await fetch(`/api/repos/${fullName}/checks?page=${page}`).then(r => r.json());
+    setChecks(data.items ? data : checks);
+  };
+
+  const handleDeploymentsPageChange = async (page: number) => {
+    const data = await fetch(`/api/repos/${fullName}/deployments?page=${page}`).then(r => r.json());
+    setDeployments(data.items ? data : deployments);
+  };
+
+  const handleEventsPageChange = async (page: number) => {
+    const data = await fetch(`/api/repos/${fullName}/events?page=${page}`).then(r => r.json());
+    setEvents(data.items ? data : events);
+  };
 
   async function toggleRepo(enabled: boolean) {
     await fetch(`/api/repos/${fullName}`, {
@@ -86,9 +146,9 @@ export default function RepoDetailPage() {
   }
 
   const tabs: { id: Tab; label: string; count: number }[] = [
-    { id: 'checks', label: 'PR Reviews', count: checks.length },
-    { id: 'deployments', label: 'Deployments', count: deployments.length },
-    { id: 'events', label: 'All Events', count: events.length },
+    { id: 'checks', label: 'PR Reviews', count: counts.checks },
+    { id: 'deployments', label: 'Deployments', count: counts.deployments },
+    { id: 'events', label: 'All Events', count: counts.events },
   ];
 
   const getStatusBadge = (status: string, conclusion?: string) => {
@@ -158,207 +218,215 @@ export default function RepoDetailPage() {
 
       {/* PR Reviews Tab */}
       {activeTab === 'checks' && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Check</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {checks.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No PR reviews yet.</td>
+        <div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Check</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
                 </tr>
-              ) : (
-                checks.map(c => (
-                  <tr key={c.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                    <td className="py-3 px-4">
-                      <a 
-                        href={`https://github.com/${fullName}/pull/${c.pr_number}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[var(--accent)] hover:underline font-medium"
-                      >
-                        #{c.pr_number}
-                      </a>
-                    </td>
-                    <td className="py-3 px-4">
-                      <Link href={`/checks/${c.id}`} className="text-[var(--accent)] hover:underline">
-                        {c.check_name || 'jean-ci'}
-                      </Link>
-                      {c.github_check_id && (
+              </thead>
+              <tbody className="text-sm">
+                {checks.items.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No PR reviews yet.</td>
+                  </tr>
+                ) : (
+                  checks.items.map(c => (
+                    <tr key={c.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                      <td className="py-3 px-4">
                         <a 
-                          href={`https://github.com/${fullName}/runs/${c.github_check_id}`}
+                          href={`https://github.com/${fullName}/pull/${c.pr_number}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="ml-2 text-xs text-[var(--text-muted)] hover:text-[var(--accent)]"
+                          className="text-[var(--accent)] hover:underline font-medium"
                         >
-                          (GitHub →)
+                          #{c.pr_number}
                         </a>
-                      )}
-                    </td>
-                    <td className="py-3 px-4">
-                      {getStatusBadge(c.status, c.conclusion)}
-                    </td>
-                    <td className="py-3 px-4 text-[var(--text-secondary)] max-w-xs truncate">
-                      {c.title || '-'}
-                    </td>
-                    <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                      {new Date(c.created_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                      </td>
+                      <td className="py-3 px-4">
+                        <Link href={`/checks/${c.id}`} className="text-[var(--accent)] hover:underline">
+                          {c.check_name || 'jean-ci'}
+                        </Link>
+                        {c.github_check_id && (
+                          <a 
+                            href={`https://github.com/${fullName}/runs/${c.github_check_id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ml-2 text-xs text-[var(--text-muted)] hover:text-[var(--accent)]"
+                          >
+                            (GitHub →)
+                          </a>
+                        )}
+                      </td>
+                      <td className="py-3 px-4">
+                        {getStatusBadge(c.status, c.conclusion)}
+                      </td>
+                      <td className="py-3 px-4 text-[var(--text-secondary)] max-w-xs truncate">
+                        {c.title || '-'}
+                      </td>
+                      <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
+                        {new Date(c.created_at).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <Pagination page={checks.page} totalPages={checks.totalPages} onPageChange={handleChecksPageChange} />
         </div>
       )}
 
       {/* Deployments Tab */}
       {activeTab === 'deployments' && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Type</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {deployments.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No deployments yet.</td>
+        <div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Type</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
                 </tr>
-              ) : (
-deployments.map(d => {
-                  const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
-                  
-                  // Extract URLs based on event type
-                  let githubUrl: string | undefined;
-                  
-                  // For workflow_run events - link to GitHub Actions
-                  if (payload?.workflow_run?.html_url) {
-                    githubUrl = payload.workflow_run.html_url;
-                  } else if (payload?.workflow_run?.id) {
-                    githubUrl = `https://github.com/${fullName}/actions/runs/${payload.workflow_run.id}`;
-                  }
-                  
-                  // For deployment_status events - try to find workflow run
-                  if (d.event_type === 'deployment_status') {
-                    const workflowRunId = payload?.deployment?.payload?.workflow_run_id || 
-                                         payload?.workflow_run?.id;
-                    if (workflowRunId) {
-                      githubUrl = `https://github.com/${fullName}/actions/runs/${workflowRunId}`;
+              </thead>
+              <tbody className="text-sm">
+                {deployments.items.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No deployments yet.</td>
+                  </tr>
+                ) : (
+                  deployments.items.map((d, idx) => {
+                    const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
+                    
+                    let githubUrl: string | undefined;
+                    let coolifyUrl: string | undefined;
+                    
+                    if (payload?.workflow_run?.html_url) {
+                      githubUrl = payload.workflow_run.html_url;
+                    } else if (payload?.workflow_run?.id) {
+                      githubUrl = `https://github.com/${fullName}/actions/runs/${payload.workflow_run.id}`;
                     }
-                  }
-                  
-                  // For registry_package events
-                  if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
-                    githubUrl = payload.registry_package.html_url;
-                  }
-                  
-                  const status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
-                  const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
-                                      payload?.deployment?.environment || d.event_type;
-                  
-                  return (
-                    <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                      <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                        {new Date(d.created_at).toLocaleString()}
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                          {workflowName}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        {status === 'success' || status === 'completed' ? (
-                          <span className="text-[var(--green)]">✅ Success</span>
-                        ) : status === 'failure' || status === 'error' ? (
-                          <span className="text-[var(--red)]">❌ Failed</span>
-                        ) : status === 'pending' || status === 'in_progress' || status === 'created' ? (
-                          <span className="text-yellow-600">⏳ {status}</span>
-                        ) : (
-                          <span className="text-[var(--text-secondary)]">{status}</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4">
-                        {githubUrl ? (
-                          <a 
-                            href={githubUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[var(--accent)] hover:underline"
-                          >
-                            View on GitHub →
-                          </a>
-                        ) : (
-                          <span className="text-[var(--text-muted)]">-</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                    
+                    if (d.event_type === 'deployment_status') {
+                      const workflowRunId = payload?.deployment?.payload?.workflow_run_id || payload?.workflow_run?.id;
+                      if (workflowRunId) {
+                        githubUrl = `https://github.com/${fullName}/actions/runs/${workflowRunId}`;
+                      }
+                    }
+                    
+                    if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
+                      githubUrl = payload.registry_package.html_url;
+                    }
+                    
+                    if (d.event_type?.startsWith('coolify_') && payload?.deployment_url) {
+                      coolifyUrl = payload.deployment_url;
+                    }
+                    
+                    const status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
+                    const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
+                                        payload?.deployment?.environment || payload?.application_name || d.event_type;
+                    
+                    return (
+                      <tr key={d.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                        <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
+                          {d.created_at ? new Date(d.created_at).toLocaleString() : '-'}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
+                            {workflowName}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          {status === 'success' || status === 'completed' || d.event_type === 'coolify_deployment_success' ? (
+                            <span className="text-[var(--green)]">✅ Success</span>
+                          ) : status === 'failure' || status === 'error' || d.event_type === 'coolify_deployment_failed' ? (
+                            <span className="text-[var(--red)]">❌ Failed</span>
+                          ) : status === 'pending' || status === 'in_progress' || status === 'created' ? (
+                            <span className="text-yellow-600">⏳ {status}</span>
+                          ) : (
+                            <span className="text-[var(--text-secondary)]">{status}</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 flex gap-2">
+                          {githubUrl && (
+                            <a href={githubUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+                              GitHub →
+                            </a>
+                          )}
+                          {coolifyUrl && (
+                            <a href={coolifyUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+                              Coolify →
+                            </a>
+                          )}
+                          {!githubUrl && !coolifyUrl && <span className="text-[var(--text-muted)]">-</span>}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+          <Pagination page={deployments.page} totalPages={deployments.totalPages} onPageChange={handleDeploymentsPageChange} />
         </div>
       )}
 
       {/* All Events Tab */}
       {activeTab === 'events' && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Source</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Delivery ID</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {events.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
+        <div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Source</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Delivery ID</th>
                 </tr>
-              ) : (
-                events.map((e, idx) => (
-                  <tr key={e.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                    <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                      {e.created_at ? new Date(e.created_at).toLocaleString() : '-'}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                        {e.event_type || 'unknown'}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-[var(--text-secondary)]">
-                      {e.action || '-'}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`inline-block px-2 py-0.5 rounded text-xs ${
-                        e.source === 'coolify' ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-blue-400'
-                      }`}>
-                        {e.source || 'github'}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
-                      {e.delivery_id ? e.delivery_id.slice(0, 8) + '...' : '-'}
-                    </td>
+              </thead>
+              <tbody className="text-sm">
+                {events.items.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  events.items.map((e, idx) => (
+                    <tr key={e.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                      <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
+                        {e.created_at ? new Date(e.created_at).toLocaleString() : '-'}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
+                          {e.event_type || 'unknown'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-[var(--text-secondary)]">
+                        {e.action || '-'}
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`inline-block px-2 py-0.5 rounded text-xs ${
+                          e.source === 'coolify' ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-blue-400'
+                        }`}>
+                          {e.source || 'github'}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
+                        {e.delivery_id ? e.delivery_id.slice(0, 8) + '...' : '-'}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          <Pagination page={events.page} totalPages={events.totalPages} onPageChange={handleEventsPageChange} />
         </div>
       )}
     </div>

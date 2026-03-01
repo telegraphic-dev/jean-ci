@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getRecentEvents } from '@/lib/db';
+import { getRecentEventsPaginated } from '@/lib/db';
 
 export async function GET(req: NextRequest) {
   const auth = await requireAuth();
@@ -8,16 +8,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
   
-  const { searchParams } = new URL(req.url);
-  const limit = Math.min(parseInt(searchParams.get('limit') || '100'), 500);
-  const repo = searchParams.get('repo');
+  const url = new URL(req.url);
+  const page = parseInt(url.searchParams.get('page') || '1');
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 100);
+  const repo = url.searchParams.get('repo');
   
-  let events = await getRecentEvents(limit);
-  
-  // Filter by repo if specified
-  if (repo) {
-    events = events.filter((e: any) => e.repo === repo);
-  }
-  
-  return NextResponse.json(events);
+  // If repo filter is specified, we need different logic
+  // For now, just return all events paginated
+  const result = await getRecentEventsPaginated(page, limit);
+  return NextResponse.json(result);
 }

@@ -16,17 +16,50 @@ interface CheckRun {
   completed_at?: string;
 }
 
+interface PaginatedResult {
+  items: CheckRun[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 mt-4">
+      <button
+        onClick={() => onPageChange(page - 1)}
+        disabled={page <= 1}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        ← Prev
+      </button>
+      <span className="text-sm text-[var(--text-secondary)]">
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={() => onPageChange(page + 1)}
+        disabled={page >= totalPages}
+        className="px-3 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)] disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--bg-card-hover)]"
+      >
+        Next →
+      </button>
+    </div>
+  );
+}
+
 export default function ReviewsPage() {
-  const [checks, setChecks] = useState<CheckRun[]>([]);
+  const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [loading, setLoading] = useState(true);
 
+  const fetchPage = async (page: number) => {
+    const result = await fetch(`/api/checks?page=${page}`).then(r => r.json());
+    setData(result.items ? result : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  };
+
   useEffect(() => {
-    fetch('/api/checks')
-      .then(r => r.json())
-      .then(data => {
-        setChecks(Array.isArray(data) ? data : []);
-        setLoading(false);
-      });
+    fetchPage(1).then(() => setLoading(false));
   }, []);
 
   const getStatusBadge = (status: string, conclusion?: string) => {
@@ -49,7 +82,7 @@ export default function ReviewsPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">All PR Reviews</h1>
+      <h1 className="text-2xl font-bold mb-6">All PR Reviews ({data.total})</h1>
       
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
         <table className="w-full">
@@ -64,12 +97,12 @@ export default function ReviewsPage() {
             </tr>
           </thead>
           <tbody className="text-sm">
-            {checks.length === 0 ? (
+            {data.items.length === 0 ? (
               <tr>
                 <td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No PR reviews yet.</td>
               </tr>
             ) : (
-              checks.map(c => (
+              data.items.map(c => (
                 <tr key={c.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                   <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
                     {new Date(c.created_at).toLocaleString()}
@@ -116,6 +149,7 @@ export default function ReviewsPage() {
           </tbody>
         </table>
       </div>
+      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={fetchPage} />
     </div>
   );
 }
