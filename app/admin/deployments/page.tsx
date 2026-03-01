@@ -53,22 +53,37 @@ export default function DeploymentsPage() {
               deployments.map(d => {
                 const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
                 
-                // Construct proper GitHub web URL
-                let deploymentUrl: string | undefined;
+                // Extract URLs based on event type
+                let githubUrl: string | undefined;
+                let coolifyUrl: string | undefined;
+                
+                // For workflow_run events - link to GitHub Actions
                 if (payload?.workflow_run?.html_url) {
-                  deploymentUrl = payload.workflow_run.html_url;
-                } else if (payload?.check_run?.html_url) {
-                  deploymentUrl = payload.check_run.html_url;
-                } else if (payload?.workflow_run?.check_suite_url) {
-                  // Convert API URL to web URL
-                  const checkSuiteId = payload.workflow_run.check_suite_id;
-                  if (checkSuiteId && d.repo) {
-                    deploymentUrl = `https://github.com/${d.repo}/actions/runs/${payload.workflow_run.id}`;
-                  }
+                  githubUrl = payload.workflow_run.html_url;
+                } else if (payload?.workflow_run?.id && d.repo) {
+                  githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.workflow_run.id}`;
+                }
+                
+                // For deployment_status events - link to workflow run via deployment
+                if (d.event_type === 'deployment_status' && payload?.deployment?.payload?.workflow_run_id && d.repo) {
+                  githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.deployment.payload.workflow_run_id}`;
+                } else if (d.event_type === 'deployment_status' && payload?.workflow?.id && d.repo) {
+                  githubUrl = `https://github.com/${d.repo}/actions/runs/${payload.workflow.id}`;
+                }
+                
+                // For registry_package events
+                if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
+                  githubUrl = payload.registry_package.html_url;
+                }
+                
+                // Coolify deployment URL (if stored in deployment payload)
+                if (payload?.deployment?.payload?.coolify_url) {
+                  coolifyUrl = payload.deployment.payload.coolify_url;
                 }
                 
                 const status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
-                const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || d.event_type;
+                const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
+                                    payload?.deployment?.environment || d.event_type;
                 
                 return (
                   <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
@@ -94,22 +109,35 @@ export default function DeploymentsPage() {
                         <span className="text-[var(--green)]">✅ Success</span>
                       ) : status === 'failure' || status === 'error' ? (
                         <span className="text-[var(--red)]">❌ Failed</span>
-                      ) : status === 'pending' || status === 'in_progress' || status === 'queued' || status === 'requested' ? (
+                      ) : status === 'pending' || status === 'in_progress' || status === 'queued' || status === 'requested' || status === 'created' ? (
                         <span className="text-yellow-600">⏳ {status}</span>
                       ) : (
                         <span className="text-[var(--text-secondary)]">{status}</span>
                       )}
                     </td>
-                    <td className="py-3 px-4">
-                      {deploymentUrl && (
+                    <td className="py-3 px-4 flex gap-2">
+                      {githubUrl && (
                         <a 
-                          href={deploymentUrl}
+                          href={githubUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-[var(--accent)] hover:underline"
                         >
-                          View on GitHub →
+                          GitHub →
                         </a>
+                      )}
+                      {coolifyUrl && (
+                        <a 
+                          href={coolifyUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[var(--accent)] hover:underline"
+                        >
+                          Coolify →
+                        </a>
+                      )}
+                      {!githubUrl && !coolifyUrl && (
+                        <span className="text-[var(--text-muted)]">-</span>
                       )}
                     </td>
                   </tr>

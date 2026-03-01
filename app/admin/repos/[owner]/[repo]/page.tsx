@@ -236,21 +236,36 @@ export default function RepoDetailPage() {
                   <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No deployments yet.</td>
                 </tr>
               ) : (
-                deployments.map(d => {
+deployments.map(d => {
                   const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
-                  // Construct proper GitHub web URLs
-                  let deploymentUrl: string | undefined;
+                  
+                  // Extract URLs based on event type
+                  let githubUrl: string | undefined;
+                  
+                  // For workflow_run events - link to GitHub Actions
                   if (payload?.workflow_run?.html_url) {
-                    deploymentUrl = payload.workflow_run.html_url;
-                  } else if (payload?.check_run?.html_url) {
-                    deploymentUrl = payload.check_run.html_url;
-                  } else if (payload?.workflow_run?.id && fullName) {
-                    deploymentUrl = `https://github.com/${fullName}/actions/runs/${payload.workflow_run.id}`;
-                  } else if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
-                    deploymentUrl = payload.registry_package.html_url;
+                    githubUrl = payload.workflow_run.html_url;
+                  } else if (payload?.workflow_run?.id) {
+                    githubUrl = `https://github.com/${fullName}/actions/runs/${payload.workflow_run.id}`;
                   }
+                  
+                  // For deployment_status events - try to find workflow run
+                  if (d.event_type === 'deployment_status') {
+                    const workflowRunId = payload?.deployment?.payload?.workflow_run_id || 
+                                         payload?.workflow_run?.id;
+                    if (workflowRunId) {
+                      githubUrl = `https://github.com/${fullName}/actions/runs/${workflowRunId}`;
+                    }
+                  }
+                  
+                  // For registry_package events
+                  if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
+                    githubUrl = payload.registry_package.html_url;
+                  }
+                  
                   const status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
-                  const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || d.event_type;
+                  const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || 
+                                      payload?.deployment?.environment || d.event_type;
                   
                   return (
                     <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
@@ -267,69 +282,29 @@ export default function RepoDetailPage() {
                           <span className="text-[var(--green)]">✅ Success</span>
                         ) : status === 'failure' || status === 'error' ? (
                           <span className="text-[var(--red)]">❌ Failed</span>
-                        ) : status === 'pending' || status === 'in_progress' ? (
+                        ) : status === 'pending' || status === 'in_progress' || status === 'created' ? (
                           <span className="text-yellow-600">⏳ {status}</span>
                         ) : (
                           <span className="text-[var(--text-secondary)]">{status}</span>
                         )}
                       </td>
                       <td className="py-3 px-4">
-                        {deploymentUrl && (
+                        {githubUrl ? (
                           <a 
-                            href={deploymentUrl}
+                            href={githubUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-[var(--accent)] hover:underline"
                           >
                             View on GitHub →
                           </a>
+                        ) : (
+                          <span className="text-[var(--text-muted)]">-</span>
                         )}
                       </td>
                     </tr>
                   );
                 })
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* All Events Tab */}
-      {activeTab === 'events' && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Delivery ID</th>
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {events.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
-                </tr>
-              ) : (
-                events.map(e => (
-                  <tr key={e.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                    <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                      {new Date(e.created_at).toLocaleString()}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                        {e.event_type}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-[var(--text-secondary)]">
-                      {e.action || '-'}
-                    </td>
-                    <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
-                      {e.delivery_id?.slice(0, 8)}...
-                    </td>
-                  </tr>
-                ))
               )}
             </tbody>
           </table>
