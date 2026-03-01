@@ -577,6 +577,7 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
            LOWER(payload->'workflow_run'->>'name') LIKE '%build%'
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%deploy%'
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%release%'
+           OR LOWER(payload->'workflow_run'->>'name') LIKE '%publish%'
          )
          AND LOWER(payload->'workflow_run'->>'name') NOT LIKE '%test%'
        )
@@ -758,6 +759,7 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
            LOWER(payload->'workflow_run'->>'name') LIKE '%build%'
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%deploy%'
            OR LOWER(payload->'workflow_run'->>'name') LIKE '%release%'
+           OR LOWER(payload->'workflow_run'->>'name') LIKE '%publish%'
          )
          AND LOWER(payload->'workflow_run'->>'name') NOT LIKE '%test%'
        )
