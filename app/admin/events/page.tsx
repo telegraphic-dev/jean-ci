@@ -102,6 +102,7 @@ export default function EventsPage() {
             className={`px-3 py-1.5 rounded-lg text-sm ${filter === type ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
           >
             {type}
+          </button>
         ))}
       </div>
 
