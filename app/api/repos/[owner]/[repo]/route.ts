@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getRepos, setRepoReviewEnabled } from '@/lib/db';
+import { getRepo, setRepoReviewEnabled } from '@/lib/db';
 
 type Params = { params: Promise<{ owner: string; repo: string }> };
 
@@ -13,8 +13,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   const { owner, repo } = await params;
   const fullName = `${owner}/${repo}`;
   
-  const repos = await getRepos();
-  const repoData = repos.find((r: any) => r.full_name === fullName);
+  const repoData = await getRepo(fullName);
   
   if (!repoData) {
     return NextResponse.json({ error: 'Repository not found' }, { status: 404 });
