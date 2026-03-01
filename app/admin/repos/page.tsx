@@ -17,7 +17,7 @@ export default function ReposPage() {
   const [search, setSearch] = useState('');
   const [syncing, setSyncing] = useState(false);
   const searchParams = useSearchParams();
-  const filter = searchParams.get('filter');
+  const filter = searchParams.get('filter') ?? 'enabled'; // Default to enabled
 
   useEffect(() => {
     loadRepos();
@@ -50,7 +50,7 @@ export default function ReposPage() {
 
   const filteredRepos = repos.filter(r => {
     const matchesSearch = r.full_name.toLowerCase().includes(search.toLowerCase());
-    const matchesFilter = filter === 'enabled' ? r.pr_review_enabled : true;
+    const matchesFilter = filter === 'all' ? true : r.pr_review_enabled;
     return matchesSearch && matchesFilter;
   });
 
@@ -92,15 +92,15 @@ export default function ReposPage() {
       <div className="flex gap-2 mb-4">
         <Link
           href="/admin/repos"
-          className={`px-3 py-1.5 rounded-lg text-sm ${!filter ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
-        >
-          All ({repos.length})
-        </Link>
-        <Link
-          href="/admin/repos?filter=enabled"
-          className={`px-3 py-1.5 rounded-lg text-sm ${filter === 'enabled' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
+          className={`px-3 py-1.5 rounded-lg text-sm ${filter !== 'all' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
         >
           Enabled ({repos.filter(r => r.pr_review_enabled).length})
+        </Link>
+        <Link
+          href="/admin/repos?filter=all"
+          className={`px-3 py-1.5 rounded-lg text-sm ${filter === 'all' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
+        >
+          All ({repos.length})
         </Link>
       </div>
 

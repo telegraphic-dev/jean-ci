@@ -1,8 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { setRepoReviewEnabled } from '@/lib/db';
+import { getRepos, setRepoReviewEnabled } from '@/lib/db';
 
-export async function PUT(req: NextRequest, { params }: { params: Promise<{ owner: string; repo: string }> }) {
+type Params = { params: Promise<{ owner: string; repo: string }> };
+
+export async function GET(req: NextRequest, { params }: Params) {
+  const auth = await requireAuth();
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: 401 });
+  }
+  
+  const { owner, repo } = await params;
+  const fullName = `${owner}/${repo}`;
+  
+  const repos = await getRepos();
+  const repoData = repos.find((r: any) => r.full_name === fullName);
+  
+  if (!repoData) {
+    return NextResponse.json({ error: 'Repository not found' }, { status: 404 });
+  }
+  
+  return NextResponse.json(repoData);
+}
+
+export async function PATCH(req: NextRequest, { params }: Params) {
   const auth = await requireAuth();
   if (!auth.authorized) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
@@ -18,3 +39,6 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ owne
   
   return NextResponse.json({ success: true });
 }
+
+// Keep PUT for backwards compatibility
+export { PATCH as PUT };
