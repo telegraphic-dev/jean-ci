@@ -8,9 +8,6 @@ const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
 const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 const OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED === 'true';
 
-// Bot username to detect self-reviews
-const BOT_USERNAME = process.env.GITHUB_BOT_USERNAME || 'jean-de-bot';
-
 // Regex to extract session key from PR body: <!-- oc-session:key -->
 const SESSION_REGEX = /<!--\s*oc-session:([^\s]+)\s*-->/;
 
@@ -33,13 +30,6 @@ export async function handlePullRequestReview(payload: any) {
   
   // Only handle submitted reviews that request changes
   if (action !== 'submitted' || review.state !== 'changes_requested') {
-    return;
-  }
-  
-  // Check if PR was created by the bot (we want to fix our own PRs)
-  const prAuthor = pull_request.user?.login;
-  if (prAuthor !== BOT_USERNAME) {
-    console.log(`PR #${pull_request.number} not by ${BOT_USERNAME}, skipping notification`);
     return;
   }
   
