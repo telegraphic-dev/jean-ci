@@ -305,3 +305,14 @@ export async function getDeploymentsByRepo(repo: string, limit = 20): Promise<an
   return result.rows;
 }
 // Cache bust: 1772347328
+
+export async function getEventsByRepo(repo: string, limit = 100): Promise<any[]> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_webhook_events 
+     WHERE repo = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [repo, limit]
+  );
+  return result.rows;
+}

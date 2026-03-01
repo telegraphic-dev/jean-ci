@@ -24,22 +24,24 @@ interface CheckRun {
   completed_at?: string;
 }
 
-interface Deployment {
+interface WebhookEvent {
   id: number;
   event_type: string;
+  delivery_id: string;
   action?: string;
   payload?: any;
   created_at: string;
 }
 
-type Tab = 'checks' | 'deployments';
+type Tab = 'checks' | 'deployments' | 'events';
 
 export default function RepoDetailPage() {
   const params = useParams();
   const fullName = `${params.owner}/${params.repo}`;
   const [repo, setRepo] = useState<Repo | null>(null);
   const [checks, setChecks] = useState<CheckRun[]>([]);
-  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [deployments, setDeployments] = useState<WebhookEvent[]>([]);
+  const [events, setEvents] = useState<WebhookEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('checks');
 
@@ -48,10 +50,12 @@ export default function RepoDetailPage() {
       fetch(`/api/repos/${fullName}`).then(r => r.json()),
       fetch(`/api/repos/${fullName}/checks`).then(r => r.json()),
       fetch(`/api/repos/${fullName}/deployments`).then(r => r.json()),
-    ]).then(([repoData, checksData, deploymentsData]) => {
+      fetch(`/api/repos/${fullName}/events`).then(r => r.json()),
+    ]).then(([repoData, checksData, deploymentsData, eventsData]) => {
       setRepo(repoData.error ? null : repoData);
       setChecks(Array.isArray(checksData) ? checksData : []);
       setDeployments(Array.isArray(deploymentsData) ? deploymentsData : []);
+      setEvents(Array.isArray(eventsData) ? eventsData : []);
       setLoading(false);
     });
   }, [fullName]);
@@ -83,6 +87,7 @@ export default function RepoDetailPage() {
   const tabs: { id: Tab; label: string; count: number }[] = [
     { id: 'checks', label: 'PR Reviews', count: checks.length },
     { id: 'deployments', label: 'Deployments', count: deployments.length },
+    { id: 'events', label: 'All Events', count: events.length },
   ];
 
   const getStatusBadge = (status: string, conclusion?: string) => {
@@ -282,6 +287,48 @@ export default function RepoDetailPage() {
                     </tr>
                   );
                 })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* All Events Tab */}
+      {activeTab === 'events' && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Delivery ID</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {events.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
+                </tr>
+              ) : (
+                events.map(e => (
+                  <tr key={e.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                    <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
+                      {new Date(e.created_at).toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
+                        {e.event_type}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-[var(--text-secondary)]">
+                      {e.action || '-'}
+                    </td>
+                    <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
+                      {e.delivery_id?.slice(0, 8)}...
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
