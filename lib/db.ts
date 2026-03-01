@@ -722,3 +722,17 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
   
   return { items, total, page, limit, totalPages };
 }
+
+export interface RepoWithActivity extends Repo {
+  last_activity?: string;
+}
+
+export async function getReposWithActivity(): Promise<RepoWithActivity[]> {
+  const result = await pool.query(`
+    SELECT r.*, 
+      (SELECT MAX(e.created_at) FROM jean_ci_webhook_events e WHERE e.repo = r.full_name) as last_activity
+    FROM jean_ci_repos r
+    ORDER BY r.full_name
+  `);
+  return result.rows;
+}
