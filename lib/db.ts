@@ -510,20 +510,38 @@ export async function getAllCheckRunsPaginated(page = 1, limit = 50): Promise<Pa
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
-export async function getRecentEventsPaginated(page = 1, limit = 50): Promise<PaginatedResult<WebhookEvent>> {
+export async function getRecentEventsPaginated(page = 1, limit = 50, eventType?: string): Promise<PaginatedResult<WebhookEvent>> {
   const offset = (page - 1) * limit;
+  
+  let query = `SELECT id, event_type, delivery_id, repo, action, processed, source, created_at 
+               FROM jean_ci_webhook_events`;
+  let countQuery = 'SELECT COUNT(*) FROM jean_ci_webhook_events';
+  const params: any[] = [];
+  const countParams: any[] = [];
+  
+  if (eventType) {
+    query += ` WHERE event_type = $1`;
+    countQuery += ` WHERE event_type = $1`;
+    params.push(eventType);
+    countParams.push(eventType);
+  }
+  
+  query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+  params.push(limit, offset);
+  
   const [items, countResult] = await Promise.all([
-    pool.query(
-      `SELECT id, event_type, delivery_id, repo, action, processed, source, created_at 
-       FROM jean_ci_webhook_events 
-       ORDER BY created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    ),
-    pool.query('SELECT COUNT(*) FROM jean_ci_webhook_events')
+    pool.query(query, params),
+    pool.query(countQuery, countParams)
   ]);
   const total = parseInt(countResult.rows[0].count);
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getEventTypes(): Promise<string[]> {
+  const result = await pool.query(
+    `SELECT DISTINCT event_type FROM jean_ci_webhook_events ORDER BY event_type`
+  );
+  return result.rows.map(r => r.event_type);
 }
 
 // Pipeline aggregation types
