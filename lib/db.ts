@@ -1081,3 +1081,27 @@ export async function getEventById(id: number): Promise<{ event: any; payload: a
     payload: maskSensitiveData(payload),
   };
 }
+
+// Dashboard stats
+export async function getOpenPRsCount(): Promise<number> {
+  const result = await pool.query(`
+    WITH latest_pr_events AS (
+      SELECT DISTINCT ON (repo, (payload->>'number')::int)
+        repo,
+        (payload->>'number')::int as pr_number,
+        payload->'pull_request'->>'state' as state
+      FROM jean_ci_webhook_events
+      WHERE event_type = 'pull_request'
+      ORDER BY repo, (payload->>'number')::int, created_at DESC
+    )
+    SELECT COUNT(*) as count FROM latest_pr_events WHERE state = 'open'
+  `);
+  return parseInt(result.rows[0]?.count || '0', 10);
+}
+
+export async function getPendingDeploymentsCount(): Promise<number> {
+  const result = await pool.query(
+    'SELECT COUNT(*) as count FROM jean_ci_pending_deployments'
+  );
+  return parseInt(result.rows[0]?.count || '0', 10);
+}

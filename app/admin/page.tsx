@@ -7,6 +7,8 @@ interface Stats {
   totalRepos: number;
   enabledRepos: number;
   recentEvents: number;
+  openPRs: number;
+  pendingDeploys: number;
 }
 
 export default function AdminOverview() {
@@ -16,11 +18,14 @@ export default function AdminOverview() {
     Promise.all([
       fetch('/api/repos').then(r => r.json()),
       fetch('/api/events').then(r => r.json()),
-    ]).then(([repos, events]) => {
+      fetch('/api/stats').then(r => r.json()),
+    ]).then(([repos, events, dashStats]) => {
       setStats({
         totalRepos: repos.length,
         enabledRepos: repos.filter((r: any) => r.pr_review_enabled).length,
         recentEvents: events.length,
+        openPRs: dashStats.openPRs,
+        pendingDeploys: dashStats.pendingDeploys,
       });
     });
   }, []);
@@ -29,23 +34,35 @@ export default function AdminOverview() {
     <div>
       <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
       
-      <div className="grid md:grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+        <Link href="/admin/reviews" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
+          <div className="text-3xl mb-2">🔀</div>
+          <div className="text-3xl font-bold text-[var(--blue)]">{stats?.openPRs ?? '...'}</div>
+          <div className="text-sm text-[var(--text-secondary)]">Open PRs</div>
+        </Link>
+        
+        <Link href="/admin/deployments" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
+          <div className="text-3xl mb-2">🚀</div>
+          <div className="text-3xl font-bold text-[var(--yellow)]">{stats?.pendingDeploys ?? '...'}</div>
+          <div className="text-sm text-[var(--text-secondary)]">Pending Deploys</div>
+        </Link>
+        
         <Link href="/admin/repos" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
           <div className="text-3xl mb-2">📦</div>
           <div className="text-3xl font-bold">{stats?.totalRepos ?? '...'}</div>
-          <div className="text-sm text-[var(--text-secondary)]">Total Repositories</div>
+          <div className="text-sm text-[var(--text-secondary)]">Repositories</div>
         </Link>
         
         <Link href="/admin/repos?filter=enabled" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
           <div className="text-3xl mb-2">✅</div>
           <div className="text-3xl font-bold text-[var(--green)]">{stats?.enabledRepos ?? '...'}</div>
-          <div className="text-sm text-[var(--text-secondary)]">PR Reviews Enabled</div>
+          <div className="text-sm text-[var(--text-secondary)]">Reviews Enabled</div>
         </Link>
         
         <Link href="/admin/events" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
           <div className="text-3xl mb-2">📋</div>
           <div className="text-3xl font-bold">{stats?.recentEvents ?? '...'}</div>
-          <div className="text-sm text-[var(--text-secondary)]">Recent Events</div>
+          <div className="text-sm text-[var(--text-secondary)]">Events</div>
         </Link>
       </div>
 
