@@ -286,22 +286,23 @@ export async function cleanupOldEvents(): Promise<number> {
 }
 
 export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<CheckRun[]> {
-  const result = await sql`
-    SELECT * FROM check_runs 
-    WHERE repo = ${repo}
-    ORDER BY created_at DESC
-    LIMIT ${limit}
-  `;
-  return result.rows as CheckRun[];
+
+export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<CheckRun[]> {
+  const result = await pool.query(
+    'SELECT * FROM check_runs WHERE repo = $1 ORDER BY created_at DESC LIMIT $2',
+    [repo, limit]
+  );
+  return result.rows;
 }
 
 export async function getDeploymentsByRepo(repo: string, limit = 20): Promise<any[]> {
-  const result = await sql`
-    SELECT * FROM webhook_events 
-    WHERE repo = ${repo} 
-    AND (event_type = 'deployment_status' OR event_type = 'registry_package')
-    ORDER BY created_at DESC
-    LIMIT ${limit}
-  `;
+  const result = await pool.query(
+    `SELECT * FROM webhook_events 
+     WHERE repo = $1 
+     AND (event_type = 'deployment_status' OR event_type = 'registry_package')
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [repo, limit]
+  );
   return result.rows;
 }
