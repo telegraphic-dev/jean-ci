@@ -197,14 +197,14 @@ export async function handleRegistryPackage(payload: any) {
     return;
   }
 
-  // Store pending deployment for Coolify webhook
-  registerPendingDeployment(deployment.coolify_app, {
-    octokit, owner, repo,
+  // Store pending deployment for Coolify webhook (persisted to DB)
+  await registerPendingDeployment(deployment.coolify_app, {
+    owner, repo,
     headSha,
     deploymentId: ghDeployment?.id,
     checkRunId: checkRun?.id,
     logsUrl, appUrl,
-    createdAt: Date.now(),
+    installationId: repoConfig.installation_id,
   });
   
   console.log(`✅ Deploy triggered for ${repository.full_name}, waiting for Coolify webhook...`);

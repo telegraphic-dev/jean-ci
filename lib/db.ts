@@ -109,6 +109,20 @@ export async function initDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS jean_ci_pending_deployments (
+        id SERIAL PRIMARY KEY,
+        app_uuid TEXT UNIQUE NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        head_sha TEXT,
+        deployment_id BIGINT,
+        check_run_id BIGINT,
+        logs_url TEXT,
+        app_url TEXT,
+        installation_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -758,4 +772,60 @@ export async function getReposWithActivity(): Promise<RepoWithActivity[]> {
     ORDER BY r.full_name
   `);
   return result.rows;
+}
+
+// Pending Deployments - persisted to DB instead of in-memory Map
+export interface PendingDeployment {
+  id?: number;
+  app_uuid: string;
+  owner: string;
+  repo: string;
+  head_sha?: string;
+  deployment_id?: number;
+  check_run_id?: number;
+  logs_url: string;
+  app_url: string;
+  installation_id: number;
+  created_at?: Date;
+}
+
+export async function savePendingDeployment(pd: PendingDeployment): Promise<void> {
+  await pool.query(
+    `INSERT INTO jean_ci_pending_deployments 
+     (app_uuid, owner, repo, head_sha, deployment_id, check_run_id, logs_url, app_url, installation_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (app_uuid) DO UPDATE SET
+       owner = EXCLUDED.owner,
+       repo = EXCLUDED.repo,
+       head_sha = EXCLUDED.head_sha,
+       deployment_id = EXCLUDED.deployment_id,
+       check_run_id = EXCLUDED.check_run_id,
+       logs_url = EXCLUDED.logs_url,
+       app_url = EXCLUDED.app_url,
+       installation_id = EXCLUDED.installation_id,
+       created_at = CURRENT_TIMESTAMP`,
+    [pd.app_uuid, pd.owner, pd.repo, pd.head_sha, pd.deployment_id, pd.check_run_id, pd.logs_url, pd.app_url, pd.installation_id]
+  );
+}
+
+export async function getPendingDeployment(appUuid: string): Promise<PendingDeployment | null> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_pending_deployments WHERE app_uuid = $1',
+    [appUuid]
+  );
+  return result.rows[0] || null;
+}
+
+export async function deletePendingDeployment(appUuid: string): Promise<void> {
+  await pool.query('DELETE FROM jean_ci_pending_deployments WHERE app_uuid = $1', [appUuid]);
+}
+
+export async function cleanupStalePendingDeployments(maxAgeMinutes = 30): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM jean_ci_pending_deployments 
+     WHERE created_at < NOW() - INTERVAL '1 minute' * $1
+     RETURNING id`,
+    [maxAgeMinutes]
+  );
+  return result.rowCount || 0;
 }
