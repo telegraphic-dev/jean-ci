@@ -563,12 +563,33 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
       repo = payload?._source_repo || repo;
     }
 
-    if (!sha || !repo) continue;
+    if (!sha) continue;
+    // Allow events without full repo name (Coolify falls back to app name)
+    if (!repo) repo = 'unknown';
 
     const shortSha = sha.substring(0, 7);
-    const key = `${repo}:${sha}`;
-
-    if (!pipelineMap.has(key)) {
+    
+    // Try to find existing pipeline by SHA (handles partial repo names like "jean-ci" vs "telegraphic-dev/jean-ci")
+    let existingKey: string | undefined;
+    for (const [k, p] of pipelineMap.entries()) {
+      if (p.sha === sha) {
+        existingKey = k;
+        break;
+      }
+    }
+    
+    // Use existing key if found, otherwise create new with best available repo name
+    // Prefer full repo names (containing "/") over partial names
+    let key: string;
+    if (existingKey) {
+      key = existingKey;
+      // If current event has full repo name and existing doesn't, update it
+      const existingPipeline = pipelineMap.get(existingKey)!;
+      if (repo.includes('/') && !existingPipeline.repo.includes('/')) {
+        existingPipeline.repo = repo;
+      }
+    } else {
+      key = `${repo}:${sha}`;
       pipelineMap.set(key, {
         sha,
         shortSha,
@@ -583,6 +604,10 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
     }
 
     const pipeline = pipelineMap.get(key)!;
+    // Update repo to full name if we have it
+    if (repo.includes('/') && !pipeline.repo.includes('/')) {
+      pipeline.repo = repo;
+    }
     if (message && !pipeline.message) pipeline.message = message;
     if (author && !pipeline.author) pipeline.author = author;
 
