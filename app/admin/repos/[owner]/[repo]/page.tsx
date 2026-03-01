@@ -27,9 +27,10 @@ interface CheckRun {
 interface WebhookEvent {
   id: number;
   event_type: string;
-  delivery_id: string;
+  delivery_id?: string;
   action?: string;
   payload?: any;
+  source?: string;
   created_at: string;
 }
 
@@ -320,30 +321,38 @@ deployments.map(d => {
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Event</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Action</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Source</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Delivery ID</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {events.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
+                  <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No events yet.</td>
                 </tr>
               ) : (
-                events.map(e => (
-                  <tr key={e.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                events.map((e, idx) => (
+                  <tr key={e.id || idx} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                     <td className="py-3 px-4 text-[var(--text-muted)] whitespace-nowrap">
-                      {new Date(e.created_at).toLocaleString()}
+                      {e.created_at ? new Date(e.created_at).toLocaleString() : '-'}
                     </td>
                     <td className="py-3 px-4">
                       <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                        {e.event_type}
+                        {e.event_type || 'unknown'}
                       </span>
                     </td>
                     <td className="py-3 px-4 text-[var(--text-secondary)]">
                       {e.action || '-'}
                     </td>
+                    <td className="py-3 px-4">
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs ${
+                        e.source === 'coolify' ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-blue-400'
+                      }`}>
+                        {e.source || 'github'}
+                      </span>
+                    </td>
                     <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
-                      {e.delivery_id?.slice(0, 8)}...
+                      {e.delivery_id ? e.delivery_id.slice(0, 8) + '...' : '-'}
                     </td>
                   </tr>
                 ))
