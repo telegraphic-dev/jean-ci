@@ -118,6 +118,17 @@ deployments:
 
 When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and triggers a Coolify deployment.
 
+### How It Works
+
+jean-ci is **buildpack-agnostic** — it doesn't know or care whether your Coolify app uses `dockerfile`, `dockerimage`, or `dockercompose`. It simply:
+
+1. Receives `registry_package` webhook from GitHub
+2. Matches the package URL to a `coolify_app` UUID in your `.jean-ci/coolify.yml`
+3. Calls `POST /applications/{uuid}/restart` on Coolify API
+4. Coolify handles the rest based on its own app configuration
+
+This means the **buildpack is configured in Coolify UI**, not in `coolify.yml`. The `coolify.yml` is just a mapping from GHCR package → Coolify app UUID.
+
 ### Docker Compose Support
 
 For apps that need volumes or custom networking, use Coolify's `dockercompose` buildpack:
