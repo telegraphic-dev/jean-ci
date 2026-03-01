@@ -49,7 +49,7 @@ export const DEFAULT_USER_PROMPT = `## Review Criteria
 Be pragmatic. The goal is to catch real problems, not to be pedantic.`;
 
 // Event retention
-export const MAX_EVENTS = 1000;
+export const MAX_EVENTS = 10000;
 
 // Initialize database
 export async function initDatabase() {
@@ -287,7 +287,7 @@ export async function cleanupOldEvents(): Promise<number> {
 
 export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<CheckRun[]> {
   const result = await pool.query(
-    'SELECT * FROM check_runs WHERE repo = $1 ORDER BY created_at DESC LIMIT $2',
+    'SELECT * FROM jean_ci_check_runs WHERE repo = $1 ORDER BY created_at DESC LIMIT $2',
     [repo, limit]
   );
   return result.rows;
@@ -295,7 +295,7 @@ export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<Chec
 
 export async function getDeploymentsByRepo(repo: string, limit = 20): Promise<any[]> {
   const result = await pool.query(
-    `SELECT * FROM webhook_events 
+    `SELECT * FROM jean_ci_webhook_events 
      WHERE repo = $1 
      AND (event_type = 'deployment_status' OR event_type = 'registry_package')
      ORDER BY created_at DESC
