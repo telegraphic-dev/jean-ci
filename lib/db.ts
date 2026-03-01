@@ -118,11 +118,20 @@ export async function initDatabase() {
         head_sha TEXT,
         deployment_id BIGINT,
         check_run_id BIGINT,
+        coolify_deployment_uuid TEXT,
         logs_url TEXT,
         app_url TEXT,
         installation_id INTEGER NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+      
+      -- Migration: add coolify_deployment_uuid if missing
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'jean_ci_pending_deployments' AND column_name = 'coolify_deployment_uuid') THEN
+          ALTER TABLE jean_ci_pending_deployments ADD COLUMN coolify_deployment_uuid TEXT;
+        END IF;
+      END $$;
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -687,6 +696,22 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
     }
   }
 
+  // Enhance pending deploys with Coolify deployment links
+  const pendingDeploys = await getAllPendingDeployments();
+  for (const pipeline of pipelineMap.values()) {
+    if (pipeline.deploy.status === 'pending' && pipeline.package.status === 'success') {
+      // This pipeline has a package but deploy is pending - check for in-flight deployment
+      const pending = pendingDeploys.find(p => p.head_sha === pipeline.sha);
+      if (pending?.coolify_deployment_uuid) {
+        pipeline.deploy = {
+          status: 'running',
+          timestamp: pending.created_at?.toISOString(),
+          url: buildCoolifyDeploymentUrl(pending.app_uuid, pending.coolify_deployment_uuid, pending.logs_url),
+        };
+      }
+    }
+  }
+
   // Sort by most recent
   const allPipelines = Array.from(pipelineMap.values())
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -831,6 +856,7 @@ export interface PendingDeployment {
   head_sha?: string;
   deployment_id?: number;
   check_run_id?: number;
+  coolify_deployment_uuid?: string;
   logs_url: string;
   app_url: string;
   installation_id: number;
@@ -840,19 +866,20 @@ export interface PendingDeployment {
 export async function savePendingDeployment(pd: PendingDeployment): Promise<void> {
   await pool.query(
     `INSERT INTO jean_ci_pending_deployments 
-     (app_uuid, owner, repo, head_sha, deployment_id, check_run_id, logs_url, app_url, installation_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     (app_uuid, owner, repo, head_sha, deployment_id, check_run_id, coolify_deployment_uuid, logs_url, app_url, installation_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (app_uuid) DO UPDATE SET
        owner = EXCLUDED.owner,
        repo = EXCLUDED.repo,
        head_sha = EXCLUDED.head_sha,
        deployment_id = EXCLUDED.deployment_id,
        check_run_id = EXCLUDED.check_run_id,
+       coolify_deployment_uuid = EXCLUDED.coolify_deployment_uuid,
        logs_url = EXCLUDED.logs_url,
        app_url = EXCLUDED.app_url,
        installation_id = EXCLUDED.installation_id,
        created_at = CURRENT_TIMESTAMP`,
-    [pd.app_uuid, pd.owner, pd.repo, pd.head_sha, pd.deployment_id, pd.check_run_id, pd.logs_url, pd.app_url, pd.installation_id]
+    [pd.app_uuid, pd.owner, pd.repo, pd.head_sha, pd.deployment_id, pd.check_run_id, pd.coolify_deployment_uuid, pd.logs_url, pd.app_url, pd.installation_id]
   );
 }
 
@@ -876,4 +903,25 @@ export async function cleanupStalePendingDeployments(maxAgeMinutes = 30): Promis
     [maxAgeMinutes]
   );
   return result.rowCount || 0;
+}
+
+export async function getAllPendingDeployments(): Promise<PendingDeployment[]> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_pending_deployments ORDER BY created_at DESC'
+  );
+  return result.rows;
+}
+
+export function buildCoolifyDeploymentUrl(appUuid: string, deploymentUuid: string, logsUrl?: string): string {
+  // If we have the logs URL, try to extract project/env info from it
+  // Format: https://apps.telegraphic.app/project/{projectUuid}/environment/{envUuid}/application/{appUuid}/deployment/{deploymentUuid}
+  if (logsUrl) {
+    const match = logsUrl.match(/\/project\/([^/]+)\/([^/]+)\/application\/[^/]+$/);
+    if (match) {
+      return `${logsUrl.split('/project/')[0]}/project/${match[1]}/${match[2]}/application/${appUuid}/deployment/${deploymentUuid}`;
+    }
+  }
+  // Fallback - just link to the deployment directly
+  const coolifyUrl = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
+  return `${coolifyUrl}/deployments/${deploymentUuid}`;
 }
