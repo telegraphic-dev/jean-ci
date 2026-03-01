@@ -1,6 +1,7 @@
 import { getCheckRun } from '@/lib/db';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { Markdown } from '@/components/Markdown';
 
 export default async function CheckPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -51,8 +52,8 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
             <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
               <span>📝</span> Review Result
             </h2>
-            <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4 whitespace-pre-wrap leading-relaxed text-sm">
-              {checkRun.summary || 'No summary available'}
+            <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4 text-sm">
+              <Markdown content={checkRun.summary || 'No summary available'} />
             </div>
           </div>
           
@@ -61,8 +62,8 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
             <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
               <span>🎯</span> Prompt Used
             </h2>
-            <div className="bg-[var(--yellow)]/10 border border-[var(--yellow)]/20 rounded-xl p-4 font-mono text-xs whitespace-pre-wrap overflow-x-auto max-h-80">
-              {checkRun.prompt || 'Default prompt'}
+            <div className="bg-[var(--yellow)]/10 border border-[var(--yellow)]/20 rounded-xl p-4 text-sm max-h-80 overflow-y-auto">
+              <Markdown content={checkRun.prompt || 'Default prompt'} />
             </div>
           </div>
           
