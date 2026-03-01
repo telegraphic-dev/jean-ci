@@ -293,19 +293,37 @@ export async function getCheckRunsByRepo(repo: string, limit = 50): Promise<Chec
   return result.rows;
 }
 
+
 export async function getDeploymentsByRepo(repo: string, limit = 20): Promise<any[]> {
   const result = await pool.query(
     `SELECT * FROM jean_ci_webhook_events 
      WHERE repo = $1 
-     AND (event_type = 'deployment_status' OR event_type = 'registry_package')
+     AND (event_type = 'deployment_status' OR event_type = 'registry_package' OR event_type = 'workflow_run')
      ORDER BY created_at DESC
      LIMIT $2`,
     [repo, limit]
   );
   return result.rows;
 }
-// Cache bust: 1772347328
 
+export async function getAllDeployments(limit = 100): Promise<any[]> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_webhook_events 
+     WHERE event_type = 'deployment_status' OR event_type = 'registry_package' OR event_type = 'workflow_run'
+     ORDER BY created_at DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows;
+}
+
+export async function getAllCheckRuns(limit = 100): Promise<CheckRun[]> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_check_runs ORDER BY created_at DESC LIMIT $1',
+    [limit]
+  );
+  return result.rows;
+}
 export async function getEventsByRepo(repo: string, limit = 100): Promise<any[]> {
   const result = await pool.query(
     `SELECT * FROM jean_ci_webhook_events 

@@ -238,18 +238,19 @@ export default function RepoDetailPage() {
               ) : (
                 deployments.map(d => {
                   const payload = typeof d.payload === 'string' ? JSON.parse(d.payload) : d.payload;
-                  // Construct proper GitHub web URLs (not API URLs)
+                  // Construct proper GitHub web URLs
                   let deploymentUrl: string | undefined;
                   if (payload?.workflow_run?.html_url) {
                     deploymentUrl = payload.workflow_run.html_url;
                   } else if (payload?.check_run?.html_url) {
                     deploymentUrl = payload.check_run.html_url;
-                  } else if (payload?.deployment?.id && payload?.repository?.full_name) {
-                    deploymentUrl = `https://github.com/${payload.repository.full_name}/deployments/${payload.deployment.id}`;
+                  } else if (payload?.workflow_run?.id && fullName) {
+                    deploymentUrl = `https://github.com/${fullName}/actions/runs/${payload.workflow_run.id}`;
                   } else if (d.event_type === 'registry_package' && payload?.registry_package?.html_url) {
                     deploymentUrl = payload.registry_package.html_url;
                   }
-                  const status = d.action || payload?.deployment_status?.state || 'unknown';
+                  const status = d.action || payload?.workflow_run?.conclusion || payload?.deployment_status?.state || 'unknown';
+                  const workflowName = payload?.workflow_run?.name || payload?.workflow?.name || d.event_type;
                   
                   return (
                     <tr key={d.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
@@ -258,11 +259,11 @@ export default function RepoDetailPage() {
                       </td>
                       <td className="py-3 px-4">
                         <span className="inline-block px-2 py-1 bg-[var(--bg-secondary)] border border-[var(--border)] rounded text-xs font-mono">
-                          {d.event_type}
+                          {workflowName}
                         </span>
                       </td>
                       <td className="py-3 px-4">
-                        {status === 'success' ? (
+                        {status === 'success' || status === 'completed' ? (
                           <span className="text-[var(--green)]">✅ Success</span>
                         ) : status === 'failure' || status === 'error' ? (
                           <span className="text-[var(--red)]">❌ Failed</span>
