@@ -11,6 +11,9 @@ const OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = process.env.OPENCLAW_NOTIFY_ON_CHAN
 // Bot username to detect self-reviews
 const BOT_USERNAME = process.env.GITHUB_BOT_USERNAME || 'jean-de-bot';
 
+// Regex to extract session key from PR body: <!-- oc-session:key -->
+const SESSION_REGEX = /<!--\s*oc-session:([^\s]+)\s*-->/;
+
 export async function handlePullRequest(payload: any) {
   const { action, pull_request, repository, installation } = payload;
   const repo = repository.full_name;
@@ -46,16 +49,16 @@ export async function handlePullRequestReview(payload: any) {
     return;
   }
   
-  // Look for oc-session label to find target session
-  const labels = pull_request.labels || [];
-  const sessionLabel = labels.find((l: any) => l.name?.startsWith('oc-session:'));
+  // Extract session key from PR body (hidden comment)
+  const prBody = pull_request.body || '';
+  const match = prBody.match(SESSION_REGEX);
   
-  if (!sessionLabel) {
-    console.log(`PR #${pull_request.number} has no oc-session label, skipping notification`);
+  if (!match) {
+    console.log(`PR #${pull_request.number} has no oc-session comment, skipping notification`);
     return;
   }
   
-  const sessionKey = sessionLabel.name.replace('oc-session:', '');
+  const sessionKey = match[1];
   console.log(`📢 Notifying session ${sessionKey} about changes requested on PR #${pull_request.number}`);
   
   const message = `🔧 **PR Review: Changes Requested**
