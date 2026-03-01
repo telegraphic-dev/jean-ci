@@ -58,7 +58,13 @@ export default function HomePage() {
 
       {/* Footer */}
       <div className="py-8 px-4 text-center text-sm text-[var(--text-muted)] border-t border-[var(--border)] mt-16">
-        <p>jean-ci v0.13.0 · Part of the OpenClaw ecosystem</p>
+        <p>
+          jean-ci v0.13.0
+          {process.env.NEXT_PUBLIC_COMMIT_SHA && process.env.NEXT_PUBLIC_COMMIT_SHA !== 'unknown' && (
+            <span className="text-[var(--text-muted)]"> · {process.env.NEXT_PUBLIC_COMMIT_SHA}</span>
+          )}
+          <span className="text-[var(--text-muted)]"> · Part of the OpenClaw ecosystem</span>
+        </p>
       </div>
     </>
   );

@@ -5,6 +5,10 @@ WORKDIR /app
 # Install wget for healthcheck
 RUN apk add --no-cache wget
 
+# Build arg for commit SHA
+ARG COMMIT_SHA=unknown
+ENV NEXT_PUBLIC_COMMIT_SHA=$COMMIT_SHA
+
 # Copy package files
 COPY package*.json ./
 

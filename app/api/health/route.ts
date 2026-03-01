@@ -4,6 +4,7 @@ export async function GET() {
   return NextResponse.json({ 
     status: 'ok', 
     app: 'jean-ci', 
-    version: '0.13.0' 
+    version: '0.13.0',
+    commit: process.env.NEXT_PUBLIC_COMMIT_SHA || 'unknown',
   });
 }
