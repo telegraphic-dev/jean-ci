@@ -178,7 +178,7 @@ export default function DeploymentsPage() {
                   </td>
                   <td className="py-3 px-4">
                     <Link href={`/admin/repos/${p.repo}`} className="text-[var(--accent)] hover:underline">
-                      {p.repo.split('/')[1]}
+                      {p.repo}
                     </Link>
                   </td>
                   <td className="py-3 px-4 text-center">
