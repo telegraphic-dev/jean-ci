@@ -586,15 +586,28 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
     if (message && !pipeline.message) pipeline.message = message;
     if (author && !pipeline.author) pipeline.author = author;
 
-    // Update stage status
+    // Update stage status (only upgrade status, never downgrade)
+    // Events are ordered newest-first, so we see completed before in_progress
     if (row.event_type === 'workflow_run') {
+      const action = row.action || payload?.action;
       const conclusion = payload?.workflow_run?.conclusion;
       const status = payload?.workflow_run?.status;
-      pipeline.build = {
-        status: conclusion === 'success' ? 'success' : conclusion === 'failure' ? 'failure' : status === 'in_progress' ? 'running' : 'pending',
-        timestamp: row.created_at,
-        url,
-      };
+      
+      // Only update build if we have a better status
+      const currentStatus = pipeline.build.status;
+      let newStatus: 'pending' | 'running' | 'success' | 'failure' = 'pending';
+      
+      if (action === 'completed' && conclusion) {
+        newStatus = conclusion === 'success' ? 'success' : 'failure';
+      } else if (status === 'in_progress') {
+        newStatus = 'running';
+      }
+      
+      // Priority: success/failure > running > pending
+      const priority = { pending: 0, running: 1, success: 2, failure: 2 };
+      if (priority[newStatus] >= priority[currentStatus]) {
+        pipeline.build = { status: newStatus, timestamp: row.created_at, url };
+      }
     } else if (row.event_type === 'registry_package') {
       pipeline.package = {
         status: 'success',
@@ -696,13 +709,23 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
     if (author && !pipeline.author) pipeline.author = author;
 
     if (row.event_type === 'workflow_run') {
+      const action = row.action || payload?.action;
       const conclusion = payload?.workflow_run?.conclusion;
       const status = payload?.workflow_run?.status;
-      pipeline.build = {
-        status: conclusion === 'success' ? 'success' : conclusion === 'failure' ? 'failure' : status === 'in_progress' ? 'running' : 'pending',
-        timestamp: row.created_at,
-        url,
-      };
+      
+      const currentStatus = pipeline.build.status;
+      let newStatus: 'pending' | 'running' | 'success' | 'failure' = 'pending';
+      
+      if (action === 'completed' && conclusion) {
+        newStatus = conclusion === 'success' ? 'success' : 'failure';
+      } else if (status === 'in_progress') {
+        newStatus = 'running';
+      }
+      
+      const priority = { pending: 0, running: 1, success: 2, failure: 2 };
+      if (priority[newStatus] >= priority[currentStatus]) {
+        pipeline.build = { status: newStatus, timestamp: row.created_at, url };
+      }
     } else if (row.event_type === 'registry_package') {
       pipeline.package = { status: 'success', timestamp: row.created_at, url };
     } else if (row.event_type === 'coolify_deployment_success') {
