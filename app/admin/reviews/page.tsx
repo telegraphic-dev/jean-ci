@@ -123,8 +123,8 @@ export default function ReviewsPage() {
         <h1 className="text-2xl font-bold mb-4">Open Pull Requests ({prs.total})</h1>
         <p className="text-[var(--text-secondary)] mb-4">PRs in repositories with code review enabled</p>
         
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
+          <table className="w-full min-w-[800px]">
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
                 <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)] w-16">Status</th>
@@ -191,8 +191,8 @@ export default function ReviewsPage() {
       <div>
         <h2 className="text-xl font-bold mb-4">Review History ({reviews.total})</h2>
         
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          <table className="w-full">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
+          <table className="w-full min-w-[800px]">
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Time</th>
