@@ -149,8 +149,8 @@ export default function ReposPage() {
       </div>
 
       {/* Repos table */}
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-        <table className="w-full">
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
+        <table className="w-full min-w-[600px]">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
