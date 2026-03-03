@@ -85,9 +85,12 @@ export async function runSmokeTests(pending: PendingDeployment): Promise<void> {
     return;
   }
   
-  let octokit;
+  console.log(`Smoke tests: getting octokit for installation ${installation_id}`);
+  
+  let octokit: any;
   try {
     octokit = await getInstallationOctokit(installation_id);
+    console.log(`Smoke tests: octokit type=${typeof octokit}, hasRest=${!!(octokit as any)?.rest}, hasRepos=${!!(octokit as any)?.repos}`);
   } catch (e: any) {
     console.error(`Smoke tests: failed to get octokit for installation ${installation_id}: ${e.message}`);
     return;
@@ -98,8 +101,35 @@ export async function runSmokeTests(pending: PendingDeployment): Promise<void> {
     return;
   }
   
+  // Fetch smoke tests from repo - use octokit.rest.repos if available (newer API)
+  const reposApi = (octokit as any).rest?.repos || (octokit as any).repos;
+  if (!reposApi) {
+    console.error(`Smoke tests: octokit has no repos API. Keys: ${Object.keys(octokit).join(', ')}`);
+    return;
+  }
+  
   // Fetch smoke tests from repo
-  const smokeTests = await fetchSmokeTests(octokit, owner, repo, headSha);
+  let smokeTests: SmokeTest[];
+  try {
+    smokeTests = await fetchSmokeTests({ repos: reposApi }, owner, repo, headSha);
+  } catch (e: any) {
+    console.error(`Smoke tests: failed to fetch smoke tests: ${e.message}`);
+    // Create a failed check to report the error
+    try {
+      const check = await createCheck(octokit, owner, repo, 'Smoke Tests', headSha, 'completed');
+      await updateCheck(octokit, owner, repo, check.id, {
+        status: 'completed',
+        conclusion: 'failure',
+        output: {
+          title: 'Failed to load smoke tests',
+          summary: `Error: ${e.message}\n\nCheck your \`.jean-ci/smoke-tests/\` directory.`,
+        },
+      });
+    } catch (checkErr: any) {
+      console.error(`Smoke tests: failed to report error to GitHub: ${checkErr.message}`);
+    }
+    return;
+  }
   
   if (smokeTests.length === 0) {
     console.log(`No smoke tests found for ${owner}/${repo}`);
