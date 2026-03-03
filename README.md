@@ -223,13 +223,83 @@ The agent will:
 - Take screenshots on failure
 - Report PASS/FAIL based on results
 
-### Preview Deployments
+### Using Playwright CLI
 
-For testing against PR preview deployments, use variables in your prompts:
+For reliable browser automation, instruct the agent to use Playwright CLI via exec:
 
 ```markdown
-Open {{PREVIEW_URL}} in the browser...
+## Test: Verify Dashboard Loads
+
+Use the `exec` tool to run Playwright commands:
+
+```bash
+npx playwright screenshot --browser chromium 'https://your-app.com' /tmp/screenshot.png
 ```
 
-(Preview URL injection coming soon)
+### Steps:
+1. Run the Playwright screenshot command above
+2. Verify the command succeeds (exit code 0)
+3. Optionally fetch the page with web_fetch to verify content
+
+VERDICT: PASS if screenshot succeeds, FAIL otherwise.
+```
+
+This approach:
+- Works reliably without browser service configuration
+- Uses Playwright's built-in Chromium
+- Supports screenshots, PDFs, and page content verification
+
+## Post-Deployment Smoke Tests
+
+jean-ci can run smoke tests automatically after successful Coolify deployments.
+
+### Setup
+
+Add markdown files to `.jean-ci/smoke-tests/` in your repository:
+
+```
+.jean-ci/
+  pr-checks/         # Run on PRs (before merge)
+  smoke-tests/       # Run after deployment
+    health.md        # Basic health check
+    e2e-login.md     # Login flow test
+    api-check.md     # API endpoint verification
+```
+
+### How It Works
+
+```
+Coolify Deploy Success → Webhook → jean-ci:
+  1. Fetch .jean-ci/smoke-tests/*.md
+  2. Run each test via OpenResponses API
+  3. Report results as GitHub Check on commit
+```
+
+### Example Smoke Test
+
+`.jean-ci/smoke-tests/health.md`:
+```markdown
+## Post-Deployment Health Check
+
+Verify the deployed application is healthy.
+
+### Steps:
+1. Fetch {{APP_URL}}/api/health with web_fetch
+2. Verify response contains "ok" or "healthy"
+3. Use exec to run: `curl -s {{APP_URL}}/api/health | jq .status`
+
+### Verdict:
+- VERDICT: PASS if health endpoint returns success
+- VERDICT: FAIL if endpoint is unreachable or returns error
+```
+
+The `{{APP_URL}}` variable is automatically replaced with the deployed app's URL.
+
+### Viewing Results
+
+Smoke test results appear as GitHub Checks on the deployed commit:
+- `jean-ci / smoke-test: health` ✅
+- `jean-ci / smoke-test: e2e-login` ❌
+
+Click through to see detailed output and failure reasons
 

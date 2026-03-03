@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
 import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
 import { insertEvent } from '@/lib/db';
+import { runSmokeTests } from '@/lib/smoke-tests';
 
 export async function POST(req: NextRequest) {
   const payload = await req.json();
@@ -53,6 +54,18 @@ export async function POST(req: NextRequest) {
     checkConclusion = 'success';
     description = message || 'Deployment successful';
     await completePendingDeployment(application_uuid);
+    
+    // Trigger smoke tests asynchronously (don't block webhook response)
+    if (headSha) {
+      runSmokeTests({
+        owner,
+        repo,
+        head_sha: headSha,
+        installation_id: pending.installation_id,
+        app_url: appUrl,
+        logs_url: logsUrl,
+      }).catch(err => console.error('Smoke test error:', err));
+    }
   } else if (event === 'deployment_failed') {
     ghState = 'failure';
     checkConclusion = 'failure';
