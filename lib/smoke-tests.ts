@@ -85,9 +85,12 @@ export async function runSmokeTests(pending: PendingDeployment): Promise<void> {
     return;
   }
   
-  let octokit;
+  console.log(`Smoke tests: getting octokit for installation ${installation_id}`);
+  
+  let octokit: any;
   try {
     octokit = await getInstallationOctokit(installation_id);
+    console.log(`Smoke tests: octokit type=${typeof octokit}, hasRest=${!!(octokit as any)?.rest}, hasRepos=${!!(octokit as any)?.repos}`);
   } catch (e: any) {
     console.error(`Smoke tests: failed to get octokit for installation ${installation_id}: ${e.message}`);
     return;
@@ -98,8 +101,15 @@ export async function runSmokeTests(pending: PendingDeployment): Promise<void> {
     return;
   }
   
+  // Fetch smoke tests from repo - use octokit.rest.repos if available (newer API)
+  const reposApi = (octokit as any).rest?.repos || (octokit as any).repos;
+  if (!reposApi) {
+    console.error(`Smoke tests: octokit has no repos API. Keys: ${Object.keys(octokit).join(', ')}`);
+    return;
+  }
+  
   // Fetch smoke tests from repo
-  const smokeTests = await fetchSmokeTests(octokit, owner, repo, headSha);
+  const smokeTests = await fetchSmokeTests({ repos: reposApi }, owner, repo, headSha);
   
   if (smokeTests.length === 0) {
     console.log(`No smoke tests found for ${owner}/${repo}`);
