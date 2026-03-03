@@ -7,7 +7,12 @@ const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
 const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
 
-export async function callOpenClaw(userPrompt: string, context = '') {
+// Discriminated union type for proper TypeScript narrowing
+type OpenClawResult = 
+  | { success: true; response: string; error?: undefined }
+  | { success: false; error: string; response?: undefined };
+
+export async function callOpenClaw(userPrompt: string, context = ''): Promise<OpenClawResult> {
   if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
     console.log('[MOCK] Would call OpenClaw');
     return { success: true, response: '**VERDICT: PASS**\n\n[Mock mode] Code looks good!' };
@@ -30,7 +35,7 @@ export async function callOpenClaw(userPrompt: string, context = '') {
  * OpenResponses API (/v1/responses)
  * Full agent codepath with tool access (browser, exec, etc.)
  */
-async function callOpenClawResponses(userMessage: string) {
+async function callOpenClawResponses(userMessage: string): Promise<OpenClawResult> {
   const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/responses`, {
     method: 'POST',
     headers: {
@@ -67,7 +72,7 @@ async function callOpenClawResponses(userMessage: string) {
  * Chat Completions API (/v1/chat/completions)
  * Simple LLM call without tool access
  */
-async function callOpenClawChat(userMessage: string) {
+async function callOpenClawChat(userMessage: string): Promise<OpenClawResult> {
   const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: {
