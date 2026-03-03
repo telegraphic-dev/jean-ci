@@ -80,7 +80,23 @@ export async function runSmokeTests(pending: PendingDeployment): Promise<void> {
   
   console.log(`🧪 Running smoke tests for ${owner}/${repo}@${headSha.slice(0, 7)}`);
   
-  const octokit = await getInstallationOctokit(installation_id);
+  if (!installation_id) {
+    console.error('Smoke tests: missing installation_id');
+    return;
+  }
+  
+  let octokit;
+  try {
+    octokit = await getInstallationOctokit(installation_id);
+  } catch (e: any) {
+    console.error(`Smoke tests: failed to get octokit for installation ${installation_id}: ${e.message}`);
+    return;
+  }
+  
+  if (!octokit) {
+    console.error(`Smoke tests: octokit is undefined for installation ${installation_id}`);
+    return;
+  }
   
   // Fetch smoke tests from repo
   const smokeTests = await fetchSmokeTests(octokit, owner, repo, headSha);
