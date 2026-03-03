@@ -174,7 +174,62 @@ Uses the Coolify Traefik proxy bridge:
 - Auth: Bearer token
 
 See COOLIFY_INSTANCES.md for bridge setup details.
-# Test 1772215693
-# Test 1772215887
-# Test 1772216099
+
+## Advanced: Browser-Based E2E Tests
+
+jean-ci can run natural language E2E tests using OpenClaw's browser capabilities.
+
+### Enable OpenResponses API
+
+Set the environment variable to use the full agent codepath:
+
+```bash
+OPENCLAW_USE_RESPONSES=true
+```
+
+This switches from `/v1/chat/completions` (LLM only) to `/v1/responses` (full agent with tools).
+
+**Requires:** The Gateway must have responses endpoint enabled:
+```json
+{
+  "gateway": {
+    "http": {
+      "endpoints": {
+        "responses": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+### Writing E2E Tests
+
+Create `.jean-ci/pr-checks/e2e-*.md` files with natural language test instructions:
+
+```markdown
+## Test: Login Flow
+
+1. Open https://your-app.com in the browser
+2. Click "Sign In"
+3. Enter test@example.com as email
+4. Submit the form
+5. Verify "Welcome back" appears on the dashboard
+
+VERDICT: PASS if all steps succeed, FAIL otherwise.
+```
+
+The agent will:
+- Use browser automation to execute each step
+- Take screenshots on failure
+- Report PASS/FAIL based on results
+
+### Preview Deployments
+
+For testing against PR preview deployments, use variables in your prompts:
+
+```markdown
+Open {{PREVIEW_URL}} in the browser...
+```
+
+(Preview URL injection coming soon)
 
