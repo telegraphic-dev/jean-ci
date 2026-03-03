@@ -97,6 +97,9 @@ export async function handleInstallation(payload: any) {
   }
 }
 
+// Track in-flight deployments to prevent duplicate processing
+const inFlightDeployments = new Set<string>();
+
 export async function handleRegistryPackage(payload: any) {
   const { action, registry_package, repository, sender } = payload;
   
@@ -109,6 +112,17 @@ export async function handleRegistryPackage(payload: any) {
   const packageVersion = registry_package?.package_version?.version;
   const packageUrl = registry_package?.package_version?.package_url || 
                      `ghcr.io/${repository.full_name.toLowerCase()}`;
+  const headSha = registry_package?.package_version?.target_oid;
+  
+  // Deduplicate: skip if already processing this package+SHA combination
+  const dedupeKey = `${packageUrl}:${headSha}`;
+  if (inFlightDeployments.has(dedupeKey)) {
+    console.log(`⏭️ Skipping duplicate registry_package for ${dedupeKey}`);
+    return;
+  }
+  inFlightDeployments.add(dedupeKey);
+  // Clean up after 5 minutes
+  setTimeout(() => inFlightDeployments.delete(dedupeKey), 5 * 60 * 1000);
   
   console.log(`📦 Package published: ${packageUrl}:${packageVersion}`);
 
@@ -122,7 +136,6 @@ export async function handleRegistryPackage(payload: any) {
   const [owner, repo] = repository.full_name.split('/');
   
   const ref = registry_package?.package_version?.target_commitish || repository.default_branch || 'main';
-  const headSha = registry_package?.package_version?.target_oid;
   
   const coolifyConfig = await fetchCoolifyConfig(octokit, owner, repo, ref);
   
