@@ -293,7 +293,16 @@ Verify the deployed application is healthy.
 - VERDICT: FAIL if endpoint is unreachable or returns error
 ```
 
-The `{{APP_URL}}` variable is automatically replaced with the deployed app's URL.
+### Available Variables
+
+Variables in smoke test prompts are automatically replaced:
+
+| Variable | Description |
+|----------|-------------|
+| `{{APP_URL}}` | Deployed application URL |
+| `{{OWNER}}` | Repository owner |
+| `{{REPO}}` | Repository name |
+| `{{SHA}}` | Deployed commit SHA |
 
 ### Viewing Results
 

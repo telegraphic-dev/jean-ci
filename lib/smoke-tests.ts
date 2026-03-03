@@ -126,6 +126,13 @@ async function runSingleSmokeTest(
   
   console.log(`Running smoke test: ${test.name} (db: ${dbId}, check: ${check.id})`);
   
+  // Replace variables in the prompt
+  const processedPrompt = test.prompt
+    .replace(/\{\{APP_URL\}\}/g, appUrl)
+    .replace(/\{\{OWNER\}\}/g, owner)
+    .replace(/\{\{REPO\}\}/g, repo)
+    .replace(/\{\{SHA\}\}/g, headSha);
+  
   // Build context for the smoke test
   const context = `
 ## Deployment Info
@@ -139,7 +146,7 @@ Run the test against this URL.
 `;
 
   try {
-    const result = await callOpenClaw(test.prompt, context);
+    const result = await callOpenClaw(processedPrompt, context);
     
     // Parse verdict
     let conclusion = 'success';
