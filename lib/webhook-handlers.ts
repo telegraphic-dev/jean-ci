@@ -1,4 +1,4 @@
-import { upsertRepo, getRepo } from './db';
+import { upsertRepo, getRepo, insertEvent } from './db';
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
 import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment } from './coolify';
@@ -220,6 +220,26 @@ export async function handleRegistryPackage(payload: any) {
     logsUrl, appUrl,
     installationId: repoConfig.installation_id,
   });
+
+  // Record deployment started event (marks as pending in UI)
+  await insertEvent(
+    'coolify_deployment_started',
+    result.deploymentUuid || null,
+    repository.full_name,
+    'webhook_called',
+    {
+      app_uuid: deployment.coolify_app,
+      deployment_uuid: result.deploymentUuid,
+      _source_repo: repository.full_name,
+      _source_sha: headSha,
+      package_url: packageUrl,
+      package_version: packageVersion,
+      environment,
+      logs_url: logsUrl,
+      app_url: appUrl,
+    },
+    'jean-ci'
+  );
   
   console.log(`✅ Deploy triggered for ${repository.full_name}, waiting for Coolify webhook...`);
 }
