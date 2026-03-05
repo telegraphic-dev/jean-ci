@@ -110,6 +110,17 @@ export async function initDatabase() {
         completed_at TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS jean_ci_pr_reviews (
+        id SERIAL PRIMARY KEY,
+        pr_number INTEGER NOT NULL,
+        repo TEXT NOT NULL,
+        last_reviewed_sha TEXT,
+        is_draft BOOLEAN DEFAULT FALSE,
+        draft_reviewed BOOLEAN DEFAULT FALSE,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (repo, pr_number)
+      );
+
       CREATE TABLE IF NOT EXISTS jean_ci_pending_deployments (
         id SERIAL PRIMARY KEY,
         app_uuid TEXT UNIQUE NOT NULL,
@@ -222,6 +233,15 @@ export interface CheckRun {
   completed_at?: Date;
 }
 
+export interface PRReviewState {
+  pr_number: number;
+  repo: string;
+  last_reviewed_sha?: string;
+  is_draft: boolean;
+  draft_reviewed: boolean;
+  updated_at: Date;
+}
+
 export async function insertCheckRun(data: {
   github_check_id?: number;
   repo: string;
@@ -268,6 +288,33 @@ export async function setCheckRunGithubId(id: number, githubCheckId: number) {
 export async function getCheckRun(id: number): Promise<CheckRun | null> {
   const result = await pool.query('SELECT * FROM jean_ci_check_runs WHERE id = $1', [id]);
   return result.rows[0] || null;
+}
+
+export async function getPRReviewState(repo: string, prNumber: number): Promise<PRReviewState | null> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_pr_reviews WHERE repo = $1 AND pr_number = $2',
+    [repo, prNumber]
+  );
+  return result.rows[0] || null;
+}
+
+export async function upsertPRReviewState(data: {
+  pr_number: number;
+  repo: string;
+  last_reviewed_sha?: string;
+  is_draft: boolean;
+  draft_reviewed: boolean;
+}) {
+  await pool.query(`
+    INSERT INTO jean_ci_pr_reviews
+    (pr_number, repo, last_reviewed_sha, is_draft, draft_reviewed, updated_at)
+    VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+    ON CONFLICT (repo, pr_number) DO UPDATE SET
+      last_reviewed_sha = $3,
+      is_draft = $4,
+      draft_reviewed = $5,
+      updated_at = CURRENT_TIMESTAMP
+  `, [data.pr_number, data.repo, data.last_reviewed_sha || null, data.is_draft, data.draft_reviewed]);
 }
 
 // Event helpers
