@@ -1,4 +1,4 @@
-import { upsertRepo, getRepo } from './db';
+import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState } from './db';
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
 import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment } from './coolify';
@@ -10,19 +10,125 @@ const OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = process.env.OPENCLAW_NOTIFY_ON_CHAN
 
 // Regex to extract session key from PR body: <!-- oc-session:key -->
 const SESSION_REGEX = /<!--\s*oc-session:([^\s]+)\s*-->/;
+const REVIEW_TRIGGER_REGEX = /(^|\s)\/review(\s|$)/i;
+const MENTION_TRIGGER = '@jean-ci review';
+
+function enqueuePRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string) {
+  runPRReview(installationId, owner, repo, prNumber, headSha)
+    .catch(err => console.error('PR review error:', err));
+}
 
 export async function handlePullRequest(payload: any) {
   const { action, pull_request, repository, installation } = payload;
   const repo = repository.full_name;
-  
+
   await upsertRepo(repo, installation.id, false);
-  
-  if (action === 'opened' || action === 'synchronize' || action === 'reopened') {
-    const [owner, repoName] = repo.split('/');
-    // Run asynchronously
-    runPRReview(installation.id, owner, repoName, pull_request.number, pull_request.head.sha)
-      .catch(err => console.error('PR review error:', err));
+  const repoConfig = await getRepo(repo);
+  if (!repoConfig?.pr_review_enabled) {
+    return;
   }
+
+  const [owner, repoName] = repo.split('/');
+  const prNumber = pull_request.number;
+  const headSha = pull_request.head.sha;
+  const isDraft = !!pull_request.draft;
+
+  if (action === 'ready_for_review') {
+    const previousState = await getPRReviewState(repo, prNumber);
+    await upsertPRReviewState({
+      repo,
+      pr_number: prNumber,
+      last_reviewed_sha: headSha,
+      is_draft: false,
+      draft_reviewed: previousState?.draft_reviewed ?? false,
+    });
+    enqueuePRReview(installation.id, owner, repoName, prNumber, headSha);
+    return;
+  }
+
+  if (action !== 'opened' && action !== 'synchronize' && action !== 'reopened') {
+    return;
+  }
+
+  if (!isDraft) {
+    const previousState = await getPRReviewState(repo, prNumber);
+    await upsertPRReviewState({
+      repo,
+      pr_number: prNumber,
+      last_reviewed_sha: headSha,
+      is_draft: false,
+      draft_reviewed: previousState?.draft_reviewed ?? false,
+    });
+    enqueuePRReview(installation.id, owner, repoName, prNumber, headSha);
+    return;
+  }
+
+  const reviewState = await getPRReviewState(repo, prNumber);
+  if (reviewState?.draft_reviewed) {
+    await upsertPRReviewState({
+      repo,
+      pr_number: prNumber,
+      last_reviewed_sha: reviewState.last_reviewed_sha,
+      is_draft: true,
+      draft_reviewed: true,
+    });
+    console.log(`⏭️ Draft PR ${repo}#${prNumber} already reviewed once, skipping`);
+    return;
+  }
+
+  await upsertPRReviewState({
+    repo,
+    pr_number: prNumber,
+    last_reviewed_sha: headSha,
+    is_draft: true,
+    draft_reviewed: true,
+  });
+  enqueuePRReview(installation.id, owner, repoName, prNumber, headSha);
+}
+
+export async function handleIssueComment(payload: any) {
+  const { action, issue, comment, repository, installation } = payload;
+
+  if (action !== 'created' || !issue?.pull_request) {
+    return;
+  }
+
+  const body = (comment?.body || '').toLowerCase();
+  if (!REVIEW_TRIGGER_REGEX.test(body) && !body.includes(MENTION_TRIGGER)) {
+    return;
+  }
+
+  if (!installation?.id) {
+    console.log('issue_comment missing installation id, skipping review trigger');
+    return;
+  }
+
+  const repo = repository.full_name;
+  await upsertRepo(repo, installation.id, false);
+  const repoConfig = await getRepo(repo);
+  if (!repoConfig?.pr_review_enabled) {
+    return;
+  }
+
+  const [owner, repoName] = repo.split('/');
+  const prNumber = issue.number;
+
+  const octokit = await getInstallationOctokit(installation.id);
+  const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner,
+    repo: repoName,
+    pull_number: prNumber,
+  });
+
+  await upsertPRReviewState({
+    repo,
+    pr_number: prNumber,
+    last_reviewed_sha: pr.head.sha,
+    is_draft: !!pr.draft,
+    draft_reviewed: !!pr.draft,
+  });
+
+  enqueuePRReview(installation.id, owner, repoName, prNumber, pr.head.sha);
 }
 
 export async function handlePullRequestReview(payload: any) {
@@ -220,6 +326,26 @@ export async function handleRegistryPackage(payload: any) {
     logsUrl, appUrl,
     installationId: repoConfig.installation_id,
   });
+
+  // Record deployment started event (marks as pending in UI)
+  await insertEvent(
+    'coolify_deployment_started',
+    result.deploymentUuid || null,
+    repository.full_name,
+    'webhook_called',
+    {
+      app_uuid: deployment.coolify_app,
+      deployment_uuid: result.deploymentUuid,
+      _source_repo: repository.full_name,
+      _source_sha: headSha,
+      package_url: packageUrl,
+      package_version: packageVersion,
+      environment,
+      logs_url: logsUrl,
+      app_url: appUrl,
+    },
+    'jean-ci'
+  );
   
   console.log(`✅ Deploy triggered for ${repository.full_name}, waiting for Coolify webhook...`);
 }
@@ -231,6 +357,9 @@ export async function handleEvent(event: string, payload: any) {
       break;
     case 'pull_request_review':
       await handlePullRequestReview(payload);
+      break;
+    case 'issue_comment':
+      await handleIssueComment(payload);
       break;
     case 'installation':
     case 'installation_repositories':
