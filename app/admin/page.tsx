@@ -9,6 +9,8 @@ interface Stats {
   recentEvents: number;
   openPRs: number;
   pendingDeploys: number;
+  totalTasks: number;
+  failedTasks24h: number;
 }
 
 export default function AdminOverview() {
@@ -19,13 +21,16 @@ export default function AdminOverview() {
       fetch('/api/repos').then(r => r.json()),
       fetch('/api/events').then(r => r.json()),
       fetch('/api/stats').then(r => r.json()),
-    ]).then(([repos, events, dashStats]) => {
+      fetch('/api/tasks/stats').then(r => r.json()).catch(() => ({ stats: { total: 0, last_24h_failures: 0 } })),
+    ]).then(([repos, events, dashStats, taskStats]) => {
       setStats({
         totalRepos: repos.length,
         enabledRepos: repos.filter((r: any) => r.pr_review_enabled).length,
         recentEvents: events.length,
         openPRs: dashStats.openPRs,
         pendingDeploys: dashStats.pendingDeploys,
+        totalTasks: taskStats.stats?.total || 0,
+        failedTasks24h: taskStats.stats?.last_24h_failures || 0,
       });
     });
   }, []);
@@ -34,7 +39,7 @@ export default function AdminOverview() {
     <div>
       <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
       
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-8">
         <Link href="/admin/reviews" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
           <div className="text-3xl mb-2">🔀</div>
           <div className="text-3xl font-bold text-[var(--blue)]">{stats?.openPRs ?? '...'}</div>
@@ -63,6 +68,12 @@ export default function AdminOverview() {
           <div className="text-3xl mb-2">📋</div>
           <div className="text-3xl font-bold">{stats?.recentEvents ?? '...'}</div>
           <div className="text-sm text-[var(--text-secondary)]">Events</div>
+        </Link>
+        
+        <Link href="/admin/tasks" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
+          <div className="text-3xl mb-2">⏰</div>
+          <div className="text-3xl font-bold">{stats?.totalTasks ?? '...'}</div>
+          <div className="text-sm text-[var(--text-secondary)]">Tasks {stats?.failedTasks24h ? <span className="text-[var(--red)]">({stats.failedTasks24h} failed)</span> : ''}</div>
         </Link>
       </div>
 

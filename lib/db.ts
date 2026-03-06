@@ -143,6 +143,39 @@ export async function initDatabase() {
           ALTER TABLE jean_ci_pending_deployments ADD COLUMN coolify_deployment_uuid TEXT;
         END IF;
       END $$;
+
+      -- Scheduled tasks
+      CREATE TABLE IF NOT EXISTS jean_ci_tasks (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        cron_expression TEXT NOT NULL,
+        repo TEXT,
+        task_type TEXT NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}',
+        enabled BOOLEAN DEFAULT TRUE,
+        notify_on_failure BOOLEAN DEFAULT TRUE,
+        notify_session TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_tasks_repo ON jean_ci_tasks(repo);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_tasks_enabled ON jean_ci_tasks(enabled);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_task_executions (
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES jean_ci_tasks(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP,
+        duration_ms INTEGER,
+        output TEXT,
+        error TEXT,
+        trigger TEXT DEFAULT 'cron'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_task_executions_task_id ON jean_ci_task_executions(task_id);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_task_executions_started_at ON jean_ci_task_executions(started_at DESC);
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -1151,4 +1184,342 @@ export async function getPendingDeploymentsCount(): Promise<number> {
     'SELECT COUNT(*) as count FROM jean_ci_pending_deployments'
   );
   return parseInt(result.rows[0]?.count || '0', 10);
+}
+
+// =============================================================================
+// Scheduled Tasks
+// =============================================================================
+
+export type TaskType = 'command' | 'webhook' | 'health_check' | 'llm_check';
+export type TaskStatus = 'pending' | 'running' | 'success' | 'failure' | 'timeout';
+export type TriggerType = 'cron' | 'manual' | 'webhook';
+
+export interface Task {
+  id: number;
+  name: string;
+  cron_expression: string;
+  repo: string | null;
+  task_type: TaskType;
+  config: Record<string, any>;
+  enabled: boolean;
+  notify_on_failure: boolean;
+  notify_session: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface TaskExecution {
+  id: number;
+  task_id: number;
+  status: TaskStatus;
+  started_at: Date;
+  completed_at: Date | null;
+  duration_ms: number | null;
+  output: string | null;
+  error: string | null;
+  trigger: TriggerType;
+}
+
+export interface TaskWithStats extends Task {
+  last_execution?: TaskExecution | null;
+  success_count: number;
+  failure_count: number;
+  avg_duration_ms: number | null;
+}
+
+// Task CRUD
+export async function createTask(data: {
+  name: string;
+  cron_expression: string;
+  repo?: string | null;
+  task_type: TaskType;
+  config: Record<string, any>;
+  enabled?: boolean;
+  notify_on_failure?: boolean;
+  notify_session?: string | null;
+}): Promise<Task> {
+  const result = await pool.query(
+    `INSERT INTO jean_ci_tasks (name, cron_expression, repo, task_type, config, enabled, notify_on_failure, notify_session)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING *`,
+    [
+      data.name,
+      data.cron_expression,
+      data.repo || null,
+      data.task_type,
+      JSON.stringify(data.config),
+      data.enabled ?? true,
+      data.notify_on_failure ?? true,
+      data.notify_session || null,
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function getTask(id: number): Promise<Task | null> {
+  const result = await pool.query('SELECT * FROM jean_ci_tasks WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function getAllTasks(repo?: string | null): Promise<Task[]> {
+  if (repo === undefined) {
+    // All tasks
+    const result = await pool.query('SELECT * FROM jean_ci_tasks ORDER BY name');
+    return result.rows;
+  } else if (repo === null) {
+    // Global tasks only
+    const result = await pool.query('SELECT * FROM jean_ci_tasks WHERE repo IS NULL ORDER BY name');
+    return result.rows;
+  } else {
+    // Specific repo tasks + global tasks
+    const result = await pool.query(
+      'SELECT * FROM jean_ci_tasks WHERE repo = $1 OR repo IS NULL ORDER BY repo NULLS FIRST, name',
+      [repo]
+    );
+    return result.rows;
+  }
+}
+
+export async function getEnabledTasks(): Promise<Task[]> {
+  const result = await pool.query('SELECT * FROM jean_ci_tasks WHERE enabled = TRUE ORDER BY name');
+  return result.rows;
+}
+
+export async function updateTask(id: number, data: Partial<{
+  name: string;
+  cron_expression: string;
+  repo: string | null;
+  task_type: TaskType;
+  config: Record<string, any>;
+  enabled: boolean;
+  notify_on_failure: boolean;
+  notify_session: string | null;
+}>): Promise<Task | null> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (data.name !== undefined) {
+    fields.push(`name = $${paramIndex++}`);
+    values.push(data.name);
+  }
+  if (data.cron_expression !== undefined) {
+    fields.push(`cron_expression = $${paramIndex++}`);
+    values.push(data.cron_expression);
+  }
+  if (data.repo !== undefined) {
+    fields.push(`repo = $${paramIndex++}`);
+    values.push(data.repo);
+  }
+  if (data.task_type !== undefined) {
+    fields.push(`task_type = $${paramIndex++}`);
+    values.push(data.task_type);
+  }
+  if (data.config !== undefined) {
+    fields.push(`config = $${paramIndex++}`);
+    values.push(JSON.stringify(data.config));
+  }
+  if (data.enabled !== undefined) {
+    fields.push(`enabled = $${paramIndex++}`);
+    values.push(data.enabled);
+  }
+  if (data.notify_on_failure !== undefined) {
+    fields.push(`notify_on_failure = $${paramIndex++}`);
+    values.push(data.notify_on_failure);
+  }
+  if (data.notify_session !== undefined) {
+    fields.push(`notify_session = $${paramIndex++}`);
+    values.push(data.notify_session);
+  }
+
+  if (fields.length === 0) return getTask(id);
+
+  fields.push(`updated_at = CURRENT_TIMESTAMP`);
+  values.push(id);
+
+  const result = await pool.query(
+    `UPDATE jean_ci_tasks SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+    values
+  );
+  return result.rows[0] || null;
+}
+
+export async function deleteTask(id: number): Promise<boolean> {
+  const result = await pool.query('DELETE FROM jean_ci_tasks WHERE id = $1', [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+// Task Executions
+export async function createTaskExecution(taskId: number, trigger: TriggerType = 'cron'): Promise<TaskExecution> {
+  const result = await pool.query(
+    `INSERT INTO jean_ci_task_executions (task_id, status, trigger)
+     VALUES ($1, 'running', $2)
+     RETURNING *`,
+    [taskId, trigger]
+  );
+  return result.rows[0];
+}
+
+export async function updateTaskExecution(
+  id: number,
+  data: {
+    status: TaskStatus;
+    output?: string | null;
+    error?: string | null;
+  }
+): Promise<TaskExecution | null> {
+  const result = await pool.query(
+    `UPDATE jean_ci_task_executions 
+     SET status = $1, 
+         output = $2, 
+         error = $3,
+         completed_at = CURRENT_TIMESTAMP,
+         duration_ms = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * 1000
+     WHERE id = $4
+     RETURNING *`,
+    [data.status, data.output || null, data.error || null, id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getTaskExecutions(
+  taskId: number,
+  limit: number = 50,
+  offset: number = 0
+): Promise<TaskExecution[]> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_task_executions 
+     WHERE task_id = $1 
+     ORDER BY started_at DESC 
+     LIMIT $2 OFFSET $3`,
+    [taskId, limit, offset]
+  );
+  return result.rows;
+}
+
+export async function getTaskExecution(id: number): Promise<TaskExecution | null> {
+  const result = await pool.query('SELECT * FROM jean_ci_task_executions WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function getLastTaskExecution(taskId: number): Promise<TaskExecution | null> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_task_executions 
+     WHERE task_id = $1 
+     ORDER BY started_at DESC 
+     LIMIT 1`,
+    [taskId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getTasksWithStats(): Promise<TaskWithStats[]> {
+  const result = await pool.query(`
+    SELECT 
+      t.*,
+      (SELECT COUNT(*) FROM jean_ci_task_executions e WHERE e.task_id = t.id AND e.status = 'success') as success_count,
+      (SELECT COUNT(*) FROM jean_ci_task_executions e WHERE e.task_id = t.id AND e.status = 'failure') as failure_count,
+      (SELECT AVG(duration_ms) FROM jean_ci_task_executions e WHERE e.task_id = t.id AND e.status = 'success') as avg_duration_ms
+    FROM jean_ci_tasks t
+    ORDER BY t.name
+  `);
+  
+  const tasks: TaskWithStats[] = [];
+  for (const row of result.rows) {
+    const lastExec = await getLastTaskExecution(row.id);
+    tasks.push({
+      ...row,
+      success_count: parseInt(row.success_count, 10),
+      failure_count: parseInt(row.failure_count, 10),
+      avg_duration_ms: row.avg_duration_ms ? parseFloat(row.avg_duration_ms) : null,
+      last_execution: lastExec,
+    });
+  }
+  return tasks;
+}
+
+export async function getRecentTaskExecutions(limit: number = 20): Promise<(TaskExecution & { task_name: string })[]> {
+  const result = await pool.query(
+    `SELECT e.*, t.name as task_name 
+     FROM jean_ci_task_executions e
+     JOIN jean_ci_tasks t ON e.task_id = t.id
+     ORDER BY e.started_at DESC 
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows;
+}
+
+export async function getTaskStats(): Promise<{
+  total: number;
+  enabled: number;
+  global: number;
+  repo_bound: number;
+  last_24h_runs: number;
+  last_24h_failures: number;
+}> {
+  const result = await pool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM jean_ci_tasks) as total,
+      (SELECT COUNT(*) FROM jean_ci_tasks WHERE enabled = TRUE) as enabled,
+      (SELECT COUNT(*) FROM jean_ci_tasks WHERE repo IS NULL) as global,
+      (SELECT COUNT(*) FROM jean_ci_tasks WHERE repo IS NOT NULL) as repo_bound,
+      (SELECT COUNT(*) FROM jean_ci_task_executions WHERE started_at > NOW() - INTERVAL '24 hours') as last_24h_runs,
+      (SELECT COUNT(*) FROM jean_ci_task_executions WHERE started_at > NOW() - INTERVAL '24 hours' AND status = 'failure') as last_24h_failures
+  `);
+  const row = result.rows[0];
+  return {
+    total: parseInt(row.total, 10),
+    enabled: parseInt(row.enabled, 10),
+    global: parseInt(row.global, 10),
+    repo_bound: parseInt(row.repo_bound, 10),
+    last_24h_runs: parseInt(row.last_24h_runs, 10),
+    last_24h_failures: parseInt(row.last_24h_failures, 10),
+  };
+}
+
+// Sync tasks from repo config
+export async function syncRepoTasks(repo: string, tasks: Array<{
+  name: string;
+  cron: string;
+  type: TaskType;
+  config: Record<string, any>;
+}>): Promise<{ created: number; updated: number; deleted: number }> {
+  const existing = await pool.query(
+    'SELECT id, name FROM jean_ci_tasks WHERE repo = $1',
+    [repo]
+  );
+  const existingByName = new Map(existing.rows.map(r => [r.name, r.id]));
+  const newNames = new Set(tasks.map(t => t.name));
+
+  let created = 0;
+  let updated = 0;
+
+  for (const task of tasks) {
+    if (existingByName.has(task.name)) {
+      await updateTask(existingByName.get(task.name)!, {
+        cron_expression: task.cron,
+        task_type: task.type,
+        config: task.config,
+      });
+      updated++;
+    } else {
+      await createTask({
+        name: task.name,
+        cron_expression: task.cron,
+        repo,
+        task_type: task.type,
+        config: task.config,
+      });
+      created++;
+    }
+  }
+
+  // Delete tasks no longer in config
+  const toDelete = existing.rows.filter(r => !newNames.has(r.name)).map(r => r.id);
+  for (const id of toDelete) {
+    await deleteTask(id);
+  }
+
+  return { created, updated, deleted: toDelete.length };
 }

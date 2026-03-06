@@ -8,6 +8,7 @@ GitHub webhook handler for automated PR reviews with LLM assistance.
 - **Customizable Prompts**: Edit the global review prompt in the admin UI
 - **Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for custom checks
 - **GitHub Checks Integration**: Results appear as nested checks on PRs
+- **Scheduled Tasks**: Monitor health checks, webhooks, and LLM-powered checks on a schedule
 - **Admin Dashboard**: GitHub OAuth protected management interface
 
 ## Architecture
@@ -311,4 +312,198 @@ Smoke test results appear as GitHub Checks on the deployed commit:
 - `jean-ci / smoke-test: e2e-login` ❌
 
 Click through to see detailed output and failure reasons
+
+## Scheduled Task Monitoring
+
+jean-ci can monitor scheduled tasks across repositories, running health checks, webhooks, and LLM-powered validations on a cron schedule.
+
+### Task Types
+
+#### 1. Health Check
+Verify service availability by calling an HTTP endpoint.
+
+```yaml
+# .jean-ci/tasks.yml
+tasks:
+  - name: "API Health Check"
+    cron: "*/5 * * * *"  # Every 5 minutes
+    type: health_check
+    config:
+      url: "https://api.example.com/health"
+      method: GET
+      expected_status: 200
+      expected_body_contains: "ok"
+      timeout_ms: 5000
+```
+
+#### 2. Webhook
+Call an HTTP endpoint and verify the response.
+
+```yaml
+tasks:
+  - name: "Daily Cleanup"
+    cron: "0 3 * * *"  # Daily at 3am
+    type: webhook
+    config:
+      url: "https://api.example.com/cron/cleanup"
+      method: POST
+      expected_status: 200
+      headers:
+        Authorization: "Bearer ${SECRET_TOKEN}"
+```
+
+#### 3. LLM Check
+Use OpenClaw's LLM to analyze data and detect anomalies.
+
+```yaml
+tasks:
+  - name: "Error Log Analysis"
+    cron: "0 9 * * *"  # Daily at 9am
+    type: llm_check
+    config:
+      prompt: "Analyze error logs and report any critical issues"
+      data_url: "https://api.example.com/logs?date=yesterday"
+      model: "claude-sonnet"
+```
+
+### Repository Configuration
+
+Add `.jean-ci/tasks.yml` to define repo-specific tasks:
+
+```yaml
+tasks:
+  - name: "Database Backup Verification"
+    cron: "0 4 * * *"
+    type: health_check
+    config:
+      url: "${APP_URL}/api/backup/status"
+      expected_status: 200
+
+  - name: "Cache Cleanup"
+    cron: "0 */6 * * *"  # Every 6 hours
+    type: webhook
+    config:
+      url: "${APP_URL}/api/cache/clear"
+      method: POST
+```
+
+**Sync tasks to jean-ci:**
+```bash
+curl -X POST https://jean-ci.example.com/api/tasks/sync \
+  -H "Content-Type: application/json" \
+  -d '{"repo": "owner/repo"}'
+```
+
+### Global Tasks
+
+Create global tasks (not tied to a specific repo) via the Admin UI:
+
+1. Go to **Admin → Tasks**
+2. Click **+ New Task**
+3. Fill in:
+   - Name, cron expression, task type
+   - Config (URL, method, expected status)
+   - Notification settings
+
+Global tasks run for infrastructure monitoring, cross-repo checks, or periodic maintenance.
+
+### Triggering Task Execution
+
+jean-ci supports two execution modes:
+
+#### Serverless Mode (Recommended for Coolify/Vercel)
+
+Call the cron endpoint from an external scheduler:
+
+**Coolify Scheduled Task:**
+```bash
+# Create a Coolify scheduled task:
+# Frequency: */5 * * * * (every 5 minutes)
+# Command:
+curl -X POST https://jean-ci.example.com/api/tasks/cron \
+  -H "Authorization: Bearer ${CRON_SECRET}"
+```
+
+**Vercel Cron:**
+Add to `vercel.json`:
+```json
+{
+  "crons": [{
+    "path": "/api/tasks/cron",
+    "schedule": "*/5 * * * *"
+  }]
+}
+```
+
+#### Persistent Mode (Long-running server)
+
+Set `TASK_RUNNER_ENABLED=true` to run an in-process cron scheduler.
+
+### Notifications
+
+Tasks can notify on failure via OpenClaw sessions:
+
+**In task config:**
+```yaml
+tasks:
+  - name: "Critical API Check"
+    cron: "*/10 * * * *"
+    type: health_check
+    config:
+      url: "https://api.example.com/health"
+    notify_on_failure: true
+    notify_session: "discord:1234567890"  # Your OpenClaw session key
+```
+
+When a task fails, you'll receive a message:
+```
+⚠️ Scheduled Task Failed
+
+Task: Critical API Check
+Type: health_check
+Repo: owner/repo
+Error: Expected status 200, got 503
+```
+
+### Viewing Task Status
+
+**Admin Dashboard:**
+- Go to **Admin → Tasks**
+- See all tasks, last run status, success/failure counts
+- Click **View** for execution history
+- Click **Run** to trigger manually
+
+**API:**
+```bash
+# List all tasks with stats
+curl https://jean-ci.example.com/api/tasks?stats=true
+
+# Get task execution history
+curl https://jean-ci.example.com/api/tasks/123/executions
+
+# Trigger manual run
+curl -X POST https://jean-ci.example.com/api/tasks/123/run
+```
+
+### Environment Variables
+
+```bash
+# Task execution
+TASK_RUNNER_ENABLED=false           # Set to "true" for persistent mode
+TASK_DEFAULT_TIMEOUT_SECONDS=300    # Default task timeout
+CRON_SECRET=your-secret-here        # Protect /api/tasks/cron endpoint
+
+# Notifications
+OPENCLAW_GATEWAY_URL=http://coolify-proxy/openclaw
+OPENCLAW_GATEWAY_TOKEN=your-token
+```
+
+### Dashboard Metrics
+
+The Tasks page shows:
+- Total tasks (global + repo-bound)
+- Enabled vs disabled tasks
+- Last 24h runs and failures
+- Success/failure rates per task
+- Average execution duration
 
