@@ -1300,43 +1300,44 @@ export async function getTaskEvents(options: {
 }): Promise<{ events: TaskEvent[]; total: number }> {
   const { repo, taskName, limit = 50, offset = 0 } = options;
   
-  let whereClause = "WHERE event_type IN ('coolify_task_success', 'coolify_task_failed')";
+  let whereClause = "WHERE e.event_type IN ('coolify_task_success', 'coolify_task_failed')";
   const params: any[] = [];
   let paramIndex = 1;
   
   if (repo) {
-    whereClause += ` AND repo = $${paramIndex++}`;
+    whereClause += ` AND e.repo = $${paramIndex++}`;
     params.push(repo);
   }
   if (taskName) {
-    whereClause += ` AND payload->>'task_name' = $${paramIndex++}`;
+    whereClause += ` AND e.payload->>'task_name' = $${paramIndex++}`;
     params.push(taskName);
   }
   
   // Get total count
   const countResult = await pool.query(
-    `SELECT COUNT(*) as count FROM jean_ci_webhook_events ${whereClause}`,
+    `SELECT COUNT(*) as count FROM jean_ci_webhook_events e ${whereClause}`,
     params
   );
   const total = parseInt(countResult.rows[0].count, 10);
   
-  // Get events
+  // Get events with app name from mapping table
   const result = await pool.query(
     `SELECT 
-      id,
-      event_type,
-      payload->>'task_name' as task_name,
-      payload->>'task_uuid' as task_uuid,
-      payload->>'application_uuid' as app_uuid,
-      payload->>'application_name' as app_name,
-      repo,
-      CASE WHEN event_type = 'coolify_task_success' THEN 'success' ELSE 'failure' END as status,
-      payload->>'output' as output,
-      payload->>'url' as url,
-      created_at
-    FROM jean_ci_webhook_events
+      e.id,
+      e.event_type,
+      e.payload->>'task_name' as task_name,
+      e.payload->>'task_uuid' as task_uuid,
+      e.payload->>'application_uuid' as app_uuid,
+      COALESCE(m.coolify_app_name, e.payload->>'application_name') as app_name,
+      e.repo,
+      CASE WHEN e.event_type = 'coolify_task_success' THEN 'success' ELSE 'failure' END as status,
+      e.payload->>'output' as output,
+      e.payload->>'url' as url,
+      e.created_at
+    FROM jean_ci_webhook_events e
+    LEFT JOIN jean_ci_app_mappings m ON e.payload->>'application_uuid' = m.coolify_app_uuid
     ${whereClause}
-    ORDER BY created_at DESC
+    ORDER BY e.created_at DESC
     LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
     [...params, limit, offset]
   );
@@ -1346,39 +1347,40 @@ export async function getTaskEvents(options: {
 
 // Get task summary (grouped by task name + app)
 export async function getTaskSummary(repo?: string): Promise<TaskSummary[]> {
-  let whereClause = "WHERE event_type IN ('coolify_task_success', 'coolify_task_failed')";
+  let whereClause = "WHERE e.event_type IN ('coolify_task_success', 'coolify_task_failed')";
   const params: any[] = [];
   
   if (repo) {
-    whereClause += ' AND repo = $1';
+    whereClause += ' AND e.repo = $1';
     params.push(repo);
   }
   
   const result = await pool.query(
     `WITH task_stats AS (
       SELECT 
-        COALESCE(payload->>'task_name', 'Unknown') as task_name,
-        payload->>'application_uuid' as app_uuid,
-        COALESCE(payload->>'application_name', payload->>'_app_name') as app_name,
-        repo,
+        COALESCE(e.payload->>'task_name', 'Unknown') as task_name,
+        e.payload->>'application_uuid' as app_uuid,
+        COALESCE(m.coolify_app_name, e.payload->>'application_name', e.payload->>'_app_name') as app_name,
+        e.repo,
         COUNT(*) as total_runs,
-        SUM(CASE WHEN event_type = 'coolify_task_success' THEN 1 ELSE 0 END) as success_count,
-        SUM(CASE WHEN event_type = 'coolify_task_failed' THEN 1 ELSE 0 END) as failure_count,
-        MAX(created_at) as last_run
-      FROM jean_ci_webhook_events
+        SUM(CASE WHEN e.event_type = 'coolify_task_success' THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN e.event_type = 'coolify_task_failed' THEN 1 ELSE 0 END) as failure_count,
+        MAX(e.created_at) as last_run
+      FROM jean_ci_webhook_events e
+      LEFT JOIN jean_ci_app_mappings m ON e.payload->>'application_uuid' = m.coolify_app_uuid
       ${whereClause}
-      GROUP BY task_name, app_uuid, app_name, repo
+      GROUP BY task_name, app_uuid, app_name, e.repo
     ),
     last_events AS (
-      SELECT DISTINCT ON (COALESCE(payload->>'task_name', 'Unknown'), payload->>'application_uuid')
-        COALESCE(payload->>'task_name', 'Unknown') as task_name,
-        payload->>'application_uuid' as app_uuid,
-        event_type,
-        payload->>'output' as output,
-        payload->>'url' as url
-      FROM jean_ci_webhook_events
+      SELECT DISTINCT ON (COALESCE(e.payload->>'task_name', 'Unknown'), e.payload->>'application_uuid')
+        COALESCE(e.payload->>'task_name', 'Unknown') as task_name,
+        e.payload->>'application_uuid' as app_uuid,
+        e.event_type,
+        e.payload->>'output' as output,
+        e.payload->>'url' as url
+      FROM jean_ci_webhook_events e
       ${whereClause}
-      ORDER BY COALESCE(payload->>'task_name', 'Unknown'), payload->>'application_uuid', created_at DESC
+      ORDER BY COALESCE(e.payload->>'task_name', 'Unknown'), e.payload->>'application_uuid', e.created_at DESC
     )
     SELECT 
       ts.task_name,
