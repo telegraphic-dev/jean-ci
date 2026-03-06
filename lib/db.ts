@@ -1251,3 +1251,172 @@ export async function getRepoForApp(coolifyAppUuid: string): Promise<string | nu
   );
   return result.rows[0]?.github_repo || null;
 }
+
+// =============================================================================
+// Coolify Task Events (Cron Jobs)
+// =============================================================================
+
+export interface TaskEvent {
+  id: number;
+  event_type: string;
+  task_name: string | null;
+  task_uuid: string | null;
+  app_uuid: string | null;
+  app_name: string | null;
+  repo: string | null;
+  status: 'success' | 'failure';
+  output: string | null;
+  url: string | null;
+  created_at: Date;
+}
+
+export interface TaskSummary {
+  task_name: string;
+  app_uuid: string | null;
+  app_name: string | null;
+  repo: string | null;
+  total_runs: number;
+  success_count: number;
+  failure_count: number;
+  last_run: Date;
+  last_status: 'success' | 'failure';
+  last_output: string | null;
+  url: string | null;
+}
+
+export interface TaskStats {
+  total_tasks: number;
+  total_runs: number;
+  runs_24h: number;
+  failures_24h: number;
+}
+
+// Get task events with optional filters
+export async function getTaskEvents(options: {
+  repo?: string;
+  taskName?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ events: TaskEvent[]; total: number }> {
+  const { repo, taskName, limit = 50, offset = 0 } = options;
+  
+  let whereClause = "WHERE event_type IN ('coolify_task_success', 'coolify_task_failed')";
+  const params: any[] = [];
+  let paramIndex = 1;
+  
+  if (repo) {
+    whereClause += ` AND repo = $${paramIndex++}`;
+    params.push(repo);
+  }
+  if (taskName) {
+    whereClause += ` AND payload->>'task_name' = $${paramIndex++}`;
+    params.push(taskName);
+  }
+  
+  // Get total count
+  const countResult = await pool.query(
+    `SELECT COUNT(*) as count FROM jean_ci_webhook_events ${whereClause}`,
+    params
+  );
+  const total = parseInt(countResult.rows[0].count, 10);
+  
+  // Get events
+  const result = await pool.query(
+    `SELECT 
+      id,
+      event_type,
+      payload->>'task_name' as task_name,
+      payload->>'task_uuid' as task_uuid,
+      payload->>'application_uuid' as app_uuid,
+      payload->>'application_name' as app_name,
+      repo,
+      CASE WHEN event_type = 'coolify_task_success' THEN 'success' ELSE 'failure' END as status,
+      payload->>'output' as output,
+      payload->>'url' as url,
+      created_at
+    FROM jean_ci_webhook_events
+    ${whereClause}
+    ORDER BY created_at DESC
+    LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+    [...params, limit, offset]
+  );
+  
+  return { events: result.rows, total };
+}
+
+// Get task summary (grouped by task name + app)
+export async function getTaskSummary(repo?: string): Promise<TaskSummary[]> {
+  let whereClause = "WHERE event_type IN ('coolify_task_success', 'coolify_task_failed')";
+  const params: any[] = [];
+  
+  if (repo) {
+    whereClause += ' AND repo = $1';
+    params.push(repo);
+  }
+  
+  const result = await pool.query(
+    `WITH task_stats AS (
+      SELECT 
+        COALESCE(payload->>'task_name', 'Unknown') as task_name,
+        payload->>'application_uuid' as app_uuid,
+        COALESCE(payload->>'application_name', payload->>'_app_name') as app_name,
+        repo,
+        COUNT(*) as total_runs,
+        SUM(CASE WHEN event_type = 'coolify_task_success' THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN event_type = 'coolify_task_failed' THEN 1 ELSE 0 END) as failure_count,
+        MAX(created_at) as last_run
+      FROM jean_ci_webhook_events
+      ${whereClause}
+      GROUP BY task_name, app_uuid, app_name, repo
+    ),
+    last_events AS (
+      SELECT DISTINCT ON (COALESCE(payload->>'task_name', 'Unknown'), payload->>'application_uuid')
+        COALESCE(payload->>'task_name', 'Unknown') as task_name,
+        payload->>'application_uuid' as app_uuid,
+        event_type,
+        payload->>'output' as output,
+        payload->>'url' as url
+      FROM jean_ci_webhook_events
+      ${whereClause}
+      ORDER BY COALESCE(payload->>'task_name', 'Unknown'), payload->>'application_uuid', created_at DESC
+    )
+    SELECT 
+      ts.task_name,
+      ts.app_uuid,
+      ts.app_name,
+      ts.repo,
+      ts.total_runs,
+      ts.success_count,
+      ts.failure_count,
+      ts.last_run,
+      CASE WHEN le.event_type = 'coolify_task_success' THEN 'success' ELSE 'failure' END as last_status,
+      le.output as last_output,
+      le.url
+    FROM task_stats ts
+    LEFT JOIN last_events le ON ts.task_name = le.task_name AND ts.app_uuid = le.app_uuid
+    ORDER BY ts.last_run DESC`,
+    params
+  );
+  
+  return result.rows;
+}
+
+// Get task stats
+export async function getTaskStats(): Promise<TaskStats> {
+  const result = await pool.query(`
+    SELECT 
+      COUNT(DISTINCT COALESCE(payload->>'task_name', 'Unknown') || ':' || COALESCE(payload->>'application_uuid', '')) as total_tasks,
+      COUNT(*) as total_runs,
+      SUM(CASE WHEN created_at > NOW() - INTERVAL '24 hours' THEN 1 ELSE 0 END) as runs_24h,
+      SUM(CASE WHEN created_at > NOW() - INTERVAL '24 hours' AND event_type = 'coolify_task_failed' THEN 1 ELSE 0 END) as failures_24h
+    FROM jean_ci_webhook_events
+    WHERE event_type IN ('coolify_task_success', 'coolify_task_failed')
+  `);
+  
+  return {
+    total_tasks: parseInt(result.rows[0].total_tasks || '0', 10),
+    total_runs: parseInt(result.rows[0].total_runs || '0', 10),
+    runs_24h: parseInt(result.rows[0].runs_24h || '0', 10),
+    failures_24h: parseInt(result.rows[0].failures_24h || '0', 10),
+  };
+}
