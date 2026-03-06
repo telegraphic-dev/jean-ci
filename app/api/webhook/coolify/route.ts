@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
 import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
-import { insertEvent, getRepoForApp } from '@/lib/db';
+import { insertEvent, getRepoForApp, getLastDeploymentShaForApp } from '@/lib/db';
 import { runSmokeTests } from '@/lib/smoke-tests';
 
 export async function POST(req: NextRequest) {
@@ -19,7 +19,12 @@ export async function POST(req: NextRequest) {
   if (!actualRepo && application_uuid) {
     actualRepo = await getRepoForApp(application_uuid);
   }
-  const headSha = pending?.head_sha;
+  
+  // Get SHA from pending deployment, or fall back to most recent deployment_started event
+  let headSha = pending?.head_sha;
+  if (!headSha && application_uuid) {
+    headSha = await getLastDeploymentShaForApp(application_uuid);
+  }
   
   // Use task_uuid or deployment_uuid as delivery_id
   const deliveryId = task_uuid || deployment_uuid || null;
