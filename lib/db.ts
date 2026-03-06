@@ -334,6 +334,24 @@ export async function upsertPRReviewState(data: {
   `, [data.pr_number, data.repo, data.last_reviewed_sha || null, data.is_draft, data.draft_reviewed]);
 }
 
+export async function getAllPRReviewsForRepo(repo: string): Promise<{ pr_number: number; last_reviewed_sha?: string }[]> {
+  const result = await pool.query(
+    `SELECT DISTINCT ON (pr_number) pr_number, last_reviewed_sha
+     FROM jean_ci_pr_reviews 
+     WHERE repo = $1
+     ORDER BY pr_number, updated_at DESC`,
+    [repo]
+  );
+  return result.rows;
+}
+
+export async function deletePRReview(repo: string, prNumber: number): Promise<void> {
+  await pool.query(
+    'DELETE FROM jean_ci_pr_reviews WHERE repo = $1 AND pr_number = $2',
+    [repo, prNumber]
+  );
+}
+
 // Event helpers
 export interface WebhookEvent {
   id: number;

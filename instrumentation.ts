@@ -20,6 +20,10 @@ export async function register() {
       // Schedule periodic cleanup (every hour)
       setInterval(() => cleanupOldEvents().catch(console.error), 60 * 60 * 1000);
       
+      // Schedule sync job (every 15 minutes)
+      const { runSync } = await import('./lib/sync');
+      setInterval(() => runSync().catch(console.error), 15 * 60 * 1000);
+      
       console.log('');
       console.log(`📡 Webhook: https://jean-ci.telegraphic.app/api/github/webhook`);
       console.log(`🔑 App ID: ${process.env.GITHUB_APP_ID}`);
