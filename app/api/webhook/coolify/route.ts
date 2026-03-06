@@ -21,9 +21,9 @@ export async function POST(req: NextRequest) {
   }
   
   // Get SHA from pending deployment, or fall back to most recent deployment_started event
-  let headSha = pending?.head_sha;
+  let headSha: string | undefined = pending?.head_sha;
   if (!headSha && application_uuid) {
-    headSha = await getLastDeploymentShaForApp(application_uuid);
+    headSha = (await getLastDeploymentShaForApp(application_uuid)) ?? undefined;
   }
   
   // Use task_uuid or deployment_uuid as delivery_id
