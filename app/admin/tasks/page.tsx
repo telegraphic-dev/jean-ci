@@ -110,7 +110,6 @@ export default function TasksPage() {
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [stats, setStats] = useState<TaskStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [repoFilter, setRepoFilter] = useState<string>('');
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -119,7 +118,6 @@ export default function TasksPage() {
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ view });
-    if (repoFilter) params.set('repo', repoFilter);
     if (view === 'events') {
       params.set('limit', String(limit));
       params.set('offset', String(offset));
@@ -141,40 +139,30 @@ export default function TasksPage() {
         console.error('Error fetching tasks:', err);
         setLoading(false);
       });
-  }, [view, repoFilter, offset]);
-
-  // Get unique repos for filter
-  const repos = Array.from(new Set(summary.map(t => t.repo).filter(Boolean))) as string[];
+  }, [view, offset]);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Scheduled Tasks</h1>
-        <div className="flex items-center gap-2">
-          <select
-            value={repoFilter}
-            onChange={e => { setRepoFilter(e.target.value); setOffset(0); }}
-            className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-3 py-1.5 text-sm"
+        <div>
+          <h1 className="text-2xl font-bold">Scheduled Tasks</h1>
+          <p className="text-sm text-[var(--text-secondary)] mt-1">
+            Coolify cron jobs across all repositories. For repo-specific tasks, see the Scheduled Tasks tab in each repository.
+          </p>
+        </div>
+        <div className="flex bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg overflow-hidden">
+          <button
+            onClick={() => { setView('summary'); setOffset(0); }}
+            className={`px-3 py-1.5 text-sm ${view === 'summary' ? 'bg-blue-500 text-white' : ''}`}
           >
-            <option value="">All Repos</option>
-            {repos.map(repo => (
-              <option key={repo} value={repo}>{repo}</option>
-            ))}
-          </select>
-          <div className="flex bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg overflow-hidden">
-            <button
-              onClick={() => { setView('summary'); setOffset(0); }}
-              className={`px-3 py-1.5 text-sm ${view === 'summary' ? 'bg-blue-500 text-white' : ''}`}
-            >
-              Summary
-            </button>
-            <button
-              onClick={() => { setView('events'); setOffset(0); }}
-              className={`px-3 py-1.5 text-sm ${view === 'events' ? 'bg-blue-500 text-white' : ''}`}
-            >
-              Events
-            </button>
-          </div>
+            Summary
+          </button>
+          <button
+            onClick={() => { setView('events'); setOffset(0); }}
+            className={`px-3 py-1.5 text-sm ${view === 'events' ? 'bg-blue-500 text-white' : ''}`}
+          >
+            Events
+          </button>
         </div>
       </div>
 
