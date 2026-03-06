@@ -1,7 +1,7 @@
 import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState } from './db';
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
-import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment, ensureWebhookCallback } from './coolify';
+import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment } from './coolify';
 
 // OpenClaw notification config
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
@@ -296,10 +296,6 @@ export async function handleRegistryPackage(payload: any) {
       'Deploying to Coolify...', logsUrl, appUrl);
   }
 
-  // Ensure webhook callback is configured, then trigger deploy
-  const appName = appDetails?.name || repo;
-  await ensureWebhookCallback(deployment.coolify_app, appName);
-  
   console.log(`🚀 Triggering Coolify deploy for ${deployment.coolify_app}`);
   const result = await triggerCoolifyDeploy(deployment.coolify_app);
 

@@ -62,52 +62,6 @@ export async function getCoolifyAppDetails(appUuid: string) {
   }
 }
 
-const JEAN_CI_WEBHOOK_URL = process.env.JEAN_CI_WEBHOOK_URL || 'https://jean-ci.telegraphic.app/api/webhook/coolify';
-
-// Marker to identify our webhook command in post_deployment_command
-const WEBHOOK_MARKER = '# jean-ci-webhook';
-
-// Ensure the app has jean-ci webhook call appended to post_deployment_command
-export async function ensureWebhookCallback(appUuid: string, appName: string) {
-  if (!COOLIFY_TOKEN) return;
-
-  const webhookCommand = `${WEBHOOK_MARKER}\ncurl -sf -X POST ${JEAN_CI_WEBHOOK_URL} -H 'Content-Type: application/json' -d '{"event": "deployment_success", "application_uuid": "${appUuid}", "application_name": "${appName}"}' || true`;
-
-  try {
-    // Check current setting
-    const getResponse = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}`, {
-      headers: { 'Authorization': `Bearer ${COOLIFY_TOKEN}` },
-    });
-    if (!getResponse.ok) return;
-    
-    const app = await getResponse.json();
-    const existingCommand = app.post_deployment_command || '';
-    
-    // Already has our webhook? Skip
-    if (existingCommand.includes(WEBHOOK_MARKER)) {
-      return;
-    }
-
-    // Append our webhook command to existing (if any)
-    const newCommand = existingCommand 
-      ? `${existingCommand}\n\n${webhookCommand}`
-      : webhookCommand;
-
-    // Update the post_deployment_command
-    await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}`, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${COOLIFY_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ post_deployment_command: newCommand }),
-    });
-    console.log(`[Coolify] Configured webhook callback for ${appName} (${appUuid})`);
-  } catch (e: any) {
-    console.error(`[Coolify] Failed to configure webhook callback: ${e.message}`);
-  }
-}
-
 export async function triggerCoolifyDeploy(appUuid: string) {
   if (!COOLIFY_TOKEN) {
     console.log('[MOCK] Would trigger Coolify deploy for:', appUuid);
