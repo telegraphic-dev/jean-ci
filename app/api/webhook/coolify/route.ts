@@ -35,8 +35,9 @@ export async function POST(req: NextRequest) {
     headSha = (await getLastDeploymentShaForApp(application_uuid)) ?? undefined;
   }
   
-  // Use task_uuid or deployment_uuid as delivery_id
-  const deliveryId = task_uuid || deployment_uuid || null;
+  // Use deployment_uuid or task_uuid+timestamp as delivery_id
+  // Task events reuse the same task_uuid, so we need timestamp for uniqueness
+  const deliveryId = deployment_uuid || (task_uuid ? `${task_uuid}-${Date.now()}` : null);
   
   // Store Coolify event in database with the actual repo
   await insertEvent(
