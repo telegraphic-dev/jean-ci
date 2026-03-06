@@ -69,7 +69,8 @@ export async function triggerCoolifyDeploy(appUuid: string) {
   }
 
   try {
-    const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}/restart`, {
+    // Use /start instead of /restart - /start triggers deployment webhooks, /restart doesn't
+    const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}/start`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${COOLIFY_TOKEN}`,
