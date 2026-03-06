@@ -438,11 +438,11 @@ export default function RepoDetailPage() {
                 <div className={`text-xl font-bold ${tasks.stats.failures_24h > 0 ? 'text-red-400' : ''}`}>{tasks.stats.failures_24h}</div>
               </div>
               <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
-                <div className="text-xs text-[var(--text-muted)]">Success Rate</div>
+                <div className="text-xs text-[var(--text-muted)]">Success Rate (24h)</div>
                 <div className="text-xl font-bold">
-                  {tasks.stats.total_runs > 0 
-                    ? Math.round(((tasks.stats.total_runs - tasks.stats.failures_24h) / tasks.stats.total_runs) * 100) 
-                    : 0}%
+                  {tasks.stats.runs_24h > 0 
+                    ? Math.round(((tasks.stats.runs_24h - tasks.stats.failures_24h) / tasks.stats.runs_24h) * 100) 
+                    : 100}%
                 </div>
               </div>
             </div>
