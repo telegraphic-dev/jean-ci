@@ -977,6 +977,14 @@ export async function getPendingDeployment(appUuid: string): Promise<PendingDepl
   return result.rows[0] || null;
 }
 
+export async function getPendingDeploymentByDeploymentUuid(deploymentUuid: string): Promise<PendingDeployment | null> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_pending_deployments WHERE coolify_deployment_uuid = $1',
+    [deploymentUuid]
+  );
+  return result.rows[0] || null;
+}
+
 export async function deletePendingDeployment(appUuid: string): Promise<void> {
   await pool.query('DELETE FROM jean_ci_pending_deployments WHERE app_uuid = $1', [appUuid]);
 }
