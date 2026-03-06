@@ -977,6 +977,14 @@ export async function getPendingDeployment(appUuid: string): Promise<PendingDepl
   return result.rows[0] || null;
 }
 
+export async function getPendingDeploymentByDeploymentUuid(deploymentUuid: string): Promise<PendingDeployment | null> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_pending_deployments WHERE coolify_deployment_uuid = $1',
+    [deploymentUuid]
+  );
+  return result.rows[0] || null;
+}
+
 export async function deletePendingDeployment(appUuid: string): Promise<void> {
   await pool.query('DELETE FROM jean_ci_pending_deployments WHERE app_uuid = $1', [appUuid]);
 }
@@ -1250,6 +1258,36 @@ export async function getRepoForApp(coolifyAppUuid: string): Promise<string | nu
     [coolifyAppUuid]
   );
   return result.rows[0]?.github_repo || null;
+}
+
+// Get the most recent SHA from coolify_deployment_started event for an app
+// Used as fallback when pending deployment is not found
+export async function getLastDeploymentShaForApp(coolifyAppUuid: string): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT payload->>'_source_sha' as sha
+     FROM jean_ci_webhook_events 
+     WHERE event_type = 'coolify_deployment_started'
+       AND payload->>'application_uuid' = $1
+       AND payload->>'_source_sha' IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [coolifyAppUuid]
+  );
+  return result.rows[0]?.sha || null;
+}
+
+// Get SHA from coolify_deployment_started event by deployment_uuid
+// This is the most reliable way to match a deployment_success to its source commit
+export async function getShaForDeploymentUuid(deploymentUuid: string): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT payload->>'_source_sha' as sha
+     FROM jean_ci_webhook_events 
+     WHERE event_type = 'coolify_deployment_started'
+       AND payload->>'deployment_uuid' = $1
+     LIMIT 1`,
+    [deploymentUuid]
+  );
+  return result.rows[0]?.sha || null;
 }
 
 // =============================================================================

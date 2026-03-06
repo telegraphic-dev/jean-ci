@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
 import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
-import { insertEvent, getRepoForApp } from '@/lib/db';
+import { insertEvent, getRepoForApp, getLastDeploymentShaForApp, getPendingDeploymentByDeploymentUuid, getShaForDeploymentUuid } from '@/lib/db';
 import { runSmokeTests } from '@/lib/smoke-tests';
 
 export async function POST(req: NextRequest) {
@@ -12,14 +12,28 @@ export async function POST(req: NextRequest) {
   const { event, message, application_uuid, deployment_url, application_name, deployment_uuid, task_uuid, task_name } = payload;
   
   // Get pending deployment from database (for deployment events)
-  const pending = application_uuid ? await getPendingDeployment(application_uuid) : null;
+  // Try matching by deployment_uuid first (more precise), then fall back to app_uuid
+  let pending = deployment_uuid ? await getPendingDeploymentByDeploymentUuid(deployment_uuid) : null;
+  if (!pending && application_uuid) {
+    pending = await getPendingDeployment(application_uuid);
+  }
   
   // Get repo from pending deployment OR from app mapping
   let actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
   if (!actualRepo && application_uuid) {
     actualRepo = await getRepoForApp(application_uuid);
   }
-  const headSha = pending?.head_sha;
+  
+  // Get SHA from pending deployment, or look up from deployment_started event
+  let headSha: string | undefined = pending?.head_sha;
+  if (!headSha && deployment_uuid) {
+    // Match by deployment_uuid - most reliable (handles duplicate deploys)
+    headSha = (await getShaForDeploymentUuid(deployment_uuid)) ?? undefined;
+  }
+  if (!headSha && application_uuid) {
+    // Fall back to most recent deployment for this app
+    headSha = (await getLastDeploymentShaForApp(application_uuid)) ?? undefined;
+  }
   
   // Use task_uuid or deployment_uuid as delivery_id
   const deliveryId = task_uuid || deployment_uuid || null;
