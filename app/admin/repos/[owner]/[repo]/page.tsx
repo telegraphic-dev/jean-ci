@@ -66,7 +66,28 @@ interface Counts {
   events: number;
 }
 
-type Tab = 'checks' | 'deployments' | 'events';
+interface TaskSummary {
+  task_name: string;
+  app_uuid: string | null;
+  app_name: string | null;
+  repo: string | null;
+  total_runs: number;
+  success_count: number;
+  failure_count: number;
+  last_run: string;
+  last_status: 'success' | 'failure';
+  last_output: string | null;
+  url: string | null;
+}
+
+interface TaskStats {
+  total_tasks: number;
+  total_runs: number;
+  runs_24h: number;
+  failures_24h: number;
+}
+
+type Tab = 'checks' | 'deployments' | 'tasks' | 'events';
 
 function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
@@ -162,22 +183,26 @@ export default function RepoDetailPage() {
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [pipelines, setPipelines] = useState<PaginatedResult<Pipeline>>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [events, setEvents] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [tasks, setTasks] = useState<{ summary: TaskSummary[]; stats: TaskStats | null }>({ summary: [], stats: null });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('checks');
+  const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
 
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
-    const [repoData, countsData, checksData, pipelinesData, eventsData] = await Promise.all([
+    const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData] = await Promise.all([
       fetch(`/api/repos/${fullName}`).then(r => r.json()),
       fetch(`/api/repos/${fullName}/counts`).then(r => r.json()),
       fetch(`/api/repos/${fullName}/checks?page=${checksPage}`).then(r => r.json()),
       fetch(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`).then(r => r.json()),
       fetch(`/api/repos/${fullName}/events?page=${eventsPage}`).then(r => r.json()),
+      fetch(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`).then(r => r.json()),
     ]);
     setRepo(repoData.error ? null : repoData);
     setCounts(countsData.error ? { checks: 0, deployments: 0, events: 0 } : countsData);
     setChecks(checksData.items ? checksData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
     setPipelines(pipelinesData.items ? pipelinesData : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
     setEvents(eventsData.items ? eventsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setTasks({ summary: tasksData.summary || [], stats: tasksData.stats || null });
     setLoading(false);
   }, [fullName]);
 
@@ -218,6 +243,7 @@ export default function RepoDetailPage() {
   const tabs: { id: Tab; label: string; count: number }[] = [
     { id: 'checks', label: 'PR Reviews', count: counts.checks },
     { id: 'deployments', label: 'Deployments', count: pipelines.total },
+    { id: 'tasks', label: 'Scheduled Tasks', count: tasks.summary.length },
     { id: 'events', label: 'All Events', count: counts.events },
   ];
 
@@ -390,6 +416,110 @@ export default function RepoDetailPage() {
             <span className="flex items-center gap-1"><span className="text-[var(--red)]">❌</span> Failed</span>
             <span className="flex items-center gap-1"><span className="text-yellow-500">⏳</span> Running</span>
             <span className="flex items-center gap-1"><span>⚪</span> Pending</span>
+          </div>
+        </div>
+      )}
+
+      {/* Scheduled Tasks Tab */}
+      {activeTab === 'tasks' && (
+        <div>
+          {tasks.stats && (
+            <div className="grid grid-cols-4 gap-4 mb-4">
+              <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+                <div className="text-xs text-[var(--text-muted)]">Total Runs</div>
+                <div className="text-xl font-bold">{tasks.stats.total_runs}</div>
+              </div>
+              <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+                <div className="text-xs text-[var(--text-muted)]">Runs (24h)</div>
+                <div className="text-xl font-bold">{tasks.stats.runs_24h}</div>
+              </div>
+              <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+                <div className="text-xs text-[var(--text-muted)]">Failures (24h)</div>
+                <div className={`text-xl font-bold ${tasks.stats.failures_24h > 0 ? 'text-red-400' : ''}`}>{tasks.stats.failures_24h}</div>
+              </div>
+              <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-lg p-3">
+                <div className="text-xs text-[var(--text-muted)]">Success Rate (24h)</div>
+                <div className="text-xl font-bold">
+                  {tasks.stats.runs_24h > 0 
+                    ? Math.round(((tasks.stats.runs_24h - tasks.stats.failures_24h) / tasks.stats.runs_24h) * 100) 
+                    : 100}%
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
+            <table className="w-full min-w-[600px]">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Task</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">App</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Runs</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">✓ / ✗</th>
+                  <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Last Run</th>
+                  <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
+                </tr>
+              </thead>
+              <tbody className="text-sm">
+                {tasks.summary.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No scheduled tasks for this repository.</td>
+                  </tr>
+                ) : (
+                  tasks.summary.map((task, i) => (
+                    <tr key={i} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                      <td className="py-3 px-4 font-medium">{task.task_name}</td>
+                      <td className="py-3 px-4 text-[var(--text-secondary)]">{task.app_name || 'Unknown'}</td>
+                      <td className="py-3 px-4 text-center">{task.total_runs}</td>
+                      <td className="py-3 px-4 text-center">
+                        <span className="text-[var(--green)]">{task.success_count}</span>
+                        {' / '}
+                        <span className="text-[var(--red)]">{task.failure_count}</span>
+                      </td>
+                      <td className="py-3 px-4 text-[var(--text-muted)]">
+                        {formatRelativeTime(task.last_run)}
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        <button 
+                          onClick={() => task.last_output && setSelectedOutput(task.last_output)}
+                          className="inline-flex items-center gap-1"
+                        >
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            task.last_status === 'success' 
+                              ? 'bg-green-500/20 text-green-400' 
+                              : 'bg-red-500/20 text-red-400'
+                          }`}>
+                            {task.last_status === 'success' ? '✓' : '✗'}
+                          </span>
+                          {task.last_output && (
+                            <span className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)]">📋</span>
+                          )}
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Output Modal */}
+      {selectedOutput && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setSelectedOutput(null)}>
+          <div 
+            className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
+              <h3 className="font-semibold">Task Output</h3>
+              <button onClick={() => setSelectedOutput(null)} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]">✕</button>
+            </div>
+            <div className="p-4 overflow-auto flex-1">
+              <pre className="text-sm font-mono whitespace-pre-wrap break-words bg-[var(--bg-secondary)] p-4 rounded-lg">
+                {selectedOutput}
+              </pre>
+            </div>
           </div>
         </div>
       )}
