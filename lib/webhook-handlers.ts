@@ -1,4 +1,4 @@
-import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState } from './db';
+import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping } from './db';
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
 import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment } from './coolify';
@@ -326,6 +326,17 @@ export async function handleRegistryPackage(payload: any) {
     logsUrl, appUrl,
     installationId: repoConfig.installation_id,
   });
+
+  // Store/update Coolify app → GitHub repo mapping
+  await upsertAppMapping({
+    coolify_app_uuid: deployment.coolify_app,
+    github_repo: repository.full_name,
+    coolify_app_name: appDetails?.name || null,
+    coolify_app_fqdn: appDetails?.fqdn || null,
+    installation_id: repoConfig.installation_id,
+    last_deployed_sha: headSha,
+  });
+  console.log(`📍 Mapped Coolify app ${deployment.coolify_app} → ${repository.full_name}`);
 
   // Record deployment started event (marks as pending in UI)
   await insertEvent(

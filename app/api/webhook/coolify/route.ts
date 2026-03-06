@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
 import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
-import { insertEvent } from '@/lib/db';
+import { insertEvent, getRepoForApp } from '@/lib/db';
 import { runSmokeTests } from '@/lib/smoke-tests';
 
 export async function POST(req: NextRequest) {
@@ -9,17 +9,25 @@ export async function POST(req: NextRequest) {
   
   console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 500));
   
-  const { event, message, application_uuid, deployment_url, application_name, deployment_uuid } = payload;
+  const { event, message, application_uuid, deployment_url, application_name, deployment_uuid, task_uuid, task_name } = payload;
   
-  // Get pending deployment from database
+  // Get pending deployment from database (for deployment events)
   const pending = application_uuid ? await getPendingDeployment(application_uuid) : null;
-  const actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
+  
+  // Get repo from pending deployment OR from app mapping
+  let actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
+  if (!actualRepo && application_uuid) {
+    actualRepo = await getRepoForApp(application_uuid);
+  }
   const headSha = pending?.head_sha;
   
-  // Store Coolify event in database with the actual repo that triggered the deploy
+  // Use task_uuid or deployment_uuid as delivery_id
+  const deliveryId = task_uuid || deployment_uuid || null;
+  
+  // Store Coolify event in database with the actual repo
   await insertEvent(
     `coolify_${event || 'unknown'}`,
-    deployment_uuid || null,
+    deliveryId,
     actualRepo || application_name || null,
     event || null,
     {
@@ -27,6 +35,7 @@ export async function POST(req: NextRequest) {
       _source_repo: actualRepo,
       _source_sha: headSha,
       _app_name: application_name,
+      _task_name: task_name,
     },
     'coolify'
   );
@@ -35,9 +44,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, ignored: 'no app uuid' });
   }
   
+  // Handle task events (no pending deployment expected)
+  if (event === 'task_success' || event === 'task_failed') {
+    console.log(`[Coolify] Task event: ${task_name || 'unknown'} → ${event} (app: ${application_uuid}, repo: ${actualRepo || 'unmapped'})`);
+    return NextResponse.json({ 
+      received: true, 
+      event,
+      task_name,
+      repo: actualRepo,
+    });
+  }
+  
+  // For deployment events, we need a pending deployment
   if (!pending) {
-    console.log(`[Coolify] No pending deployment for ${application_uuid}`);
-    return NextResponse.json({ received: true, ignored: 'no pending deployment' });
+    console.log(`[Coolify] No pending deployment for ${application_uuid} (event: ${event})`);
+    return NextResponse.json({ received: true, event, ignored: 'no pending deployment' });
   }
   
   // Get Octokit for this installation
