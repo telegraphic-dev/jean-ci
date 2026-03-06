@@ -3,7 +3,8 @@ import {
   deletePendingDeployment,
   getReposWithPRReviewEnabled,
   cleanupOldEvents,
-  pool
+  getAllPRReviewsForRepo,
+  deletePRReview
 } from './db';
 import { getInstallationOctokit } from './github';
 
@@ -91,14 +92,9 @@ async function syncClosedPRs(): Promise<{ closed: number; errors: string[] }> {
       const [owner, repoName] = repo.full_name.split('/');
       
       // Get open PRs from our database that might be closed in GitHub
-      const result = await pool.query(`
-        SELECT DISTINCT ON (pr_number) pr_number, last_reviewed_sha
-        FROM jean_ci_pr_reviews 
-        WHERE repo = $1
-        ORDER BY pr_number, updated_at DESC
-      `, [repo.full_name]);
+      const prReviews = await getAllPRReviewsForRepo(repo.full_name);
       
-      for (const row of result.rows) {
+      for (const row of prReviews) {
         try {
           const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
             owner,
@@ -108,10 +104,7 @@ async function syncClosedPRs(): Promise<{ closed: number; errors: string[] }> {
           
           if (pr.state === 'closed') {
             // PR is closed, remove from our tracking
-            await pool.query(
-              'DELETE FROM jean_ci_pr_reviews WHERE repo = $1 AND pr_number = $2',
-              [repo.full_name, row.pr_number]
-            );
+            await deletePRReview(repo.full_name, row.pr_number);
             console.log(`[Sync] Cleaned closed PR ${repo.full_name}#${row.pr_number}`);
             closed++;
           }
@@ -120,10 +113,7 @@ async function syncClosedPRs(): Promise<{ closed: number; errors: string[] }> {
             errors.push(`Error checking PR ${repo.full_name}#${row.pr_number}: ${e.message}`);
           } else {
             // PR not found - clean up
-            await pool.query(
-              'DELETE FROM jean_ci_pr_reviews WHERE repo = $1 AND pr_number = $2',
-              [repo.full_name, row.pr_number]
-            );
+            await deletePRReview(repo.full_name, row.pr_number);
             closed++;
           }
         }
