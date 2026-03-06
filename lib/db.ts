@@ -1523,3 +1523,162 @@ export async function syncRepoTasks(repo: string, tasks: Array<{
 
   return { created, updated, deleted: toDelete.length };
 }
+
+// =============================================================================
+// Task Event Queries (from Coolify task webhooks)
+// =============================================================================
+
+export interface TaskEvent {
+  id: number;
+  event_type: string;
+  task_name: string;
+  app_uuid: string | null;
+  repo: string | null;
+  status: string;
+  output: string | null;
+  error: string | null;
+  duration_ms: number | null;
+  cron_expression: string | null;
+  container: string | null;
+  created_at: Date;
+}
+
+export async function getTaskEvents(filters: {
+  app?: string | null;
+  task?: string | null;
+  status?: string | null;
+  limit?: number;
+}): Promise<TaskEvent[]> {
+  const conditions: string[] = ["source = 'coolify_task'"];
+  const params: any[] = [];
+  let paramIndex = 1;
+
+  if (filters.app) {
+    conditions.push(`(payload->>'app_uuid' = $${paramIndex} OR repo = $${paramIndex})`);
+    params.push(filters.app);
+    paramIndex++;
+  }
+
+  if (filters.task) {
+    conditions.push(`payload->>'task_name' = $${paramIndex}`);
+    params.push(filters.task);
+    paramIndex++;
+  }
+
+  if (filters.status) {
+    conditions.push(`payload->>'status' = $${paramIndex}`);
+    params.push(filters.status);
+    paramIndex++;
+  }
+
+  const limit = filters.limit || 50;
+  params.push(limit);
+
+  const result = await pool.query(
+    `SELECT 
+      id,
+      event_type,
+      payload->>'task_name' as task_name,
+      payload->>'app_uuid' as app_uuid,
+      repo,
+      payload->>'status' as status,
+      payload->>'output' as output,
+      payload->>'error' as error,
+      (payload->>'duration_ms')::int as duration_ms,
+      payload->>'cron_expression' as cron_expression,
+      payload->>'container' as container,
+      created_at
+    FROM jean_ci_webhook_events
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY created_at DESC
+    LIMIT $${paramIndex}`,
+    params
+  );
+
+  return result.rows;
+}
+
+export async function getTaskEventStats(): Promise<{
+  total_executions: number;
+  success_count: number;
+  failure_count: number;
+  last_24h_runs: number;
+  last_24h_failures: number;
+  unique_tasks: number;
+  unique_apps: number;
+}> {
+  const result = await pool.query(`
+    SELECT
+      COUNT(*) as total_executions,
+      COUNT(*) FILTER (WHERE payload->>'status' = 'success') as success_count,
+      COUNT(*) FILTER (WHERE payload->>'status' = 'failure') as failure_count,
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') as last_24h_runs,
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours' AND payload->>'status' = 'failure') as last_24h_failures,
+      COUNT(DISTINCT payload->>'task_name') as unique_tasks,
+      COUNT(DISTINCT COALESCE(payload->>'app_uuid', repo)) as unique_apps
+    FROM jean_ci_webhook_events
+    WHERE source = 'coolify_task'
+  `);
+
+  const row = result.rows[0];
+  return {
+    total_executions: parseInt(row.total_executions, 10),
+    success_count: parseInt(row.success_count, 10),
+    failure_count: parseInt(row.failure_count, 10),
+    last_24h_runs: parseInt(row.last_24h_runs, 10),
+    last_24h_failures: parseInt(row.last_24h_failures, 10),
+    unique_tasks: parseInt(row.unique_tasks, 10),
+    unique_apps: parseInt(row.unique_apps, 10),
+  };
+}
+
+export async function getTaskSummary(): Promise<Array<{
+  task_name: string;
+  app_uuid: string | null;
+  last_status: string;
+  last_run: Date;
+  success_count: number;
+  failure_count: number;
+}>> {
+  const result = await pool.query(`
+    WITH latest AS (
+      SELECT DISTINCT ON (payload->>'task_name', COALESCE(payload->>'app_uuid', repo))
+        payload->>'task_name' as task_name,
+        COALESCE(payload->>'app_uuid', repo) as app_uuid,
+        payload->>'status' as last_status,
+        created_at as last_run
+      FROM jean_ci_webhook_events
+      WHERE source = 'coolify_task'
+      ORDER BY payload->>'task_name', COALESCE(payload->>'app_uuid', repo), created_at DESC
+    ),
+    counts AS (
+      SELECT
+        payload->>'task_name' as task_name,
+        COALESCE(payload->>'app_uuid', repo) as app_uuid,
+        COUNT(*) FILTER (WHERE payload->>'status' = 'success') as success_count,
+        COUNT(*) FILTER (WHERE payload->>'status' = 'failure') as failure_count
+      FROM jean_ci_webhook_events
+      WHERE source = 'coolify_task'
+      GROUP BY payload->>'task_name', COALESCE(payload->>'app_uuid', repo)
+    )
+    SELECT 
+      l.task_name,
+      l.app_uuid,
+      l.last_status,
+      l.last_run,
+      COALESCE(c.success_count, 0) as success_count,
+      COALESCE(c.failure_count, 0) as failure_count
+    FROM latest l
+    LEFT JOIN counts c ON l.task_name = c.task_name AND l.app_uuid = c.app_uuid
+    ORDER BY l.last_run DESC
+  `);
+
+  return result.rows.map(row => ({
+    task_name: row.task_name,
+    app_uuid: row.app_uuid,
+    last_status: row.last_status,
+    last_run: row.last_run,
+    success_count: parseInt(row.success_count, 10),
+    failure_count: parseInt(row.failure_count, 10),
+  }));
+}
