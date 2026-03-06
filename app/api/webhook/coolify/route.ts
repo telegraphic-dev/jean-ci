@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
 import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
-import { insertEvent } from '@/lib/db';
+import { insertEvent, getRepoForCoolifyApp } from '@/lib/db';
 import { runSmokeTests } from '@/lib/smoke-tests';
 
 export async function POST(req: NextRequest) {
@@ -13,7 +13,12 @@ export async function POST(req: NextRequest) {
   
   // Get pending deployment from database
   const pending = application_uuid ? await getPendingDeployment(application_uuid) : null;
-  const actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
+  
+  // Try to find repo from pending deployment, or fall back to permanent mapping
+  let actualRepo = pending ? `${pending.owner}/${pending.repo}` : null;
+  if (!actualRepo && application_uuid) {
+    actualRepo = await getRepoForCoolifyApp(application_uuid);
+  }
   const headSha = pending?.head_sha;
   
   // Store Coolify event in database with the actual repo that triggered the deploy

@@ -135,6 +135,21 @@ export async function initDatabase() {
         installation_id INTEGER NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      -- Permanent mapping: Coolify app UUID ↔ GitHub repo
+      CREATE TABLE IF NOT EXISTS jean_ci_coolify_apps (
+        coolify_app_uuid TEXT PRIMARY KEY,
+        github_repo TEXT NOT NULL,
+        coolify_instance TEXT DEFAULT 'carita',
+        app_name TEXT,
+        app_fqdn TEXT,
+        last_deployment_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      
+      -- Index for reverse lookup (repo -> apps)
+      CREATE INDEX IF NOT EXISTS idx_coolify_apps_github_repo ON jean_ci_coolify_apps(github_repo);
       
       -- Migration: add coolify_deployment_uuid if missing
       DO $$ BEGIN
@@ -979,6 +994,107 @@ export async function getAllPendingDeployments(): Promise<PendingDeployment[]> {
     'SELECT * FROM jean_ci_pending_deployments ORDER BY created_at DESC'
   );
   return result.rows;
+}
+
+// ============================================================
+// Coolify App Mapping (permanent repo <-> Coolify app tracking)
+// ============================================================
+
+export interface CoolifyAppMapping {
+  coolify_app_uuid: string;
+  github_repo: string;
+  coolify_instance: string;
+  app_name?: string;
+  app_fqdn?: string;
+  last_deployment_at?: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
+/**
+ * Upsert a Coolify app mapping. Called when:
+ * 1. jean-ci triggers a deployment (we know repo + app UUID)
+ * 2. Manually via admin UI to backfill existing apps
+ */
+export async function upsertCoolifyAppMapping(
+  coolifyAppUuid: string,
+  githubRepo: string,
+  options?: {
+    coolifyInstance?: string;
+    appName?: string;
+    appFqdn?: string;
+  }
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO jean_ci_coolify_apps 
+       (coolify_app_uuid, github_repo, coolify_instance, app_name, app_fqdn, updated_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())
+     ON CONFLICT (coolify_app_uuid) DO UPDATE SET
+       github_repo = EXCLUDED.github_repo,
+       coolify_instance = COALESCE(EXCLUDED.coolify_instance, jean_ci_coolify_apps.coolify_instance),
+       app_name = COALESCE(EXCLUDED.app_name, jean_ci_coolify_apps.app_name),
+       app_fqdn = COALESCE(EXCLUDED.app_fqdn, jean_ci_coolify_apps.app_fqdn),
+       updated_at = NOW()`,
+    [
+      coolifyAppUuid,
+      githubRepo,
+      options?.coolifyInstance || 'carita',
+      options?.appName || null,
+      options?.appFqdn || null,
+    ]
+  );
+}
+
+/**
+ * Mark the last deployment time for a Coolify app.
+ */
+export async function updateCoolifyAppLastDeployment(coolifyAppUuid: string): Promise<void> {
+  await pool.query(
+    `UPDATE jean_ci_coolify_apps 
+     SET last_deployment_at = NOW(), updated_at = NOW() 
+     WHERE coolify_app_uuid = $1`,
+    [coolifyAppUuid]
+  );
+}
+
+/**
+ * Get GitHub repo for a Coolify app UUID.
+ * Used when processing Coolify webhook events.
+ */
+export async function getRepoForCoolifyApp(coolifyAppUuid: string): Promise<string | null> {
+  const result = await pool.query(
+    'SELECT github_repo FROM jean_ci_coolify_apps WHERE coolify_app_uuid = $1',
+    [coolifyAppUuid]
+  );
+  return result.rows[0]?.github_repo || null;
+}
+
+/**
+ * Get all Coolify apps for a GitHub repo.
+ */
+export async function getCoolifyAppsForRepo(githubRepo: string): Promise<CoolifyAppMapping[]> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_coolify_apps WHERE github_repo = $1 ORDER BY updated_at DESC',
+    [githubRepo]
+  );
+  return result.rows;
+}
+
+/**
+ * Get all Coolify app mappings.
+ */
+export async function getAllCoolifyAppMappings(): Promise<CoolifyAppMapping[]> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_coolify_apps ORDER BY github_repo, coolify_instance'
+  );
+  return result.rows;
+}
+
+/**
+ * Delete a Coolify app mapping (when app is deleted from Coolify).
+ */
+export async function deleteCoolifyAppMapping(coolifyAppUuid: string): Promise<void> {
+  await pool.query('DELETE FROM jean_ci_coolify_apps WHERE coolify_app_uuid = $1', [coolifyAppUuid]);
 }
 
 export function buildCoolifyDeploymentUrl(appUuid: string, deploymentUuid: string, logsUrl?: string): string {

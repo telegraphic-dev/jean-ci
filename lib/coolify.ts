@@ -93,6 +93,8 @@ import {
   savePendingDeployment as dbSavePendingDeployment, 
   getPendingDeployment as dbGetPendingDeployment,
   deletePendingDeployment as dbDeletePendingDeployment,
+  upsertCoolifyAppMapping,
+  updateCoolifyAppLastDeployment,
   PendingDeployment as DbPendingDeployment
 } from './db';
 
@@ -110,6 +112,7 @@ export interface PendingDeploymentInput {
 
 // Persist pending deployment to database
 export async function registerPendingDeployment(appUuid: string, deployment: PendingDeploymentInput) {
+  // Save temporary pending deployment tracking
   await dbSavePendingDeployment({
     app_uuid: appUuid,
     owner: deployment.owner,
@@ -122,7 +125,18 @@ export async function registerPendingDeployment(appUuid: string, deployment: Pen
     app_url: deployment.appUrl,
     installation_id: deployment.installationId,
   });
-  console.log(`[Coolify] Registered pending deployment for ${appUuid} (${deployment.owner}/${deployment.repo}@${deployment.headSha?.substring(0, 7) || 'unknown'}, deploy: ${deployment.coolifyDeploymentUuid || 'unknown'})`);
+
+  // Also persist permanent Coolify app <-> GitHub repo mapping
+  const githubRepo = `${deployment.owner}/${deployment.repo}`;
+  const appDetails = await getCoolifyAppDetails(appUuid);
+  await upsertCoolifyAppMapping(appUuid, githubRepo, {
+    coolifyInstance: 'carita', // TODO: detect from COOLIFY_URL
+    appName: appDetails?.name,
+    appFqdn: appDetails?.fqdn,
+  });
+  await updateCoolifyAppLastDeployment(appUuid);
+
+  console.log(`[Coolify] Registered pending deployment for ${appUuid} (${githubRepo}@${deployment.headSha?.substring(0, 7) || 'unknown'}, deploy: ${deployment.coolifyDeploymentUuid || 'unknown'})`);
 }
 
 // Get pending deployment from database
