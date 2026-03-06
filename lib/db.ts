@@ -1276,6 +1276,20 @@ export async function getLastDeploymentShaForApp(coolifyAppUuid: string): Promis
   return result.rows[0]?.sha || null;
 }
 
+// Get SHA from coolify_deployment_started event by deployment_uuid
+// This is the most reliable way to match a deployment_success to its source commit
+export async function getShaForDeploymentUuid(deploymentUuid: string): Promise<string | null> {
+  const result = await pool.query(
+    `SELECT payload->>'_source_sha' as sha
+     FROM jean_ci_webhook_events 
+     WHERE event_type = 'coolify_deployment_started'
+       AND payload->>'deployment_uuid' = $1
+     LIMIT 1`,
+    [deploymentUuid]
+  );
+  return result.rows[0]?.sha || null;
+}
+
 // =============================================================================
 // Coolify Task Events (Cron Jobs)
 // =============================================================================
