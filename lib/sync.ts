@@ -2,6 +2,7 @@ import {
   getAllPendingDeployments, 
   deletePendingDeployment,
   getReposWithPRReviewEnabled,
+  cleanupOldEvents,
   pool
 } from './db';
 import { getInstallationOctokit } from './github';
@@ -16,6 +17,7 @@ interface SyncResult {
   stalePendingDeployments: number;
   closedPRs: number;
   coolifyDeploymentsChecked: number;
+  oldEventsCleanedUp: number;
   errors: string[];
 }
 
@@ -141,15 +143,17 @@ export async function runSync(): Promise<SyncResult> {
   console.log('[Sync] Starting sync job...');
   const startTime = Date.now();
   
-  const [deploymentResult, prResult] = await Promise.all([
+  const [deploymentResult, prResult, eventsCleanedUp] = await Promise.all([
     syncPendingDeployments(),
     syncClosedPRs(),
+    cleanupOldEvents(),
   ]);
   
   const result: SyncResult = {
     stalePendingDeployments: deploymentResult.cleaned,
     closedPRs: prResult.closed,
     coolifyDeploymentsChecked: deploymentResult.cleaned,
+    oldEventsCleanedUp: eventsCleanedUp,
     errors: [...deploymentResult.errors, ...prResult.errors],
   };
   
@@ -157,6 +161,7 @@ export async function runSync(): Promise<SyncResult> {
   console.log(`[Sync] Completed in ${duration}ms:`, {
     stalePendingDeployments: result.stalePendingDeployments,
     closedPRs: result.closedPRs,
+    oldEventsCleanedUp: result.oldEventsCleanedUp,
     errors: result.errors.length,
   });
   

@@ -14,15 +14,12 @@ export async function register() {
       // Initialize database
       await initDatabase();
       
-      // Cleanup old events
+      // Cleanup old events on startup
       await cleanupOldEvents();
       
-      // Schedule periodic cleanup (every hour)
-      setInterval(() => cleanupOldEvents().catch(console.error), 60 * 60 * 1000);
-      
-      // Schedule sync job (every 15 minutes)
-      const { runSync } = await import('./lib/sync');
-      setInterval(() => runSync().catch(console.error), 15 * 60 * 1000);
+      // Note: Periodic cleanup and sync are handled by Coolify scheduled tasks
+      // - /api/sync - cleans stale deployments and closed PRs
+      // - cleanupOldEvents is called via internal cron or can be added to sync
       
       console.log('');
       console.log(`📡 Webhook: https://jean-ci.telegraphic.app/api/github/webhook`);
