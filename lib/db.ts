@@ -143,6 +143,23 @@ export async function initDatabase() {
           ALTER TABLE jean_ci_pending_deployments ADD COLUMN coolify_deployment_uuid TEXT;
         END IF;
       END $$;
+
+      -- Coolify app → GitHub repo mapping
+      -- Updated on each successful registry_package → Coolify deployment
+      CREATE TABLE IF NOT EXISTS jean_ci_app_mappings (
+        id SERIAL PRIMARY KEY,
+        coolify_app_uuid TEXT UNIQUE NOT NULL,
+        github_repo TEXT NOT NULL,
+        coolify_app_name TEXT,
+        coolify_app_fqdn TEXT,
+        installation_id INTEGER,
+        last_deployed_sha TEXT,
+        last_deployed_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_app_mappings_repo ON jean_ci_app_mappings(github_repo);
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -1151,4 +1168,86 @@ export async function getPendingDeploymentsCount(): Promise<number> {
     'SELECT COUNT(*) as count FROM jean_ci_pending_deployments'
   );
   return parseInt(result.rows[0]?.count || '0', 10);
+}
+
+// =============================================================================
+// Coolify App Mappings
+// =============================================================================
+
+export interface AppMapping {
+  id: number;
+  coolify_app_uuid: string;
+  github_repo: string;
+  coolify_app_name: string | null;
+  coolify_app_fqdn: string | null;
+  installation_id: number | null;
+  last_deployed_sha: string | null;
+  last_deployed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export async function upsertAppMapping(data: {
+  coolify_app_uuid: string;
+  github_repo: string;
+  coolify_app_name?: string | null;
+  coolify_app_fqdn?: string | null;
+  installation_id?: number | null;
+  last_deployed_sha?: string | null;
+}): Promise<AppMapping> {
+  const result = await pool.query(
+    `INSERT INTO jean_ci_app_mappings 
+       (coolify_app_uuid, github_repo, coolify_app_name, coolify_app_fqdn, installation_id, last_deployed_sha, last_deployed_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (coolify_app_uuid) DO UPDATE SET
+       github_repo = $2,
+       coolify_app_name = COALESCE($3, jean_ci_app_mappings.coolify_app_name),
+       coolify_app_fqdn = COALESCE($4, jean_ci_app_mappings.coolify_app_fqdn),
+       installation_id = COALESCE($5, jean_ci_app_mappings.installation_id),
+       last_deployed_sha = COALESCE($6, jean_ci_app_mappings.last_deployed_sha),
+       last_deployed_at = CURRENT_TIMESTAMP,
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING *`,
+    [
+      data.coolify_app_uuid,
+      data.github_repo,
+      data.coolify_app_name || null,
+      data.coolify_app_fqdn || null,
+      data.installation_id || null,
+      data.last_deployed_sha || null,
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function getAppMappingByUuid(coolifyAppUuid: string): Promise<AppMapping | null> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_app_mappings WHERE coolify_app_uuid = $1',
+    [coolifyAppUuid]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getAppMappingsByRepo(githubRepo: string): Promise<AppMapping[]> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_app_mappings WHERE github_repo = $1 ORDER BY updated_at DESC',
+    [githubRepo]
+  );
+  return result.rows;
+}
+
+export async function getAllAppMappings(): Promise<AppMapping[]> {
+  const result = await pool.query(
+    'SELECT * FROM jean_ci_app_mappings ORDER BY updated_at DESC'
+  );
+  return result.rows;
+}
+
+// Get repo name for a Coolify app UUID (for enriching events)
+export async function getRepoForApp(coolifyAppUuid: string): Promise<string | null> {
+  const result = await pool.query(
+    'SELECT github_repo FROM jean_ci_app_mappings WHERE coolify_app_uuid = $1',
+    [coolifyAppUuid]
+  );
+  return result.rows[0]?.github_repo || null;
 }
