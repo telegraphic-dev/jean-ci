@@ -331,9 +331,11 @@ export async function handleRegistryPackage(payload: any) {
   });
 
   // Record deployment started event (marks as pending in UI)
+  // Prefix delivery_id with event type to avoid unique constraint conflict with success/failed events
+  const startedDeliveryId = result.deploymentUuid ? `deployment_started:${result.deploymentUuid}` : null;
   await insertEvent(
     'coolify_deployment_started',
-    result.deploymentUuid || null,
+    startedDeliveryId,
     repository.full_name,
     'webhook_called',
     {

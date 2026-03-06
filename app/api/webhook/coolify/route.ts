@@ -17,9 +17,11 @@ export async function POST(req: NextRequest) {
   const headSha = pending?.head_sha;
   
   // Store Coolify event in database with the actual repo that triggered the deploy
+  // Use event:uuid as delivery_id to avoid unique constraint conflicts (same uuid for started/success)
+  const deliveryId = deployment_uuid ? `${event}:${deployment_uuid}` : null;
   await insertEvent(
     `coolify_${event || 'unknown'}`,
-    deployment_uuid || null,
+    deliveryId,
     actualRepo || application_name || null,
     event || null,
     {
