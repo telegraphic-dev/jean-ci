@@ -351,8 +351,13 @@ export async function insertEvent(eventType: string, deliveryId: string | null, 
       INSERT INTO jean_ci_webhook_events (event_type, delivery_id, repo, action, payload, source)
       VALUES ($1, $2, $3, $4, $5, $6)
     `, [eventType, deliveryId, repo, action, JSON.stringify(payload), source]);
-  } catch (e) {
-    // Duplicate delivery - ignore
+  } catch (e: any) {
+    // 23505 = unique_violation (duplicate delivery_id)
+    if (e?.code === '23505') {
+      console.log(`[Event] Duplicate delivery ignored: ${eventType} ${deliveryId}`);
+    } else {
+      console.error(`[Event] Failed to insert ${eventType}:`, e?.message || e);
+    }
   }
 }
 
