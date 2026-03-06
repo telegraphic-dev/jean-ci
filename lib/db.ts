@@ -49,7 +49,7 @@ export const DEFAULT_USER_PROMPT = `## Review Criteria
 Be pragmatic. The goal is to catch real problems, not to be pedantic.`;
 
 // Event retention
-export const MAX_EVENTS = 10000;
+export const MAX_EVENTS = 20000;
 
 // Initialize database
 export async function initDatabase() {
