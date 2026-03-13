@@ -10,10 +10,11 @@ export async function POST(req: NextRequest) {
   console.log(`[Coolify] Event received:`, JSON.stringify(payload).substring(0, 500));
   
   const { event, message, application_uuid, deployment_url, application_name, deployment_uuid, task_uuid, task_name } = payload;
+  const deploymentUuid = deployment_uuid || payload?.deploymentUuid || payload?.deployment_id || payload?.deploymentId;
   
   // Get pending deployment from database (for deployment events)
   // Try matching by deployment_uuid first (more precise), then fall back to app_uuid
-  let pending = deployment_uuid ? await getPendingDeploymentByDeploymentUuid(deployment_uuid) : null;
+  let pending = deploymentUuid ? await getPendingDeploymentByDeploymentUuid(String(deploymentUuid)) : null;
   if (!pending && application_uuid) {
     pending = await getPendingDeployment(application_uuid);
   }
@@ -26,9 +27,9 @@ export async function POST(req: NextRequest) {
   
   // Get SHA from pending deployment, or look up from deployment_started event
   let headSha: string | undefined = pending?.head_sha;
-  if (!headSha && deployment_uuid) {
+  if (!headSha && deploymentUuid) {
     // Match by deployment_uuid - most reliable (handles duplicate deploys)
-    headSha = (await getShaForDeploymentUuid(deployment_uuid)) ?? undefined;
+    headSha = (await getShaForDeploymentUuid(String(deploymentUuid))) ?? undefined;
   }
   if (!headSha && application_uuid) {
     // Fall back to most recent deployment for this app
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
   
   // Use deployment_uuid or task_uuid+timestamp as delivery_id
   // Task events reuse the same task_uuid, so we need timestamp for uniqueness
-  const deliveryId = deployment_uuid || (task_uuid ? `${task_uuid}-${Date.now()}` : null);
+  const deliveryId = deploymentUuid ? String(deploymentUuid) : (task_uuid ? `${task_uuid}-${Date.now()}` : null);
   
   // Store Coolify event in database with the actual repo
   await insertEvent(
