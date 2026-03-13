@@ -36,9 +36,11 @@ export async function POST(req: NextRequest) {
     headSha = (await getLastDeploymentShaForApp(application_uuid)) ?? undefined;
   }
   
-  // Use deployment_uuid or task_uuid+timestamp as delivery_id
-  // Task events reuse the same task_uuid, so we need timestamp for uniqueness
-  const deliveryId = deploymentUuid ? String(deploymentUuid) : (task_uuid ? `${task_uuid}-${Date.now()}` : null);
+  // Use event-scoped delivery IDs. Coolify reuses deployment_uuid across lifecycle events
+  // (started/success/failed), so plain deployment_uuid would dedupe success as a duplicate.
+  const deliveryId = deploymentUuid
+    ? `${event || 'unknown'}:${String(deploymentUuid)}`
+    : (task_uuid ? `${event || 'task'}:${task_uuid}-${Date.now()}` : null);
   
   // Store Coolify event in database with the actual repo
   await insertEvent(
