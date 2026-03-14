@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Prompt handbook</title><link rel="stylesheet" href="./assets/style.css" /></head><body><main><nav><a href="./index.html">← Docs home</a></nav><h1>Prompt authoring handbook</h1><p>Each prompt should be deterministic enough that the same prompt + same diff produces the same verdict style.</p><h2>Required schema</h2><pre><code># Prompt title
+
+## Purpose
+One paragraph explaining what this check protects.
+
+## Review Instructions
+Concrete things to inspect in the PR diff.
+
+## Verdict Criteria
+- **FAIL** when ...
+- **PASS** when ...</code></pre><h2>Good prompt habits</h2><ul><li>Fail only for merge-blocking issues.</li><li>Scope the check to one concern area.</li><li>Describe PASS and FAIL explicitly.</li><li>Avoid vague asks like “review everything”.</li></ul><h2>Starter prompts</h2><ul><li>Security review</li><li>Tests and docs coverage</li><li>Migration safety</li></ul></main></body></html>

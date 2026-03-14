@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Quickstart</title><link rel="stylesheet" href="./assets/style.css" /></head><body><main><nav><a href="./index.html">← Docs home</a></nav><h1>Quickstart</h1><p>Goal: install jean-ci and get one PR review running in under 10 minutes.</p><h2>1. Start the app</h2><pre><code>cp .env.example .env
+npm ci
+npm run build
+npm run start</code></pre><p>Verification command:</p><pre><code>curl -s http://localhost:3000/api/health</code></pre><h2>2. Add one review prompt</h2><pre><code>mkdir -p .jean-ci/pr-checks
+cat &gt; .jean-ci/pr-checks/security.md &lt;&lt;'EOF'
+# Security Review
+
+## Purpose
+Catch blocking security regressions before merge.
+
+## Review Instructions
+Review the diff for exposed secrets, missing authorization checks, unsafe input handling, and injection risks.
+Only fail for merge-blocking findings.
+
+## Verdict Criteria
+- **FAIL** if the diff introduces a real security vulnerability or exposes secrets.
+- **PASS** if no blocking security issues are present in the diff.
+EOF</code></pre><p>Verification command:</p><pre><code>git add .jean-ci/pr-checks/security.md &amp;&amp; git commit -m "chore: add jean-ci security review"</code></pre><h2>3. Trigger a review</h2><pre><code>gh pr comment &lt;pr-number&gt; --body "/review"</code></pre><p>Expected result: a global <code>jean-ci / Code Review</code> check, one check for <code>security.md</code>, and a PR review comment.</p></main></body></html>
