@@ -1,1 +1,56 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Troubleshooting</title><link rel="stylesheet" href="./assets/style.css" /></head><body><main><nav><a href="./index.html">← Docs home</a></nav><h1>Troubleshooting</h1><table><tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr><tr><td>No checks appear on PR</td><td>GitHub App missing permissions or repo not enabled</td><td>Re-check app permissions and enable PR reviews for the repo.</td></tr><tr><td>Check fails immediately with prompt error</td><td>Prompt file missing required sections or PASS/FAIL criteria</td><td>Rewrite the prompt to include Purpose, Review Instructions, and Verdict Criteria.</td></tr><tr><td>Review says execution failed</td><td>Gateway URL/token is missing or invalid</td><td>Verify gateway env vars and test the health endpoint directly.</td></tr><tr><td>Review never re-runs on comment</td><td>Missing <code>issue_comment</code> event or comment does not contain <code>/review</code></td><td>Enable the event and use the exact trigger.</td></tr></table></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jean-ci troubleshooting</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+  <script defer src="./assets/docs.js"></script>
+</head>
+<body>
+  <main class="page-shell">
+    <div class="topbar">
+      <a class="toplink" href="./index.html">← Docs home</a>
+      <div class="subnav">
+        <a class="navlink" href="./quickstart.html">Quickstart</a>
+        <a class="navlink" href="./github-app-checklist.html">GitHub App checklist</a>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="kicker">Troubleshooting</div>
+      <h1>Fast answers when jean-ci looks broken.</h1>
+      <p>Most failures fall into four buckets: app permissions, malformed prompt files, dead gateway auth, or wrong assumptions about what should run by default.</p>
+    </section>
+
+    <section class="section table-wrap">
+      <h2 class="section-title">Symptom → likely cause → fix</h2>
+      <table class="doc-table">
+        <thead>
+          <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>No checks appear on the PR</td><td>GitHub App missing permissions, missing installation access, or PR review not enabled for the repo.</td><td>Check app permissions, repo installation scope, and repo review settings first.</td></tr>
+          <tr><td>Only the built-in review appears</td><td>No <code>.jean-ci/pr-checks/*.md</code> files exist, or they were added on a different branch/commit than the PR head.</td><td>Add or fix the prompt files on the PR branch. The built-in review appearing alone is normal.</td></tr>
+          <tr><td>Custom check fails immediately with prompt error</td><td>The prompt file is missing the required structured sections or explicit PASS/FAIL criteria.</td><td>Rewrite the prompt to include title, Purpose, Review Instructions, and Verdict Criteria.</td></tr>
+          <tr><td>Review says execution failed</td><td>Gateway URL/token is missing, invalid, or the gateway is unreachable.</td><td>Verify env vars and test the gateway health endpoint directly.</td></tr>
+          <tr><td><code>/review</code> comment does nothing</td><td><code>issue_comment</code> webhook event is not enabled, or the comment text is wrong.</td><td>Enable <code>issue_comment</code> and use the exact <code>/review</code> command.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section dual">
+      <article class="callout info">
+        <h2>Important mental model</h2>
+        <p>The built-in <code>jean-ci / Code Review</code> is the default review. Custom prompt files are additive. If you expected custom files to replace the built-in review, that expectation is the bug.</p>
+      </article>
+      <article class="callout warn">
+        <h2>When prompt output looks odd</h2>
+        <p>Keep custom prompts narrow and explicit. The more a prompt tries to be a general reviewer, the noisier and less trustworthy it gets.</p>
+      </article>
+    </section>
+
+    <footer class="page-footer">Troubleshooting works better when the docs tell you the intended behavior first. That’s why the default/additive split is repeated across the site.</footer>
+  </main>
+</body>
+</html>
