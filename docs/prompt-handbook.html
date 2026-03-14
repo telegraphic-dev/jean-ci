@@ -1,11 +1,143 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Prompt handbook</title><link rel="stylesheet" href="./assets/style.css" /></head><body><main><nav><a href="./index.html">← Docs home</a></nav><h1>Prompt authoring handbook</h1><p>Each prompt should be deterministic enough that the same prompt + same diff produces the same verdict style.</p><h2>Required schema</h2><pre><code># Prompt title
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jean-ci prompt handbook</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+  <script defer src="./assets/docs.js"></script>
+</head>
+<body>
+  <main class="page-shell">
+    <div class="topbar">
+      <a class="toplink" href="./index.html">← Docs home</a>
+      <div class="subnav">
+        <a class="navlink" href="./quickstart.html">Quickstart</a>
+        <a class="navlink" href="./troubleshooting.html">Troubleshooting</a>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="kicker">Prompt handbook</div>
+      <h1>Write custom checks that stay sharp instead of going vague.</h1>
+      <p>Good jean-ci prompts are narrow, deterministic, and explicit about PASS versus FAIL. The built-in Code Review already covers general review; custom prompts should add a focused rule, not re-describe “review the whole PR”.</p>
+      <div class="anchor-list">
+        <a href="#schema">Schema</a>
+        <a href="#principles">Principles</a>
+        <a href="#openclaw">OpenClaw prompts</a>
+        <a href="#examples">Examples</a>
+      </div>
+    </section>
+
+    <section id="schema" class="section step">
+      <h2>Required schema for custom checks</h2>
+      <p>Every file in <code>.jean-ci/pr-checks/</code> should follow this shape.</p>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Minimal valid jean-ci prompt</div>
+          <button class="copy-button" data-copy-target="prompt-schema">Copy</button>
+        </div>
+        <pre><code id="prompt-schema"># Prompt Title
 
 ## Purpose
-One paragraph explaining what this check protects.
+One short paragraph explaining what this check protects.
 
 ## Review Instructions
 Concrete things to inspect in the PR diff.
+Tell the reviewer what counts as a blocking issue.
 
 ## Verdict Criteria
 - **FAIL** when ...
-- **PASS** when ...</code></pre><h2>Good prompt habits</h2><ul><li>Fail only for merge-blocking issues.</li><li>Scope the check to one concern area.</li><li>Describe PASS and FAIL explicitly.</li><li>Avoid vague asks like “review everything”.</li></ul><h2>Starter prompts</h2><ul><li>Security review</li><li>Tests and docs coverage</li><li>Migration safety</li></ul></main></body></html>
+- **PASS** when ...</code></pre>
+      </div>
+      <div class="callout info">
+        <h3>Why this shape exists</h3>
+        <p>Structured prompts are easier to validate, easier to read in-repo, and easier to keep deterministic across many PRs.</p>
+      </div>
+    </section>
+
+    <section id="principles" class="section">
+      <h2 class="section-title">Prompt principles that hold up in production</h2>
+      <div class="grid">
+        <article class="card">
+          <h2>One concern per prompt</h2>
+          <p>Prefer <em>security</em>, <em>migration safety</em>, or <em>docs coverage</em>. Do not create a custom prompt that just says “review everything”. The built-in review already does that job.</p>
+        </article>
+        <article class="card">
+          <h2>Fail only for merge blockers</h2>
+          <p>If a prompt fails for style nits or optional cleanup, it will train your team to ignore it.</p>
+        </article>
+        <article class="card">
+          <h2>Reference changed code paths</h2>
+          <p>Tell the reviewer to anchor findings to what changed. Generic advice without changed-file grounding is less useful in PR checks.</p>
+        </article>
+        <article class="card">
+          <h2>State PASS and FAIL explicitly</h2>
+          <p>Ambiguous verdict criteria create noisy or unstable output. Say exactly what should fail the PR.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="openclaw" class="section step">
+      <h2>OpenClaw-specific copy-paste prompts</h2>
+      <p>These are for asking an OpenClaw agent to generate prompt files in another repo. They are intentionally explicit about the built-in review remaining in place.</p>
+
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Ask OpenClaw to add a migration-safety check</div>
+          <button class="copy-button" data-copy-target="opencaw-migration-prompt">Copy</button>
+        </div>
+        <pre><code id="opencaw-migration-prompt">Add a jean-ci custom PR review check to this repository.
+
+Requirements:
+- Do not change or disable the built-in default `jean-ci / Code Review`.
+- Add a new additive file at `.jean-ci/pr-checks/migration-safety.md`.
+- Use the standard jean-ci prompt structure with `## Purpose`, `## Review Instructions`, and `## Verdict Criteria`.
+- Scope the prompt to schema, data migration, rollout sequencing, backfill safety, and rollback safety.
+- Fail only for merge-blocking migration risks.
+- Commit the change and include a short PR note that custom checks are additive to the default review.</code></pre>
+      </div>
+
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Ask OpenClaw to add tests-and-docs coverage</div>
+          <button class="copy-button" data-copy-target="openclaw-tests-docs-prompt">Copy</button>
+        </div>
+        <pre><code id="openclaw-tests-docs-prompt">Add an additive jean-ci PR check at `.jean-ci/pr-checks/tests-and-docs.md`.
+
+Rules:
+- Keep the built-in `jean-ci / Code Review` as the always-on default review.
+- The new custom prompt should check for missing tests or missing user-facing docs only when they are genuinely required by the diff.
+- Do not fail for tiny internal refactors that do not need tests or docs updates.
+- Use the jean-ci structured prompt format.
+- Commit on a fresh branch and open a PR.</code></pre>
+      </div>
+    </section>
+
+    <section id="examples" class="section step">
+      <h2>Example custom prompt: migration safety</h2>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Example <code>migration-safety.md</code></div>
+          <button class="copy-button" data-copy-target="migration-example">Copy</button>
+        </div>
+        <pre><code id="migration-example"># Migration Safety Review
+
+## Purpose
+Catch merge-blocking rollout and migration risks before a schema or data change lands.
+
+## Review Instructions
+Review the PR diff for incompatible schema changes, destructive migrations without a safe rollout path, missing backfill sequencing, irreversible data transformations, and rollback traps.
+Reference the changed files when you find a blocking issue.
+Only fail for real rollout or migration risks.
+
+## Verdict Criteria
+- **FAIL** when the diff introduces a schema or data migration change that can break production rollout, corrupt data, or block safe rollback.
+- **PASS** when the migration path is operationally safe and no merge-blocking migration risks are present in the diff.</code></pre>
+      </div>
+    </section>
+
+    <footer class="page-footer">Custom prompts should be boring in the best way: narrow scope, clear fail conditions, easy to trust.</footer>
+  </main>
+</body>
+</html>

@@ -5,44 +5,108 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>jean-ci docs</title>
   <link rel="stylesheet" href="./assets/style.css" />
+  <script defer src="./assets/docs.js"></script>
 </head>
 <body>
-  <main>
-    <div class="hero">
-      <div class="kicker">Agent-centric docs</div>
-      <h1>jean-ci documentation</h1>
-      <p>Get from GitHub App install to a working PR review with copy-pasteable prompts, verification commands, and operational guardrails.</p>
+  <main class="page-shell">
+    <div class="topbar">
+      <div class="badge">🦀 jean-ci docs</div>
+      <div class="subnav">
+        <a class="toplink" href="./quickstart.html">Quickstart</a>
+        <a class="toplink" href="./prompt-handbook.html">Prompt handbook</a>
+        <a class="toplink" href="./github-app-checklist.html">GitHub App checklist</a>
+        <a class="toplink" href="./gateway-security.html">Gateway security</a>
+        <a class="toplink" href="./troubleshooting.html">Troubleshooting</a>
+      </div>
     </div>
 
-    <nav>
-      <a href="./quickstart.html">Quickstart</a>
-      <a href="./prompt-handbook.html">Prompt handbook</a>
-      <a href="./github-app-checklist.html">GitHub App checklist</a>
-      <a href="./gateway-security.html">Gateway security</a>
-      <a href="./troubleshooting.html">Troubleshooting</a>
-    </nav>
-
-    <section class="card-grid">
-      <div class="card">
-        <h2>First review in minutes</h2>
-        <p>Install the app, add one prompt, trigger `/review`, and verify the check output end to end.</p>
-        <a href="./quickstart.html">Open quickstart →</a>
+    <section class="hero">
+      <div class="kicker">Human-first docs for agents and operators</div>
+      <h1>Set up jean-ci without reverse-engineering it first.</h1>
+      <p>These docs are written for humans doing real setup work: what runs by default, what is optional, where to paste prompts, how to verify each step, and how to avoid subtle GitHub App and gateway mistakes.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="./quickstart.html">Start with quickstart</a>
+        <a class="button" href="./prompt-handbook.html">Open prompt handbook</a>
       </div>
-      <div class="card">
-        <h2>Write prompts that stay stable</h2>
-        <p>Use a simple schema so checks fail fast on malformed prompts instead of producing ambiguous LLM output.</p>
-        <a href="./prompt-handbook.html">Open handbook →</a>
-      </div>
-      <div class="card">
-        <h2>Self-host safely</h2>
-        <p>GitHub App permission checklist, gateway token scope guidance, proxy patterns, and key rotation notes.</p>
-        <a href="./gateway-security.html">Open security guide →</a>
+      <div class="anchor-list">
+        <a href="#what-you-get">What you get</a>
+        <a href="#docs-map">Docs map</a>
+        <a href="#defaults">Default behavior</a>
       </div>
     </section>
 
-    <div class="note">
-      These pages are intentionally operator-focused: every setup page includes a copy-paste block and a verification command.
-    </div>
+    <section id="what-you-get" class="section">
+      <h2 class="section-title">What you get with jean-ci</h2>
+      <p class="section-intro">jean-ci does two jobs well: PR review orchestration and Coolify deployment triggering. The docs focus on those two paths, with copy-ready examples that work in real repos.</p>
+      <div class="card-grid">
+        <article class="card">
+          <h2>Always-on built-in review</h2>
+          <p>The default <strong>jean-ci / Code Review</strong> check runs whenever PR reviews are enabled for a repo. It is the baseline review, not an optional extra.</p>
+        </article>
+        <article class="card">
+          <h2>Additive repo-specific checks</h2>
+          <p>Files in <code>.jean-ci/pr-checks/*.md</code> add more checks. They never replace the built-in review. Use them for domain-specific rules like migrations, docs, or security.</p>
+        </article>
+        <article class="card">
+          <h2>Operator-friendly deployment mapping</h2>
+          <p>Use <code>.jean-ci/coolify.yml</code> to map GHCR packages to Coolify app UUIDs. jean-ci reacts to registry publishes and asks Coolify to deploy the already-built image.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="docs-map" class="section">
+      <h2 class="section-title">Pick the page that matches the job</h2>
+      <div class="grid">
+        <article class="step">
+          <h3>Quickstart</h3>
+          <p>Install, configure, add one custom check, and verify your first review.</p>
+          <a href="./quickstart.html">Open quickstart →</a>
+        </article>
+        <article class="step">
+          <h3>Prompt handbook</h3>
+          <p>Prompt structure, OpenClaw-friendly prompt blocks, and starter patterns that stay deterministic.</p>
+          <a href="./prompt-handbook.html">Open handbook →</a>
+        </article>
+        <article class="step">
+          <h3>GitHub App checklist</h3>
+          <p>Permissions, events, install verification, and the common “why aren’t checks appearing?” fixes.</p>
+          <a href="./github-app-checklist.html">Open checklist →</a>
+        </article>
+        <article class="step">
+          <h3>Gateway security</h3>
+          <p>Recommended proxy layout, token hygiene, and safe rotation flow.</p>
+          <a href="./gateway-security.html">Open security guide →</a>
+        </article>
+        <article class="step">
+          <h3>Troubleshooting</h3>
+          <p>Fast answers for malformed prompts, missing checks, dead gateway auth, and comment-trigger issues.</p>
+          <a href="./troubleshooting.html">Open troubleshooting →</a>
+        </article>
+      </div>
+    </section>
+
+    <section id="defaults" class="section dual">
+      <article class="callout info">
+        <h2>Default review behavior, plainly stated</h2>
+        <ul class="checklist">
+          <li><strong>Built-in review:</strong> always runs when PR review is enabled.</li>
+          <li><strong>Custom checks:</strong> files in <code>.jean-ci/pr-checks/</code> are optional and additive.</li>
+          <li><strong>PR comment:</strong> the built-in review also posts the visible PR review comment.</li>
+          <li><strong>Prompt validation:</strong> malformed custom prompts fail fast instead of producing mushy LLM output.</li>
+        </ul>
+      </article>
+      <article class="callout success">
+        <h2>Who these docs are written for</h2>
+        <ul class="checklist">
+          <li>Humans setting up the GitHub App for the first time</li>
+          <li>OpenClaw users who want copy-paste prompt blocks</li>
+          <li>Operators moving from vague docs to reproducible setup</li>
+          <li>Teams that need a Pages-hosted reference instead of tribal knowledge</li>
+        </ul>
+      </article>
+    </section>
+
+    <footer class="page-footer">Built for jean-ci and ClawBuddy-style workflows: minimal ambiguity, fast verification, copyable building blocks.</footer>
   </main>
 </body>
 </html>

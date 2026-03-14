@@ -1,2 +1,82 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Gateway security</title><link rel="stylesheet" href="./assets/style.css" /></head><body><main><nav><a href="./index.html">← Docs home</a></nav><h1>Agent gateway security guide</h1><h2>Recommended binding</h2><pre><code>OPENCLAW_GATEWAY_URL=http://coolify-proxy/openclaw
-OPENCLAW_GATEWAY_TOKEN=replace-me</code></pre><h2>Least privilege</h2><ul><li>Use a dedicated token for jean-ci.</li><li>Keep gateway access behind a private proxy or internal network path.</li><li>Do not expose the gateway directly on a public interface.</li></ul><h2>Rotation</h2><ol><li>Create a new gateway token.</li><li>Deploy jean-ci with the new token.</li><li>Verify <code>/api/health</code> and a sample PR review.</li><li>Revoke the old token.</li></ol><p>Verification command:</p><pre><code>curl -s -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" "$OPENCLAW_GATEWAY_URL/health"</code></pre></main></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jean-ci gateway security</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+  <script defer src="./assets/docs.js"></script>
+</head>
+<body>
+  <main class="page-shell">
+    <div class="topbar">
+      <a class="toplink" href="./index.html">← Docs home</a>
+      <div class="subnav">
+        <a class="navlink" href="./quickstart.html">Quickstart</a>
+        <a class="navlink" href="./troubleshooting.html">Troubleshooting</a>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="kicker">Gateway security</div>
+      <h1>Keep the OpenClaw gateway private and boring.</h1>
+      <p>jean-ci only needs a stable internal path and a valid bearer token. Public exposure, oversized token sharing, and ad-hoc proxying are where avoidable mistakes happen.</p>
+    </section>
+
+    <section class="section step">
+      <h2>Recommended connection shape</h2>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Recommended environment values</div>
+          <button class="copy-button" data-copy-target="gateway-env">Copy</button>
+        </div>
+        <pre><code id="gateway-env">OPENCLAW_GATEWAY_URL=http://coolify-proxy/openclaw
+OPENCLAW_GATEWAY_TOKEN=replace-me</code></pre>
+      </div>
+      <div class="callout info">
+        <h3>Why this shape</h3>
+        <p>It keeps the gateway behind a private proxy path instead of exposing it directly to the internet. jean-ci only needs HTTP access to the internal bridge plus a bearer token.</p>
+      </div>
+    </section>
+
+    <section class="section dual">
+      <article class="callout success">
+        <h2>Least-privilege habits</h2>
+        <ul class="checklist">
+          <li>Use a dedicated token for jean-ci.</li>
+          <li>Keep the token in env vars or secret storage, not in docs or prompt files.</li>
+          <li>Prefer an internal proxy path or private network route.</li>
+          <li>Rotate tokens when staff or infrastructure changes.</li>
+        </ul>
+      </article>
+      <article class="callout warn">
+        <h2>Don’t do this</h2>
+        <ul class="checklist">
+          <li>Do not expose the gateway on a public interface.</li>
+          <li>Do not reuse a broad admin token across unrelated services.</li>
+          <li>Do not assume a 200 from the app means the token is valid for reviews.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="section step">
+      <h2>Safe rotation workflow</h2>
+      <ol class="checklist">
+        <li>Create a new gateway token.</li>
+        <li>Deploy jean-ci with the new token.</li>
+        <li>Verify health and run one sample PR review.</li>
+        <li>Revoke the old token only after the new flow works.</li>
+      </ol>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Verify gateway access</div>
+          <button class="copy-button" data-copy-target="gateway-verify">Copy</button>
+        </div>
+        <pre><code id="gateway-verify">curl -s -H "Authorization: Bearer $OPENCLAW_GATEWAY_TOKEN" "$OPENCLAW_GATEWAY_URL/health"</code></pre>
+      </div>
+    </section>
+
+    <footer class="page-footer">The best gateway setup is the one nobody notices because it stays private, stable, and easy to rotate.</footer>
+  </main>
+</body>
+</html>
