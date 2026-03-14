@@ -24,6 +24,44 @@ PR Opened → Webhook → jean-ci → OpenClaw Gateway → LLM
                   ✅ style.md
 ```
 
+## PR Reviews Quickstart
+
+1. Copy `.env.example` to `.env` and set the GitHub App + OpenClaw gateway values.
+2. Install the GitHub App with **Checks**, **Contents**, **Pull requests**, and **Metadata** permissions.
+3. Add a structured prompt file under `.jean-ci/pr-checks/*.md`.
+4. Open or update a pull request, or comment `/review` on an existing PR.
+
+Minimal starter prompt:
+
+```markdown
+# Security Review
+
+## Purpose
+Catch blocking security regressions before merge.
+
+## Review Instructions
+Review the PR diff for exposed secrets, missing authorization checks, unsafe input handling, and injection risks.
+Only fail for merge-blocking findings.
+
+## Verdict Criteria
+- **FAIL** if the diff introduces a real security vulnerability or exposes secrets.
+- **PASS** if no blocking security issues are present in the diff.
+```
+
+Prompt requirements:
+- title
+- `## Purpose`
+- `## Review Instructions`
+- `## Verdict Criteria`
+- explicit `PASS` and `FAIL` conditions
+
+Starter prompt library:
+- `docs/prompt-library/security.md`
+- `docs/prompt-library/tests-and-docs.md`
+- `docs/prompt-library/migration-safety.md`
+
+Full walkthrough: `docs/pr-review-quickstart.md`
+
 ## Setup
 
 ### 1. Environment Variables

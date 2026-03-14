@@ -1,0 +1,92 @@
+# PR Reviews Quickstart
+
+Goal: get your first automated PR review running in under 10 minutes.
+
+## 1. Install and configure jean-ci
+
+Follow the root `README.md` setup for:
+
+- environment variables
+- GitHub App permissions
+- webhook delivery
+- OpenClaw gateway access
+
+Verification command:
+
+```bash
+curl -s http://localhost:3000/api/health
+```
+
+Expected result:
+
+```json
+{"ok":true}
+```
+
+## 2. Add a starter prompt
+
+Create `.jean-ci/pr-checks/security.md` in the target repository:
+
+```markdown
+# Security Review
+
+## Purpose
+Catch blocking security regressions before merge.
+
+## Review Instructions
+Review the PR diff for:
+- exposed secrets or credentials
+- missing authorization checks
+- unsafe input handling
+- SSRF, XSS, SQL injection, or command injection risk
+- unsafe deserialization or path traversal
+
+Reference the changed code paths when you find a blocking issue.
+Only fail for merge-blocking findings.
+
+## Verdict Criteria
+- **FAIL** when the diff introduces a real security vulnerability or exposes secrets.
+- **PASS** when no blocking security issues are present in the diff.
+```
+
+Verification command:
+
+```bash
+git add .jean-ci/pr-checks/security.md && git commit -m "chore: add jean-ci security review"
+```
+
+## 3. Open or update a pull request
+
+jean-ci runs on PR open, reopen, synchronize, `ready_for_review`, and explicit `/review` comments.
+
+Verification command:
+
+```bash
+gh pr comment <pr-number> --body "/review"
+```
+
+## 4. Read the result
+
+You should see:
+
+- one GitHub Check per prompt file
+- a global `jean-ci / Code Review` check
+- a PR review comment for the global check
+
+If the prompt is malformed, the check fails fast with an actionable error instead of sending ambiguous output to the LLM.
+
+## Prompt schema
+
+Each prompt should contain:
+
+1. a title
+2. `## Purpose`
+3. `## Review Instructions`
+4. `## Verdict Criteria`
+5. explicit PASS and FAIL conditions
+
+See also:
+
+- `docs/prompt-library/security.md`
+- `docs/prompt-library/tests-and-docs.md`
+- `docs/prompt-library/migration-safety.md`
