@@ -36,6 +36,24 @@ get_value() {
   grep -E "^${key}=" "$ENV_FILE" | tail -n1 | cut -d= -f2-
 }
 
+rawurlencode() {
+  local string="${1}"
+  local strlen=${#string}
+  local encoded=""
+  local pos c o
+
+  for (( pos=0; pos<strlen; pos++ )); do
+    c=${string:$pos:1}
+    case "$c" in
+      [-_.~a-zA-Z0-9]) o="$c" ;;
+      *) printf -v o '%%%02X' "'$c" ;;
+    esac
+    encoded+="${o}"
+  done
+
+  printf '%s' "$encoded"
+}
+
 if command -v docker >/dev/null 2>&1; then
   ok "docker installed"
 else
@@ -69,6 +87,7 @@ required_keys=(
   POSTGRES_DB
   POSTGRES_USER
   POSTGRES_PASSWORD
+  GITHUB_APP_PRIVATE_KEY_B64
 )
 
 for key in "${required_keys[@]}"; do
@@ -84,86 +103,24 @@ for key in "${required_keys[@]}"; do
   fi
 done
 
-private_key_b64_present=false
-private_key_path_present=false
-private_key_b64_valid=false
-private_key_path_valid=false
-
-if grep -qE '^GITHUB_APP_PRIVATE_KEY_B64=' "$ENV_FILE"; then
-  private_key_b64_present=true
-  value=$(get_value "GITHUB_APP_PRIVATE_KEY_B64")
-  if ! looks_placeholder "$value"; then
-    ok "GITHUB_APP_PRIVATE_KEY_B64 set"
-    private_key_b64_valid=true
-  fi
-fi
-
 if grep -qE '^GITHUB_APP_PRIVATE_KEY_PATH=' "$ENV_FILE"; then
-  private_key_path_present=true
   value=$(get_value "GITHUB_APP_PRIVATE_KEY_PATH")
-  if looks_placeholder "$value"; then
-    :
-  elif [[ ! -f "$value" ]]; then
-    fail_check "GITHUB_APP_PRIVATE_KEY_PATH points to a missing file"
-  else
-    private_key_path_valid=true
+  if ! looks_placeholder "$value"; then
+    warn "GITHUB_APP_PRIVATE_KEY_PATH is ignored by the default docker-compose setup; use GITHUB_APP_PRIVATE_KEY_B64 unless you add your own mount/secret override"
   fi
 fi
 
-if $private_key_b64_valid; then
-  :
-elif $private_key_path_valid; then
-  fail_check "GITHUB_APP_PRIVATE_KEY_PATH is only supported for non-Compose/custom deployments; the default docker-compose.yml does not mount host key files into the container"
+postgres_user=$(get_value "POSTGRES_USER")
+postgres_password=$(get_value "POSTGRES_PASSWORD")
+postgres_db=$(get_value "POSTGRES_DB")
+actual_database_url=$(get_value "DATABASE_URL")
+expected_database_url="postgresql://$(rawurlencode "$postgres_user"):$(rawurlencode "$postgres_password")@postgres:5432/$(rawurlencode "$postgres_db")"
+
+if [[ "$actual_database_url" == "$expected_database_url" ]]; then
+  ok "DATABASE_URL is consistent with POSTGRES_* settings"
 else
-  if $private_key_b64_present && $private_key_path_present; then
-    fail_check "Neither GITHUB_APP_PRIVATE_KEY_B64 nor GITHUB_APP_PRIVATE_KEY_PATH is configured with a usable value"
-  elif $private_key_b64_present; then
-    fail_check "GITHUB_APP_PRIVATE_KEY_B64 still looks like a placeholder"
-  elif $private_key_path_present; then
-    fail_check "GITHUB_APP_PRIVATE_KEY_PATH still looks like a placeholder or points to a missing file"
-  else
-    fail_check "GITHUB_APP_PRIVATE_KEY_B64 is required for the default docker-compose setup"
-  fi
+  fail_check "DATABASE_URL does not match POSTGRES_* settings (expected URL-encoded compose value)"
 fi
-
-python3 - "$ENV_FILE" <<'PY'
-from pathlib import Path
-from urllib.parse import urlparse
-import sys
-
-path = Path(sys.argv[1])
-values = {}
-for line in path.read_text(encoding='utf-8').splitlines():
-    if '=' in line and not line.lstrip().startswith('#'):
-        k, v = line.split('=', 1)
-        values[k] = v
-
-url = values.get('DATABASE_URL', '')
-postgres_user = values.get('POSTGRES_USER', '')
-postgres_password = values.get('POSTGRES_PASSWORD', '')
-postgres_db = values.get('POSTGRES_DB', '')
-
-parsed = urlparse(url)
-errors = []
-if parsed.scheme not in ('postgresql', 'postgres'):
-    errors.append('DATABASE_URL must use postgres/postgresql scheme')
-if parsed.hostname != 'postgres':
-    errors.append('DATABASE_URL host should be postgres for docker-compose setup')
-if parsed.username != postgres_user:
-    errors.append('DATABASE_URL username does not match POSTGRES_USER')
-if parsed.password != postgres_password:
-    errors.append('DATABASE_URL password does not match POSTGRES_PASSWORD')
-expected_db_path = '/' + postgres_db
-if parsed.path != expected_db_path:
-    errors.append('DATABASE_URL database name does not match POSTGRES_DB')
-
-if errors:
-    for error in errors:
-        print(f'[fail] {error}')
-    raise SystemExit(1)
-else:
-    print('[ok] DATABASE_URL is consistent with POSTGRES_* settings')
-PY
 
 if docker compose config >/dev/null 2>&1; then
   ok "docker compose config is valid"

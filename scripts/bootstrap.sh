@@ -9,8 +9,44 @@ random_hex() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
   else
-    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+    od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
   fi
+}
+
+rawurlencode() {
+  local string="${1}"
+  local strlen=${#string}
+  local encoded=""
+  local pos c o
+
+  for (( pos=0; pos<strlen; pos++ )); do
+    c=${string:$pos:1}
+    case "$c" in
+      [-_.~a-zA-Z0-9]) o="$c" ;;
+      *) printf -v o '%%%02X' "'$c" ;;
+    esac
+    encoded+="${o}"
+  done
+
+  printf '%s' "$encoded"
+}
+
+get_value() {
+  local key="$1"
+  grep -E "^${key}=" "$ENV_FILE" | tail -n1 | cut -d= -f2-
+}
+
+set_value() {
+  local key="$1"
+  local value="$2"
+  local tmp
+  tmp=$(mktemp)
+
+  if [[ -f "$ENV_FILE" ]]; then
+    grep -v -E "^${key}=" "$ENV_FILE" > "$tmp" || true
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  mv "$tmp" "$ENV_FILE"
 }
 
 append_if_missing() {
@@ -26,50 +62,23 @@ replace_placeholder_if_needed() {
   local key="$1"
   local value="$2"
   if grep -qE "^${key}=replace-with-long-random-secret$" "$ENV_FILE"; then
-    python3 - "$ENV_FILE" "$key" "$value" <<'PY'
-import sys
-path, key, value = sys.argv[1:4]
-with open(path, 'r', encoding='utf-8') as f:
-    content = f.read()
-content = content.replace(f"{key}=replace-with-long-random-secret", f"{key}={value}")
-with open(path, 'w', encoding='utf-8') as f:
-    f.write(content)
-PY
+    set_value "$key" "$value"
     echo "Generated $key"
   fi
 }
 
 sync_database_url() {
-  python3 - "$ENV_FILE" <<'PY'
-from pathlib import Path
-import sys
+  local user password db encoded_user encoded_password encoded_db database_url
+  user=$(get_value "POSTGRES_USER")
+  password=$(get_value "POSTGRES_PASSWORD")
+  db=$(get_value "POSTGRES_DB")
 
-path = Path(sys.argv[1])
-lines = path.read_text(encoding='utf-8').splitlines()
-values = {}
-for line in lines:
-    if '=' in line and not line.lstrip().startswith('#'):
-        k, v = line.split('=', 1)
-        values[k] = v
+  encoded_user=$(rawurlencode "$user")
+  encoded_password=$(rawurlencode "$password")
+  encoded_db=$(rawurlencode "$db")
+  database_url="postgresql://${encoded_user}:${encoded_password}@postgres:5432/${encoded_db}"
 
-user = values.get('POSTGRES_USER', 'jean_ci')
-password = values.get('POSTGRES_PASSWORD', '')
-db = values.get('POSTGRES_DB', 'jean_ci')
-database_url = 'postgresql://' + user + ':' + password + '@postgres:5432/' + db
-
-updated = []
-found = False
-for line in lines:
-    if line.startswith('DATABASE_URL='):
-        updated.append('DATABASE_URL=' + database_url)
-        found = True
-    else:
-        updated.append(line)
-if not found:
-    updated.append('DATABASE_URL=' + database_url)
-
-path.write_text('\n'.join(updated) + '\n', encoding='utf-8')
-PY
+  set_value "DATABASE_URL" "$database_url"
   echo "Synced DATABASE_URL from POSTGRES_* settings"
 }
 
@@ -100,7 +109,7 @@ echo
 echo "Bootstrap complete. Fill in these real values in .env before production use:"
 echo "- GITHUB_APP_ID"
 echo "- GITHUB_WEBHOOK_SECRET"
-echo "- GITHUB_APP_PRIVATE_KEY_B64 (or GITHUB_APP_PRIVATE_KEY_PATH)"
+echo "- GITHUB_APP_PRIVATE_KEY_B64"
 echo "- GITHUB_CLIENT_ID"
 echo "- GITHUB_CLIENT_SECRET"
 echo "- ADMIN_GITHUB_ID"

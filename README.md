@@ -82,9 +82,11 @@ This starts:
 - `postgres` as an internal Compose service (not published on the host by default)
 
 Helpful commands:
-- `make bootstrap` — create `.env`, generate local secrets, and sync `DATABASE_URL` from `POSTGRES_*` values
+- `make bootstrap` — create `.env`, generate local secrets, and sync a URL-encoded `DATABASE_URL` from `POSTGRES_*` values
 - `make doctor` — check Docker/Compose and fail if required settings still look like placeholders
 - `make up` / `make down` / `make logs`
+
+The stock easy-setup flow is bash + Docker Compose only. No Python dependency is required.
 
 ### 1. Environment Variables
 
