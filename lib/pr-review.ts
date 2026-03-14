@@ -156,15 +156,17 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         details_url: `${BASE_URL}/checks/${dbId}`,
       });
 
-      const promptValidation = validateReviewPrompt(check.prompt);
-      if (!promptValidation.valid) {
-        await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
-          conclusion: 'failure',
-          title: '❌ Invalid review prompt',
-          summary: buildPromptValidationSummary(promptValidation.errors),
-        });
-        console.log(`Check "${check.name}" failed prompt validation`);
-        continue;
+      if (!check.isGlobal) {
+        const promptValidation = validateReviewPrompt(check.prompt);
+        if (!promptValidation.valid) {
+          await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
+            conclusion: 'failure',
+            title: '❌ Invalid review prompt',
+            summary: buildPromptValidationSummary(promptValidation.errors),
+          });
+          console.log(`Check "${check.name}" failed prompt validation`);
+          continue;
+        }
       }
 
       const result = await callOpenClaw(check.prompt, reviewContext);

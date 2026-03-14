@@ -79,7 +79,7 @@ You should see:
 - one additional GitHub Check per prompt file
 - a PR review comment for the built-in `Code Review`
 
-If the prompt is malformed, the check fails fast with an actionable error instead of sending ambiguous output to the LLM.
+If a custom repo prompt is malformed, that custom check fails fast with an actionable error instead of sending ambiguous output to the LLM. The built-in default review keeps running.
 
 ## Prompt schema
 

@@ -51,6 +51,7 @@ Only fail for merge-blocking findings.
 Important behavior:
 - `jean-ci / Code Review` is always created and always runs when PR review is enabled.
 - `.jean-ci/pr-checks/*.md` adds extra checks; it does not disable or replace the built-in review.
+- Fast prompt validation applies to custom repo checks. Existing admin-configured default review prompts keep running, so upgrades do not break the built-in review path.
 
 Prompt requirements for custom checks:
 - title
