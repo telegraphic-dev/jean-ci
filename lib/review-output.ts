@@ -63,7 +63,7 @@ export function parseReviewResponse(response: string): ParsedReviewResponse {
   const trimmed = response.trim();
   const lines = trimmed.split(/\r?\n/).map((line) => line.trim());
   const firstMeaningfulLine = lines.find((line) => line.length > 0) || '';
-  const verdictMatch = firstMeaningfulLine.match(/^\**VERDICT:\s*(PASS|FAIL)\**$/i);
+  const verdictMatch = firstMeaningfulLine.match(/^\**VERDICT:\s*(PASS|FAIL)\b.*$/i);
 
   if (!verdictMatch) {
     throw new Error('Reviewer response must start with "VERDICT: PASS" or "VERDICT: FAIL" on the first non-empty line.');

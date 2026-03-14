@@ -41,6 +41,16 @@ test('parseReviewResponse normalizes bullet output', () => {
   assert.ok(parsed.normalized.includes('- Missing auth check on admin route'));
 });
 
+test('parseReviewResponse accepts verdict line with trailing explanation', () => {
+  const parsed = parseReviewResponse(`VERDICT: PASS - no blocking issues found
+
+Everything critical looks covered.`);
+
+  assert.equal(parsed.verdict, 'PASS');
+  assert.equal(parsed.title, '✅ Approved');
+  assert.ok(parsed.normalized.includes('- Everything critical looks covered.'));
+});
+
 test('parseReviewResponse requires verdict on first non-empty line', () => {
   assert.throws(
     () => parseReviewResponse('Looks good\nVERDICT: PASS'),

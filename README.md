@@ -6,9 +6,9 @@ GitHub webhook handler for automated PR reviews with LLM assistance.
 
 > OSS readiness is tracked in `docs/oss-readiness.md` (private-first rollout).
 
-- **Automated PR Reviews**: Run LLM-powered code reviews on every PR
-- **Customizable Prompts**: Edit the global review prompt in the admin UI
-- **Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for custom checks
+- **Automated PR Reviews**: Run the built-in `Code Review` on every PR
+- **Customizable Default Review**: Edit the always-on default review prompt in the admin UI
+- **Additive Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for extra checks without replacing the default review
 - **GitHub Checks Integration**: Results appear as nested checks on PRs
 - **Admin Dashboard**: GitHub OAuth protected management interface
 
@@ -28,7 +28,7 @@ PR Opened → Webhook → jean-ci → OpenClaw Gateway → LLM
 
 1. Copy `.env.example` to `.env` and set the GitHub App + OpenClaw gateway values.
 2. Install the GitHub App with **Checks**, **Contents**, **Pull requests**, and **Metadata** permissions.
-3. Add a structured prompt file under `.jean-ci/pr-checks/*.md`.
+3. Optional: add one or more structured prompt files under `.jean-ci/pr-checks/*.md` for repo-specific checks.
 4. Open or update a pull request, or comment `/review` on an existing PR.
 
 Minimal starter prompt:
@@ -48,7 +48,11 @@ Only fail for merge-blocking findings.
 - **PASS** if no blocking security issues are present in the diff.
 ```
 
-Prompt requirements:
+Important behavior:
+- `jean-ci / Code Review` is always created and always runs when PR review is enabled.
+- `.jean-ci/pr-checks/*.md` adds extra checks; it does not disable or replace the built-in review.
+
+Prompt requirements for custom checks:
 - title
 - `## Purpose`
 - `## Review Instructions`

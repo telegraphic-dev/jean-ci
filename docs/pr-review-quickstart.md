@@ -23,7 +23,13 @@ Expected result:
 {"ok":true}
 ```
 
-## 2. Add a starter prompt
+## 2. Know what runs by default
+
+As soon as PR review is enabled for a repo, jean-ci always runs the built-in `jean-ci / Code Review` check.
+
+Files in `.jean-ci/pr-checks/*.md` are optional additive checks for repo-specific rules. They do not replace, hide, or disable the built-in review.
+
+## 3. Add a starter prompt for an extra repo-specific check
 
 Create `.jean-ci/pr-checks/security.md` in the target repository:
 
@@ -55,7 +61,7 @@ Verification command:
 git add .jean-ci/pr-checks/security.md && git commit -m "chore: add jean-ci security review"
 ```
 
-## 3. Open or update a pull request
+## 4. Open or update a pull request
 
 jean-ci runs on PR open, reopen, synchronize, `ready_for_review`, and explicit `/review` comments.
 
@@ -65,13 +71,13 @@ Verification command:
 gh pr comment <pr-number> --body "/review"
 ```
 
-## 4. Read the result
+## 5. Read the result
 
 You should see:
 
-- one GitHub Check per prompt file
-- a global `jean-ci / Code Review` check
-- a PR review comment for the global check
+- the always-on `jean-ci / Code Review` check
+- one additional GitHub Check per prompt file
+- a PR review comment for the built-in `Code Review`
 
 If the prompt is malformed, the check fails fast with an actionable error instead of sending ambiguous output to the LLM.
 
