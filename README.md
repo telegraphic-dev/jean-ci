@@ -100,10 +100,8 @@ Then set values:
 # GitHub App
 GITHUB_APP_ID=your_app_id
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
-# Use one of these:
+# Default Docker Compose setup expects the private key inline as base64.
 GITHUB_APP_PRIVATE_KEY_B64=base64_encoded_private_key
-# or
-GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app-private-key.pem
 
 # GitHub OAuth (for admin UI)
 GITHUB_CLIENT_ID=your_oauth_client_id
@@ -129,6 +127,11 @@ DEFAULT_DEPLOYMENT_DOMAIN=apps.example.com
 # Data storage
 DATA_DIR=/data
 ```
+
+If you want to load the GitHub App private key from a file path instead of base64:
+- that is supported for non-Compose/manual deployments
+- the default `docker-compose.yml` does **not** mount a host key file into the container
+- for the stock easy-setup flow, use `GITHUB_APP_PRIVATE_KEY_B64`
 
 ### 2. GitHub App Permissions
 

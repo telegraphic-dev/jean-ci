@@ -86,14 +86,15 @@ done
 
 private_key_b64_present=false
 private_key_path_present=false
-private_key_valid=false
+private_key_b64_valid=false
+private_key_path_valid=false
 
 if grep -qE '^GITHUB_APP_PRIVATE_KEY_B64=' "$ENV_FILE"; then
   private_key_b64_present=true
   value=$(get_value "GITHUB_APP_PRIVATE_KEY_B64")
   if ! looks_placeholder "$value"; then
     ok "GITHUB_APP_PRIVATE_KEY_B64 set"
-    private_key_valid=true
+    private_key_b64_valid=true
   fi
 fi
 
@@ -105,12 +106,15 @@ if grep -qE '^GITHUB_APP_PRIVATE_KEY_PATH=' "$ENV_FILE"; then
   elif [[ ! -f "$value" ]]; then
     fail_check "GITHUB_APP_PRIVATE_KEY_PATH points to a missing file"
   else
-    ok "GITHUB_APP_PRIVATE_KEY_PATH points to an existing file"
-    private_key_valid=true
+    private_key_path_valid=true
   fi
 fi
 
-if ! $private_key_valid; then
+if $private_key_b64_valid; then
+  :
+elif $private_key_path_valid; then
+  fail_check "GITHUB_APP_PRIVATE_KEY_PATH is only supported for non-Compose/custom deployments; the default docker-compose.yml does not mount host key files into the container"
+else
   if $private_key_b64_present && $private_key_path_present; then
     fail_check "Neither GITHUB_APP_PRIVATE_KEY_B64 nor GITHUB_APP_PRIVATE_KEY_PATH is configured with a usable value"
   elif $private_key_b64_present; then
@@ -118,7 +122,7 @@ if ! $private_key_valid; then
   elif $private_key_path_present; then
     fail_check "GITHUB_APP_PRIVATE_KEY_PATH still looks like a placeholder or points to a missing file"
   else
-    fail_check "Either GITHUB_APP_PRIVATE_KEY_B64 or GITHUB_APP_PRIVATE_KEY_PATH must be set"
+    fail_check "GITHUB_APP_PRIVATE_KEY_B64 is required for the default docker-compose setup"
   fi
 fi
 
