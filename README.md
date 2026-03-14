@@ -92,9 +92,19 @@ GITHUB_CLIENT_SECRET=your_oauth_client_secret
 # Admin access (your GitHub user ID)
 ADMIN_GITHUB_ID=your_github_user_id
 
+# Public app URL (used for GitHub links / webhook forwarding)
+BASE_URL=https://jean-ci.example.com
+NEXT_PUBLIC_BASE_URL=https://jean-ci.example.com
+
 # OpenClaw Gateway
-OPENCLAW_GATEWAY_URL=http://coolify-proxy/openclaw
+OPENCLAW_GATEWAY_URL=https://openclaw.example.com
 OPENCLAW_GATEWAY_TOKEN=your_gateway_token
+
+# Optional Coolify integration
+COOLIFY_URL=https://coolify.example.com
+COOLIFY_DASHBOARD_URL=https://coolify.example.com
+COOLIFY_TOKEN=your_coolify_token
+DEFAULT_DEPLOYMENT_DOMAIN=apps.example.com
 
 # Data storage
 DATA_DIR=/data
@@ -222,11 +232,11 @@ Key points:
 
 ## Gateway Connection
 
-Uses the Coolify Traefik proxy bridge:
-- URL: `http://coolify-proxy/openclaw`
-- Auth: Bearer token
+The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
+- URL: `OPENCLAW_GATEWAY_URL=https://openclaw.example.com`
+- Auth: Bearer token via `OPENCLAW_GATEWAY_TOKEN`
 
-See COOLIFY_INSTANCES.md for bridge setup details.
+If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
 
 ## Advanced: Browser-Based E2E Tests
 

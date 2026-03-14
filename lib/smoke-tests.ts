@@ -1,8 +1,9 @@
 import { callOpenClaw } from './llm';
 import { getInstallationOctokit, createCheck, updateCheck } from './github';
 import { insertCheckRun, updateCheckRun } from './db';
+import { APP_BASE_URL } from './config';
 
-const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL || 'https://jean-ci.telegraphic.app';
+const BASE_URL = APP_BASE_URL;
 
 interface SmokeTest {
   name: string;
