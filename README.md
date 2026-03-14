@@ -69,6 +69,25 @@ Full walkthrough: `docs/pr-review-quickstart.md`
 
 ## Setup
 
+### Easy local setup (Docker Compose)
+
+```bash
+make bootstrap
+make doctor
+docker compose up -d --build
+```
+
+This starts:
+- `app` on `http://localhost:3000`
+- `postgres` as an internal Compose service (not published on the host by default)
+
+Helpful commands:
+- `make bootstrap` — create `.env`, generate local secrets, and sync a URL-encoded `DATABASE_URL` from `POSTGRES_*` values
+- `make doctor` — check Docker/Compose and fail if required settings still look like placeholders
+- `make up` / `make down` / `make logs`
+
+The stock easy-setup flow is bash + Docker Compose only. No Python dependency is required.
+
 ### 1. Environment Variables
 
 Start from the template:
@@ -83,6 +102,7 @@ Then set values:
 # GitHub App
 GITHUB_APP_ID=your_app_id
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
+# Default Docker Compose setup expects the private key inline as base64.
 GITHUB_APP_PRIVATE_KEY_B64=base64_encoded_private_key
 
 # GitHub OAuth (for admin UI)
@@ -109,6 +129,11 @@ DEFAULT_DEPLOYMENT_DOMAIN=apps.example.com
 # Data storage
 DATA_DIR=/data
 ```
+
+If you want to load the GitHub App private key from a file path instead of base64:
+- that is supported for non-Compose/manual deployments
+- the default `docker-compose.yml` does **not** mount a host key file into the container
+- for the stock easy-setup flow, use `GITHUB_APP_PRIVATE_KEY_B64`
 
 ### 2. GitHub App Permissions
 
