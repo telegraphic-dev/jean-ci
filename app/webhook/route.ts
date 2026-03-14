@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { APP_BASE_HOST, APP_BASE_PROTOCOL } from '@/lib/config';
 
 // Backwards compatibility: forward /webhook to /api/github/webhook
 export async function POST(req: NextRequest) {
-  const protocol = req.headers.get('x-forwarded-proto') || 'https';
-  const host = req.headers.get('host') || 'jean-ci.telegraphic.app';
+  const protocol = req.headers.get('x-forwarded-proto') || APP_BASE_PROTOCOL;
+  const host = req.headers.get('host') || APP_BASE_HOST;
   
   // Clone headers
   const headers = new Headers(req.headers);

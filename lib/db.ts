@@ -1062,16 +1062,16 @@ export async function getAllPendingDeployments(): Promise<PendingDeployment[]> {
 
 export function buildCoolifyDeploymentUrl(appUuid: string, deploymentUuid: string, logsUrl?: string): string {
   // If we have the logs URL, try to extract project/env info from it
-  // Format: https://apps.telegraphic.app/project/{projectUuid}/environment/{envUuid}/application/{appUuid}/deployment/{deploymentUuid}
+  // Format: {dashboard}/project/{projectUuid}/{environmentName}/application/{appUuid}
   if (logsUrl) {
     const match = logsUrl.match(/\/project\/([^/]+)\/([^/]+)\/application\/[^/]+$/);
     if (match) {
       return `${logsUrl.split('/project/')[0]}/project/${match[1]}/${match[2]}/application/${appUuid}/deployment/${deploymentUuid}`;
     }
   }
-  // Fallback - just link to the deployment directly
-  const coolifyUrl = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
-  return `${coolifyUrl}/deployments/${deploymentUuid}`;
+  // Fallback - just link to the deployment directly when a dashboard URL is configured
+  const coolifyUrl = process.env.COOLIFY_DASHBOARD_URL || process.env.COOLIFY_URL || '';
+  return coolifyUrl ? `${coolifyUrl}/deployments/${deploymentUuid}` : deploymentUuid;
 }
 
 export async function getReposWithPRReviewEnabled(): Promise<{ full_name: string; installation_id: number }[]> {

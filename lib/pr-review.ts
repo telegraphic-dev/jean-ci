@@ -2,8 +2,9 @@ import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGit
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck } from './github';
 import { callOpenClaw } from './llm';
 import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output';
+import { APP_BASE_URL } from './config';
 
-const BASE_URL = process.env.BASE_URL || 'https://jean-ci.telegraphic.app';
+const BASE_URL = APP_BASE_URL;
 
 // Configurable diff limits with generous defaults
 // Can be overridden via environment variables

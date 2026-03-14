@@ -1,4 +1,5 @@
-const COOLIFY_URL = process.env.COOLIFY_URL || 'https://apps.telegraphic.app';
+import { COOLIFY_URL } from './config';
+
 const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
 
 export async function fetchCoolifyConfig(octokit: any, owner: string, repo: string, ref = 'main') {
@@ -41,7 +42,7 @@ function parseSimpleYaml(content: string) {
 }
 
 export async function getCoolifyAppDetails(appUuid: string) {
-  if (!COOLIFY_TOKEN) return null;
+  if (!COOLIFY_TOKEN || !COOLIFY_URL) return null;
   
   try {
     const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}`, {
@@ -63,7 +64,7 @@ export async function getCoolifyAppDetails(appUuid: string) {
 }
 
 export async function triggerCoolifyDeploy(appUuid: string) {
-  if (!COOLIFY_TOKEN) {
+  if (!COOLIFY_TOKEN || !COOLIFY_URL) {
     console.log('[MOCK] Would trigger Coolify deploy for:', appUuid);
     return { success: true, mock: true };
   }

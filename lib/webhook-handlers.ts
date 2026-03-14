@@ -2,6 +2,7 @@ import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
 import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment } from './coolify';
+import { APP_BASE_URL, COOLIFY_DASHBOARD_URL, buildRepoAppUrl } from './config';
 
 // OpenClaw notification config
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
@@ -264,8 +265,8 @@ export async function handleRegistryPackage(payload: any) {
   const environment = deployment.environment || 'production';
 
   const appDetails = await getCoolifyAppDetails(deployment.coolify_app);
-  const appUrl = appDetails?.fqdn || `https://${repo}.telegraphic.app`;
-  const coolifyDashboard = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
+  const appUrl = appDetails?.fqdn || buildRepoAppUrl(repo);
+  const coolifyDashboard = COOLIFY_DASHBOARD_URL || APP_BASE_URL;
   const logsUrl = `${coolifyDashboard}/project/${appDetails?.projectUuid || 'default'}/${appDetails?.environmentName || 'production'}/application/${deployment.coolify_app}`;
 
   // Create GitHub Check Run
