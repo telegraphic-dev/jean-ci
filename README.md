@@ -69,6 +69,23 @@ Full walkthrough: `docs/pr-review-quickstart.md`
 
 ## Setup
 
+### Easy local setup (Docker Compose)
+
+```bash
+make bootstrap
+make doctor
+docker compose up -d --build
+```
+
+This starts:
+- `app` on `http://localhost:3000`
+- `postgres` as an internal Compose service (not published on the host by default)
+
+Helpful commands:
+- `make bootstrap` — create `.env`, generate local secrets, and sync `DATABASE_URL` from `POSTGRES_*` values
+- `make doctor` — check Docker/Compose and fail if required settings still look like placeholders
+- `make up` / `make down` / `make logs`
+
 ### 1. Environment Variables
 
 Start from the template:
@@ -83,7 +100,10 @@ Then set values:
 # GitHub App
 GITHUB_APP_ID=your_app_id
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
+# Use one of these:
 GITHUB_APP_PRIVATE_KEY_B64=base64_encoded_private_key
+# or
+GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/github-app-private-key.pem
 
 # GitHub OAuth (for admin UI)
 GITHUB_CLIENT_ID=your_oauth_client_id
