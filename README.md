@@ -4,6 +4,8 @@ GitHub webhook handler for automated PR reviews with LLM assistance.
 
 ## Features
 
+> OSS readiness is tracked in `docs/oss-readiness.md` (private-first rollout).
+
 - **Automated PR Reviews**: Run LLM-powered code reviews on every PR
 - **Customizable Prompts**: Edit the global review prompt in the admin UI
 - **Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for custom checks
@@ -25,6 +27,14 @@ PR Opened → Webhook → jean-ci → OpenClaw Gateway → LLM
 ## Setup
 
 ### 1. Environment Variables
+
+Start from the template:
+
+```bash
+cp .env.example .env
+```
+
+Then set values:
 
 ```bash
 # GitHub App
