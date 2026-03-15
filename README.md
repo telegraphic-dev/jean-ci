@@ -81,6 +81,7 @@ See `docs/release-engineering.md` for the release flow and runbook.
 
 ```bash
 make bootstrap
+# edit .env and replace the required GitHub/OpenClaw placeholders
 make doctor
 docker compose up -d --build
 ```
@@ -91,10 +92,15 @@ This starts:
 
 Helpful commands:
 - `make bootstrap` — create `.env`, generate local secrets, and sync a URL-encoded `DATABASE_URL` from `POSTGRES_*` values
-- `make doctor` — check Docker/Compose and fail if required settings still look like placeholders
+- `make doctor` — check Docker/Compose and fail until required GitHub/OpenClaw values are replaced with real values
 - `make up` / `make down` / `make logs`
 
 The stock easy-setup flow is bash + Docker Compose only. No Python dependency is required.
+
+What `make bootstrap` does **not** do:
+- it does **not** invent fake GitHub App credentials for you
+- it does **not** invent a real OpenClaw gateway token
+- therefore `make doctor` will still fail until you replace those placeholders in `.env`
 
 ### 1. Environment Variables
 
