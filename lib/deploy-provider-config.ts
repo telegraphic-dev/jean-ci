@@ -40,17 +40,33 @@ export function parseDeploymentConfig(content: string): DeploymentConfigFile {
   };
 }
 
+function normalizePackageRef(packageRef: string): string {
+  const trimmed = packageRef.trim().toLowerCase();
+  const digestIndex = trimmed.indexOf('@');
+  const withoutDigest = digestIndex >= 0 ? trimmed.slice(0, digestIndex) : trimmed;
+  const lastSlash = withoutDigest.lastIndexOf('/');
+  const lastColon = withoutDigest.lastIndexOf(':');
+  const hasTag = lastColon > lastSlash;
+  return hasTag ? withoutDigest.slice(0, lastColon) : withoutDigest;
+}
+
+function getPackageLeaf(packageRef: string): string {
+  const normalized = normalizePackageRef(packageRef);
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || normalized;
+}
+
 export function findMatchingDeployment(config: DeploymentConfigFile, packageUrl: string, packageName?: string) {
-  const normalizedPackageUrl = packageUrl.toLowerCase();
-  const normalizedPackageName = packageName?.toLowerCase();
+  const normalizedPackageUrl = normalizePackageRef(packageUrl);
+  const normalizedPackageName = packageName?.trim().toLowerCase();
 
   return config.deployments.find((deployment) => {
-    const configPackage = deployment.package.toLowerCase();
-    if (normalizedPackageUrl.includes(configPackage)) {
+    const configPackage = normalizePackageRef(deployment.package);
+    if (normalizedPackageUrl === configPackage) {
       return true;
     }
     if (normalizedPackageName) {
-      return configPackage.includes(normalizedPackageName);
+      return getPackageLeaf(configPackage) === normalizedPackageName;
     }
     return false;
   }) || null;

@@ -70,6 +70,35 @@ test('findMatchingDeployment does not match unrelated entry when packageName is 
   assert.equal(match, null);
 });
 
+test('findMatchingDeployment uses exact package leaf for packageName fallback', () => {
+  const match = findMatchingDeployment(
+    {
+      deployments: [
+        { provider: 'coolify', package: 'ghcr.io/example/myapp', coolify_app: 'app-1' },
+        { provider: 'noop', package: 'ghcr.io/example/app' },
+      ],
+    },
+    'pkg.example.invalid/no-direct-match',
+    'app',
+  );
+
+  assert.equal(match?.provider, 'noop');
+});
+
+test('findMatchingDeployment does not allow substring packageName matches', () => {
+  const match = findMatchingDeployment(
+    {
+      deployments: [
+        { provider: 'coolify', package: 'ghcr.io/example/myapp', coolify_app: 'app-1' },
+      ],
+    },
+    'pkg.example.invalid/no-direct-match',
+    'app',
+  );
+
+  assert.equal(match, null);
+});
+
 test('known provider list includes coolify and noop', () => {
   assert.ok(KNOWN_DEPLOYMENT_PROVIDERS.includes('coolify'));
   assert.ok(KNOWN_DEPLOYMENT_PROVIDERS.includes('noop'));
