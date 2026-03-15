@@ -91,12 +91,12 @@ export async function triggerCoolifyDeploy(appUuid: string) {
   }
 }
 
-import { 
-  savePendingDeployment as dbSavePendingDeployment, 
+import {
+  savePendingDeployment as dbSavePendingDeployment,
   getPendingDeployment as dbGetPendingDeployment,
   deletePendingDeployment as dbDeletePendingDeployment,
-  PendingDeployment as DbPendingDeployment
 } from './db';
+import type { PendingDeployment as DbPendingDeployment } from './db';
 
 export interface PendingDeploymentInput {
   owner: string;
