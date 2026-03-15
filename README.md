@@ -190,7 +190,29 @@ jean-ci can automatically deploy to Coolify when new container images are publis
 
 ### Setup
 
-1. **Add `.jean-ci/coolify.yml`** to your repository:
+1. **Add a deployment config** to your repository.
+
+Preferred new format: `.jean-ci/deployments.yml`
+
+```yaml
+# jean-ci deployment config
+deployments:
+  - provider: coolify
+    package: ghcr.io/your-org/your-repo
+    coolify_app: your-coolify-app-uuid
+    environment: production
+```
+
+Review-only / no-op mode:
+
+```yaml
+deployments:
+  - provider: noop
+    package: ghcr.io/your-org/your-repo
+    environment: review-only
+```
+
+Legacy `.jean-ci/coolify.yml` is still supported for compatibility:
 
 ```yaml
 # jean-ci Coolify Deployment Config
