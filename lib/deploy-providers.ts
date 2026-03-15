@@ -40,16 +40,24 @@ export async function fetchDeploymentConfig(octokit: any, owner: string, repo: s
   const candidates = ['.jean-ci/deployments.yml', '.jean-ci/coolify.yml'];
 
   for (const path of candidates) {
+    let content: string | null = null;
     try {
       const { data } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
         owner, repo, path, ref,
       });
-      const content = Buffer.from(data.content, 'base64').toString('utf8');
-      return parseDeploymentConfig(content);
+      content = Buffer.from(data.content, 'base64').toString('utf8');
     } catch (e: any) {
       if (e.status !== 404) {
         console.error(`Error fetching ${path}:`, e.message);
       }
+      continue;
+    }
+
+    try {
+      return parseDeploymentConfig(content);
+    } catch (e: any) {
+      console.error(`Invalid deployment config in ${path}: ${e.message}`);
+      return null;
     }
   }
 

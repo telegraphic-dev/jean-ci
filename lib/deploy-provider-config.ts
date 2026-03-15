@@ -1,3 +1,5 @@
+import { parse as parseYaml } from 'yaml';
+
 export interface DeploymentTarget {
   provider: string;
   package: string;
@@ -11,47 +13,31 @@ export interface DeploymentConfigFile {
 
 export const KNOWN_DEPLOYMENT_PROVIDERS = ['coolify', 'noop'] as const;
 
-function normalizeDeployment(deployment: Record<string, string>): DeploymentTarget {
+function normalizeDeployment(deployment: unknown): DeploymentTarget {
+  const source = (deployment && typeof deployment === 'object') ? deployment as Record<string, unknown> : {};
+
   return {
-    provider: deployment.provider || 'coolify',
-    package: deployment.package || '',
-    environment: deployment.environment,
-    coolify_app: deployment.coolify_app,
+    provider: typeof source.provider === 'string' && source.provider.trim() ? source.provider.trim() : 'coolify',
+    package: typeof source.package === 'string' ? source.package.trim() : '',
+    environment: typeof source.environment === 'string' && source.environment.trim() ? source.environment.trim() : undefined,
+    coolify_app: typeof source.coolify_app === 'string' && source.coolify_app.trim() ? source.coolify_app.trim() : undefined,
   };
 }
 
 export function parseDeploymentConfig(content: string): DeploymentConfigFile {
-  const config: DeploymentConfigFile = { deployments: [] };
-  let currentDeployment: Record<string, string> | null = null;
+  const parsed = parseYaml(content) as { deployments?: unknown } | null;
 
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    if (trimmed.startsWith('- ')) {
-      if (currentDeployment) {
-        config.deployments.push(normalizeDeployment(currentDeployment));
-      }
-      currentDeployment = {};
-      const firstPair = trimmed.slice(2);
-      if (firstPair.includes(':')) {
-        const [key, ...valueParts] = firstPair.split(':');
-        currentDeployment[key.trim()] = valueParts.join(':').trim();
-      }
-      continue;
-    }
-
-    if (currentDeployment && trimmed.includes(':')) {
-      const [key, ...valueParts] = trimmed.split(':');
-      currentDeployment[key.trim()] = valueParts.join(':').trim();
-    }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Deployment config must be a YAML object with a deployments array.');
   }
 
-  if (currentDeployment) {
-    config.deployments.push(normalizeDeployment(currentDeployment));
+  if (!Array.isArray(parsed.deployments)) {
+    throw new Error('Deployment config must define a top-level deployments array.');
   }
 
-  return config;
+  return {
+    deployments: parsed.deployments.map(normalizeDeployment),
+  };
 }
 
 export function findMatchingDeployment(config: DeploymentConfigFile, packageUrl: string, packageName?: string) {

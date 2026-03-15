@@ -47,6 +47,14 @@ test('parseDeploymentConfig defaults provider to coolify for legacy config', () 
   assert.equal(parsed.deployments[0]?.coolify_app, 'app-123');
 });
 
+test('parseDeploymentConfig supports quoted values and inline comments', () => {
+  const parsed = parseDeploymentConfig(`deployments:\n  - provider: "noop" # comment\n    package: 'ghcr.io/example/app'\n    environment: "review-only"\n`);
+
+  assert.equal(parsed.deployments[0]?.provider, 'noop');
+  assert.equal(parsed.deployments[0]?.package, 'ghcr.io/example/app');
+  assert.equal(parsed.deployments[0]?.environment, 'review-only');
+});
+
 test('findMatchingDeployment does not match unrelated entry when packageName is missing', () => {
   const match = findMatchingDeployment(
     {
