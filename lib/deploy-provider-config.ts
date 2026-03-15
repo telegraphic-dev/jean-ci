@@ -55,10 +55,18 @@ export function parseDeploymentConfig(content: string): DeploymentConfigFile {
 }
 
 export function findMatchingDeployment(config: DeploymentConfigFile, packageUrl: string, packageName?: string) {
+  const normalizedPackageUrl = packageUrl.toLowerCase();
+  const normalizedPackageName = packageName?.toLowerCase();
+
   return config.deployments.find((deployment) => {
     const configPackage = deployment.package.toLowerCase();
-    return packageUrl.toLowerCase().includes(configPackage) ||
-      configPackage.includes(packageName?.toLowerCase() || '');
+    if (normalizedPackageUrl.includes(configPackage)) {
+      return true;
+    }
+    if (normalizedPackageName) {
+      return configPackage.includes(normalizedPackageName);
+    }
+    return false;
   }) || null;
 }
 

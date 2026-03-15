@@ -47,6 +47,21 @@ test('parseDeploymentConfig defaults provider to coolify for legacy config', () 
   assert.equal(parsed.deployments[0]?.coolify_app, 'app-123');
 });
 
+test('findMatchingDeployment does not match unrelated entry when packageName is missing', () => {
+  const match = findMatchingDeployment(
+    {
+      deployments: [
+        { provider: 'coolify', package: 'ghcr.io/example/first', coolify_app: 'app-1' },
+        { provider: 'noop', package: 'ghcr.io/example/second' },
+      ],
+    },
+    'ghcr.io/example/third',
+    undefined,
+  );
+
+  assert.equal(match, null);
+});
+
 test('known provider list includes coolify and noop', () => {
   assert.ok(KNOWN_DEPLOYMENT_PROVIDERS.includes('coolify'));
   assert.ok(KNOWN_DEPLOYMENT_PROVIDERS.includes('noop'));
