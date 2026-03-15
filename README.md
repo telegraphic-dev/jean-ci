@@ -67,6 +67,14 @@ Starter prompt library:
 
 Full walkthrough: `docs/pr-review-quickstart.md`
 
+## Container release channels
+
+- `ghcr.io/telegraphic-dev/jean-ci:dev` → published from every push to `main`
+- semver tags (`vX.Y.Z`) publish stable images and update `latest`
+- release pipeline also publishes SBOM, provenance, and cosign signatures
+
+See `docs/release-engineering.md` for the release flow and runbook.
+
 ## Setup
 
 ### Easy local setup (Docker Compose)
