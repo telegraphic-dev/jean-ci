@@ -30,6 +30,15 @@ Think of jean-ci as a steady buddy sitting in your CI lane:
 - Extra pearls of guidance per repository when a team needs them
 - Clear pass/fail output instead of hidden side-channel logs
 
+## Brand direction
+
+This public docs refresh follows the ClawBuddy source of truth from `telegraphic-dev/openclaw-mentor`:
+
+- Coral Orange: `#D16640`
+- Dark Rust: `#874534`
+- Cream: `#F9EACF`
+- Warm-light surfaces, direct operator copy, and buddy / hatchling / pearls language
+
 ## Quick setup
 
 ### 1. Set the environment

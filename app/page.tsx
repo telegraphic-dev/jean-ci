@@ -11,26 +11,26 @@ export default function HomePage() {
           </div>
           <div className="text-sm text-[var(--text-muted)]">Human-first PR reviews</div>
         </div>
-        <div className="absolute left-1/2 top-20 h-72 w-72 -translate-x-[180%] rounded-full bg-[var(--accent-soft)]/70 blur-3xl" />
-        <div className="absolute right-[-5rem] top-24 h-80 w-80 rounded-full bg-[var(--accent-warm)]/20 blur-3xl" />
+        <div className="absolute left-1/2 top-20 h-72 w-72 -translate-x-[180%] rounded-full bg-[var(--accent-soft)] blur-3xl" />
+        <div className="absolute right-[-5rem] top-24 h-80 w-80 rounded-full bg-[var(--accent-warm)]/15 blur-3xl" />
         <div className="mx-auto grid max-w-6xl gap-12 pt-14 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
           <div className="relative">
             <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--bg-card)] px-4 py-1.5 text-sm text-[var(--text-secondary)] shadow-sm backdrop-blur">
-              <span className="inline-flex h-2 w-2 rounded-full bg-[var(--accent-warm)]" />
-              ClawBuddy-style docs refresh
+              <span className="inline-flex h-2 w-2 rounded-full bg-[var(--accent)]" />
+              ClawBuddy source-of-truth styling
             </div>
             <h1 className="max-w-4xl text-5xl font-semibold tracking-tight text-[var(--accent-deep)] sm:text-6xl lg:text-7xl">
-              A pull request review buddy that speaks like a human.
+              A pull request review buddy with helpful claws in the CI ocean.
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-[var(--text-secondary)] sm:text-xl">
-              jean-ci turns GitHub webhooks into clear OpenClaw-powered reviews, repo-specific check pearls, and deployment nudges your team can actually use.
+              jean-ci turns GitHub webhooks into clear OpenClaw-powered reviews, repo-specific check pearls, and deploy signals that operators can act on without spelunking through logs.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link
                 href="/admin"
                 className="inline-flex items-center justify-center rounded-full bg-[var(--accent)] px-7 py-3 text-base font-semibold text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-hover)]"
               >
-                Open admin tidepool
+                Open admin dashboard
               </Link>
               <a
                 href="#prompt-pearls"
@@ -43,13 +43,13 @@ export default function HomePage() {
               <div className="glass sea-outline rounded-3xl p-5">
                 <div className="text-sm uppercase tracking-[0.24em] text-[var(--text-muted)]">Signal</div>
                 <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                  Review output lands as GitHub Checks instead of getting lost in logs.
+                  Review output lands as GitHub Checks instead of disappearing into CI noise.
                 </p>
               </div>
               <div className="glass sea-outline rounded-3xl p-5">
-                <div className="text-sm uppercase tracking-[0.24em] text-[var(--text-muted)]">Promptable</div>
+                <div className="text-sm uppercase tracking-[0.24em] text-[var(--text-muted)]">Pearls</div>
                 <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                  Tune global rules or drop repo-specific markdown into `.jean-ci/pr-checks/`.
+                  Tune one shared review current, then add repo-specific pearls in `.jean-ci/pr-checks/`.
                 </p>
               </div>
               <div className="glass sea-outline rounded-3xl p-5">
@@ -62,7 +62,7 @@ export default function HomePage() {
           </div>
           <div className="relative">
             <div className="shell rounded-[2rem] p-5">
-              <div className="mb-4 flex items-center justify-between text-xs uppercase tracking-[0.28em] text-[#8fd8cb]">
+              <div className="mb-4 flex items-center justify-between text-xs uppercase tracking-[0.28em] text-[#f3b49c]">
                 <span>jean-ci starter</span>
                 <span>copy/paste friendly</span>
               </div>
@@ -83,7 +83,7 @@ Include file paths and line numbers.`}
             <div className="glass sea-outline absolute -bottom-6 left-6 max-w-xs rounded-3xl p-5">
               <div className="text-sm font-semibold text-[var(--accent-deep)]">What changes for teams</div>
               <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                Less review drift, faster operator setup, and prompts that feel editable instead of magical.
+                Less review drift, faster setup for humans, and prompts that feel editable instead of magical.
               </p>
             </div>
           </div>
@@ -96,14 +96,14 @@ Include file paths and line numbers.`}
             <div className="text-sm uppercase tracking-[0.22em] text-[var(--text-muted)]">How it flows</div>
             <h2 className="mt-3 text-3xl font-semibold text-[var(--accent-deep)]">Webhook in, review out.</h2>
             <p className="mt-4 text-base leading-7 text-[var(--text-secondary)]">
-              jean-ci receives the PR event, assembles the review context, calls OpenClaw, and publishes the answer as GitHub Checks your reviewers can trust.
+              jean-ci receives the PR event, assembles the review context, calls OpenClaw, and publishes the answer as GitHub Checks your human reviewers can trust.
             </p>
           </div>
           <div className="glass sea-outline rounded-[2rem] p-8">
             <div className="text-sm uppercase tracking-[0.22em] text-[var(--text-muted)]">For operators</div>
             <h2 className="mt-3 text-3xl font-semibold text-[var(--accent-deep)]">One shared current.</h2>
             <p className="mt-4 text-base leading-7 text-[var(--text-secondary)]">
-              Keep a global review prompt in the admin UI, then layer repo-specific checks only where the codebase really needs them.
+              Keep a global review prompt in the admin UI, then layer repo-specific check pearls only where the codebase really needs them.
             </p>
           </div>
           <div className="glass sea-outline rounded-[2rem] p-8">
@@ -122,12 +122,12 @@ Include file paths and line numbers.`}
             <div className="text-sm uppercase tracking-[0.24em] text-[var(--text-muted)]">Prompt pearls</div>
             <h2 className="mt-3 text-4xl font-semibold text-[var(--accent-deep)]">Copyable review prompts, not vague advice.</h2>
             <p className="mt-4 text-lg leading-8 text-[var(--text-secondary)]">
-              The best public docs here are the snippets an operator can lift straight into a repository. These examples keep that affordance intact.
+              The best public docs here are still the snippets a human operator can lift straight into a repository. These examples keep that affordance intact.
             </p>
           </div>
           <div className="mt-10 grid gap-6 lg:grid-cols-2">
             <div className="shell rounded-[2rem] p-6">
-              <div className="mb-4 text-sm font-semibold uppercase tracking-[0.22em] text-[#8fd8cb]">security.md</div>
+              <div className="mb-4 text-sm font-semibold uppercase tracking-[0.22em] text-[#f3b49c]">security.md</div>
               <pre className="text-sm leading-7">
 {`Review this pull request like a careful security engineer.
 
@@ -142,7 +142,7 @@ Include file paths and line numbers.`}
               </pre>
             </div>
             <div className="shell rounded-[2rem] p-6">
-              <div className="mb-4 text-sm font-semibold uppercase tracking-[0.22em] text-[#8fd8cb]">tests.md</div>
+              <div className="mb-4 text-sm font-semibold uppercase tracking-[0.22em] text-[#f3b49c]">tests.md</div>
               <pre className="text-sm leading-7">
 {`Review this change for test risk.
 
@@ -172,7 +172,7 @@ Prefer a short list of actionable findings.`}
             </ol>
           </div>
           <div className="shell rounded-[2rem] p-6">
-            <div className="mb-4 flex items-center justify-between text-sm font-semibold uppercase tracking-[0.22em] text-[#8fd8cb]">
+            <div className="mb-4 flex items-center justify-between text-sm font-semibold uppercase tracking-[0.22em] text-[#f3b49c]">
               <span>starter env</span>
               <span>README parity</span>
             </div>

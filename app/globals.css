@@ -3,24 +3,25 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #f4fbfb;
-  --bg-secondary: #dbf1ef;
-  --bg-card: rgba(255, 255, 255, 0.82);
+  --bg-primary: #fcf8f3;
+  --bg-secondary: #f6efe4;
+  --bg-card: rgba(255, 255, 255, 0.88);
   --bg-card-strong: #ffffff;
-  --border: rgba(15, 76, 92, 0.16);
-  --border-strong: rgba(15, 76, 92, 0.28);
-  --text-primary: #12343d;
-  --text-secondary: #2f5c68;
-  --text-muted: #5d7f88;
-  --accent: #0f766e;
-  --accent-hover: #0b5f59;
-  --accent-soft: #c9f1ea;
-  --accent-warm: #ff8f5a;
-  --accent-deep: #083d4a;
-  --on-accent: #effcfb;
-  --success: #1f8f63;
-  --shadow-soft: 0 20px 60px rgba(7, 54, 68, 0.10);
-  --shadow-card: 0 18px 42px rgba(7, 54, 68, 0.08);
+  --border: rgba(135, 69, 52, 0.14);
+  --border-strong: rgba(135, 69, 52, 0.24);
+  --text-primary: #2f2115;
+  --text-secondary: #5c4632;
+  --text-muted: #745d47;
+  --accent: #d16640;
+  --accent-hover: #b85635;
+  --accent-soft: rgba(209, 102, 64, 0.10);
+  --accent-warm: #874534;
+  --accent-deep: #6d3628;
+  --on-accent: #fffaf6;
+  --success: #2f7d4f;
+  --purple: #7350ba;
+  --shadow-soft: 0 20px 60px rgba(88, 51, 33, 0.10);
+  --shadow-card: 0 18px 42px rgba(88, 51, 33, 0.08);
 }
 
 html {
@@ -32,9 +33,9 @@ body {
   color: var(--text-primary);
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
   background-image:
-    radial-gradient(circle at top left, rgba(12, 160, 153, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(255, 143, 90, 0.16), transparent 24%),
-    linear-gradient(180deg, #f8fffe 0%, #eef9f8 52%, #f4fbfb 100%);
+    radial-gradient(circle at top left, rgba(209, 102, 64, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(135, 69, 52, 0.12), transparent 24%),
+    linear-gradient(180deg, #fffaf4 0%, #fcf5ea 52%, #fcf8f3 100%);
 }
 
 h1,
@@ -46,13 +47,13 @@ h4 {
 }
 
 ::selection {
-  background: rgba(15, 118, 110, 0.18);
+  background: rgba(209, 102, 64, 0.18);
 }
 
 .shell {
   border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(8, 61, 74, 0.96), rgba(10, 49, 60, 0.98));
-  color: #dff8f4;
+  background: linear-gradient(180deg, rgba(73, 40, 29, 0.96), rgba(56, 30, 22, 0.98));
+  color: #f8eadf;
   box-shadow: var(--shadow-card);
 }
 
