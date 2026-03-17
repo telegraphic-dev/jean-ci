@@ -220,18 +220,16 @@ deployments:
 Review-only / no-op mode:
 
 ```yaml
-# jean-ci deployment config
 deployments:
-  - provider: coolify
+  - provider: noop
     package: ghcr.io/your-org/your-repo
-    coolify_app: your-coolify-app-uuid
-    environment: production
-    no_op: true
+    environment: review-only
 ```
 
-Legacy format still supported:
+Legacy `.jean-ci/coolify.yml` is still supported for compatibility:
 
 ```yaml
+# jean-ci Coolify Deployment Config
 deployments:
   - package: ghcr.io/your-org/your-repo
     coolify_app: your-coolify-app-uuid
@@ -242,25 +240,18 @@ deployments:
 
 3. **Install the jean-ci GitHub App** on your repository.
 
-When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and evaluates matching deployment entries.
-
-### Deployment config behavior
-
-- `provider` defaults to `coolify` when omitted (legacy compatibility)
-- `no_op: true` marks the deployment as review-only; jean-ci reports intent but skips the provider API call
-- multiple deployment entries are allowed
-- only entries whose `package` matches the published GHCR package are considered
+When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and triggers a Coolify deployment.
 
 ### How It Works
 
 jean-ci is **buildpack-agnostic** — it doesn't know or care whether your Coolify app uses `dockerfile`, `dockerimage`, or `dockercompose`. It simply:
 
 1. Receives `registry_package` webhook from GitHub
-2. Matches the package URL to a `coolify_app` UUID in your deployment config
-3. Calls `POST /applications/{uuid}/restart` on Coolify API unless `no_op: true`
-4. Updates GitHub deployment state / logs accordingly
+2. Matches the package URL to a `coolify_app` UUID in your `.jean-ci/coolify.yml`
+3. Calls `POST /applications/{uuid}/restart` on Coolify API
+4. Coolify handles the rest based on its own app configuration
 
-This means the **buildpack is configured in Coolify UI**, not in the jean-ci config. The repo config is just a mapping from GHCR package → deployment target plus policy.
+This means the **buildpack is configured in Coolify UI**, not in `coolify.yml`. The `coolify.yml` is just a mapping from GHCR package → Coolify app UUID.
 
 ### Docker Compose Support
 
@@ -302,11 +293,35 @@ Key points:
 
 ## Gateway Connection
 
-Uses the Coolify Traefik proxy bridge:
-- URL: `http://coolify-proxy/openclaw`
-- Auth: Bearer token
+The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
+- URL: `OPENCLAW_GATEWAY_URL=https://openclaw.example.com`
+- Auth: Bearer token via `OPENCLAW_GATEWAY_TOKEN`
 
-See `docs/coolify-instances.md` for bridge setup details.
+If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
+
+## Using doubleagent for local GitHub testing
+
+Repo: <https://github.com/islo-labs/doubleagent>
+
+`doubleagent` can be useful for **partial local testing** of jean-ci, especially when you want fast PR/webhook iteration without hitting the real GitHub API.
+
+What it is good for:
+- fake repositories
+- fake pull requests
+- fake webhook delivery
+- fast local iteration without rate limits or cleanup pain
+
+What it is **not** enough for today:
+- GitHub App installation/auth flows
+- GitHub Checks / check runs
+- GitHub Deployments API flows
+- package / registry-driven deployment events
+
+Practical recommendation:
+- use `doubleagent` for PR + webhook testing
+- use real GitHub for checks, deployments, and GitHub App behavior
+
+In other words: it is a good **partial test harness**, not a full replacement for end-to-end jean-ci integration testing.
 
 ## Advanced: Browser-Based E2E Tests
 
@@ -350,3 +365,98 @@ Create `.jean-ci/pr-checks/e2e-*.md` files with natural language test instructio
 
 VERDICT: PASS if all steps succeed, FAIL otherwise.
 ```
+
+The agent will:
+- Use browser automation to execute each step
+- Take screenshots on failure
+- Report PASS/FAIL based on results
+
+### Using Playwright CLI
+
+For reliable browser automation, instruct the agent to use Playwright CLI via exec:
+
+```markdown
+## Test: Verify Dashboard Loads
+
+Use the `exec` tool to run Playwright commands:
+
+```bash
+npx playwright screenshot --browser chromium 'https://your-app.com' /tmp/screenshot.png
+```
+
+### Steps:
+1. Run the Playwright screenshot command above
+2. Verify the command succeeds (exit code 0)
+3. Optionally fetch the page with web_fetch to verify content
+
+VERDICT: PASS if screenshot succeeds, FAIL otherwise.
+```
+
+This approach:
+- Works reliably without browser service configuration
+- Uses Playwright's built-in Chromium
+- Supports screenshots, PDFs, and page content verification
+
+## Post-Deployment Smoke Tests
+
+jean-ci can run smoke tests automatically after successful Coolify deployments.
+
+### Setup
+
+Add markdown files to `.jean-ci/smoke-tests/` in your repository:
+
+```
+.jean-ci/
+  pr-checks/         # Run on PRs (before merge)
+  smoke-tests/       # Run after deployment
+    health.md        # Basic health check
+    e2e-login.md     # Login flow test
+    api-check.md     # API endpoint verification
+```
+
+### How It Works
+
+```
+Coolify Deploy Success → Webhook → jean-ci:
+  1. Fetch .jean-ci/smoke-tests/*.md
+  2. Run each test via OpenResponses API
+  3. Report results as GitHub Check on commit
+```
+
+### Example Smoke Test
+
+`.jean-ci/smoke-tests/health.md`:
+```markdown
+## Post-Deployment Health Check
+
+Verify the deployed application is healthy.
+
+### Steps:
+1. Fetch {{APP_URL}}/api/health with web_fetch
+2. Verify response contains "ok" or "healthy"
+3. Use exec to run: `curl -s {{APP_URL}}/api/health | jq .status`
+
+### Verdict:
+- VERDICT: PASS if health endpoint returns success
+- VERDICT: FAIL if endpoint is unreachable or returns error
+```
+
+### Available Variables
+
+Variables in smoke test prompts are automatically replaced:
+
+| Variable | Description |
+|----------|-------------|
+| `{{APP_URL}}` | Deployed application URL |
+| `{{OWNER}}` | Repository owner |
+| `{{REPO}}` | Repository name |
+| `{{SHA}}` | Deployed commit SHA |
+
+### Viewing Results
+
+Smoke test results appear as GitHub Checks on the deployed commit:
+- `jean-ci / smoke-test: health` ✅
+- `jean-ci / smoke-test: e2e-login` ❌
+
+Click through to see detailed output and failure reasons
+
