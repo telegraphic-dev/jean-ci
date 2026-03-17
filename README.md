@@ -299,6 +299,30 @@ The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
 
 If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
 
+## Using doubleagent for local GitHub testing
+
+Repo: <https://github.com/islo-labs/doubleagent>
+
+`doubleagent` can be useful for **partial local testing** of jean-ci, especially when you want fast PR/webhook iteration without hitting the real GitHub API.
+
+What it is good for:
+- fake repositories
+- fake pull requests
+- fake webhook delivery
+- fast local iteration without rate limits or cleanup pain
+
+What it is **not** enough for today:
+- GitHub App installation/auth flows
+- GitHub Checks / check runs
+- GitHub Deployments API flows
+- package / registry-driven deployment events
+
+Practical recommendation:
+- use `doubleagent` for PR + webhook testing
+- use real GitHub for checks, deployments, and GitHub App behavior
+
+In other words: it is a good **partial test harness**, not a full replacement for end-to-end jean-ci integration testing.
+
 ## Advanced: Browser-Based E2E Tests
 
 jean-ci can run natural language E2E tests using OpenClaw's browser capabilities.
