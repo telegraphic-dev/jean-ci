@@ -1,7 +1,8 @@
 import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping } from './db';
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
-import { fetchCoolifyConfig, getCoolifyAppDetails, triggerCoolifyDeploy, registerPendingDeployment } from './coolify';
+import { registerPendingDeployment } from './coolify';
+import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers';
 
 // OpenClaw notification config
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
@@ -242,42 +243,48 @@ export async function handleRegistryPackage(payload: any) {
   const [owner, repo] = repository.full_name.split('/');
   
   const ref = registry_package?.package_version?.target_commitish || repository.default_branch || 'main';
-  
-  const coolifyConfig = await fetchCoolifyConfig(octokit, owner, repo, ref);
-  
-  if (!coolifyConfig || !coolifyConfig.deployments.length) {
-    console.log(`No .jean-ci/coolify.yml found for ${repository.full_name}`);
+
+  const deploymentConfig = await fetchDeploymentConfig(octokit, owner, repo, ref);
+
+  if (!deploymentConfig || !deploymentConfig.deployments.length) {
+    console.log(`No deployment config found for ${repository.full_name}`);
     return;
   }
 
-  const deployment = coolifyConfig.deployments.find((d: any) => {
-    const configPackage = d.package.toLowerCase();
-    return packageUrl.toLowerCase().includes(configPackage) || 
-           configPackage.includes(packageName?.toLowerCase());
-  });
-
-  if (!deployment || !deployment.coolify_app) {
-    console.log(`No matching Coolify app for package ${packageUrl}`);
+  const deployment = findMatchingDeployment(deploymentConfig, packageUrl, packageName);
+  if (!deployment) {
+    console.log(`No matching deployment target for package ${packageUrl}`);
     return;
   }
 
-  const environment = deployment.environment || 'production';
+  const validationErrors = validateDeploymentTarget(deployment);
+  if (validationErrors.length) {
+    console.error(`Invalid deployment target for ${repository.full_name}: ${validationErrors.join('; ')}`);
+    return;
+  }
 
-  const appDetails = await getCoolifyAppDetails(deployment.coolify_app);
-  const appUrl = appDetails?.fqdn || `https://${repo}.telegraphic.app`;
-  const coolifyDashboard = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
-  const logsUrl = `${coolifyDashboard}/project/${appDetails?.projectUuid || 'default'}/${appDetails?.environmentName || 'production'}/application/${deployment.coolify_app}`;
+  const provider = getDeploymentProvider(deployment.provider);
+  if (!provider) {
+    console.error(`Unknown deployment provider: ${deployment.provider}`);
+    return;
+  }
+
+  const environment = deployment.environment || (deployment.provider === 'noop' ? 'review-only' : 'production');
+
+  const providerLabel = deployment.provider === 'noop'
+    ? 'Deployment (noop)'
+    : `${deployment.provider[0].toUpperCase()}${deployment.provider.slice(1)}`;
 
   // Create GitHub Check Run
   let checkRun = null;
   if (headSha) {
     try {
-      checkRun = await createCheck(octokit, owner, repo, 'Coolify', headSha, 'in_progress');
+      checkRun = await createCheck(octokit, owner, repo, providerLabel, headSha, 'in_progress');
       await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'in_progress',
         output: {
-          title: 'Deploying to Coolify',
-          summary: `Deploying ${packageVersion} to ${environment}...`,
+          title: `Deploying via ${deployment.provider}`,
+          summary: `Deploying ${packageVersion} to ${environment} with provider ${deployment.provider}...`,
         },
       });
     } catch (e: any) {
@@ -288,23 +295,34 @@ export async function handleRegistryPackage(payload: any) {
   // Create GitHub deployment
   const ghDeployment = await createGitHubDeployment(
     octokit, owner, repo, ref, environment,
-    `Deploy ${packageVersion} to Coolify`
+    `Deploy ${packageVersion} via ${deployment.provider}`
   );
 
+  const result = await provider.trigger(deployment, {
+    owner,
+    repo,
+    packageUrl,
+    packageName,
+  });
+
+  const pendingExternalCompletion = deployment.provider === 'coolify';
+
   if (ghDeployment) {
-    await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'in_progress',
-      'Deploying to Coolify...', logsUrl, appUrl);
+    await updateDeploymentStatus(
+      octokit,
+      owner,
+      repo,
+      ghDeployment.id,
+      result.success ? (pendingExternalCompletion ? 'in_progress' : 'success') : 'failure',
+      result.success
+        ? (pendingExternalCompletion ? `Deploying via ${deployment.provider}...` : `Deployment handled by ${deployment.provider}`)
+        : `Deploy failed: ${result.error}`,
+      result.logsUrl,
+      result.appUrl,
+    );
   }
 
-  // Trigger Coolify deploy
-  console.log(`🚀 Triggering Coolify deploy for ${deployment.coolify_app}`);
-  const result = await triggerCoolifyDeploy(deployment.coolify_app);
-
   if (!result.success) {
-    if (ghDeployment) {
-      await updateDeploymentStatus(octokit, owner, repo, ghDeployment.id, 'failure',
-        `Deploy failed: ${result.error}`, logsUrl, appUrl);
-    }
     if (checkRun) {
       await updateCheck(octokit, owner, repo, checkRun.id, {
         status: 'completed',
@@ -316,49 +334,61 @@ export async function handleRegistryPackage(payload: any) {
     return;
   }
 
-  // Store pending deployment for Coolify webhook (persisted to DB)
-  await registerPendingDeployment(deployment.coolify_app, {
-    owner, repo,
-    headSha,
-    deploymentId: ghDeployment?.id,
-    checkRunId: checkRun?.id,
-    coolifyDeploymentUuid: result.deploymentUuid,
-    logsUrl, appUrl,
-    installationId: repoConfig.installation_id,
-  });
+  if (!pendingExternalCompletion && checkRun) {
+    await updateCheck(octokit, owner, repo, checkRun.id, {
+      status: 'completed',
+      conclusion: 'success',
+      output: {
+        title: 'Deploy handled',
+        summary: `Deployment handled by ${deployment.provider}.`,
+      },
+    });
+  }
 
-  // Store/update Coolify app → GitHub repo mapping
-  await upsertAppMapping({
-    coolify_app_uuid: deployment.coolify_app,
-    github_repo: repository.full_name,
-    coolify_app_name: appDetails?.name || null,
-    coolify_app_fqdn: appDetails?.fqdn || null,
-    installation_id: repoConfig.installation_id,
-    last_deployed_sha: headSha,
-  });
-  console.log(`📍 Mapped Coolify app ${deployment.coolify_app} → ${repository.full_name}`);
+  if (deployment.provider === 'coolify' && result.appUuid) {
+    await registerPendingDeployment(result.appUuid, {
+      owner, repo,
+      headSha,
+      deploymentId: ghDeployment?.id,
+      checkRunId: checkRun?.id,
+      coolifyDeploymentUuid: result.deploymentUuid,
+      logsUrl: result.logsUrl || '',
+      appUrl: result.appUrl || '',
+      installationId: repoConfig.installation_id,
+    });
 
-  // Record deployment started event (marks as pending in UI)
+    await upsertAppMapping({
+      coolify_app_uuid: result.appUuid,
+      github_repo: repository.full_name,
+      coolify_app_name: result.appName || null,
+      coolify_app_fqdn: result.appUrl || null,
+      installation_id: repoConfig.installation_id,
+      last_deployed_sha: headSha,
+    });
+    console.log(`📍 Mapped Coolify app ${result.appUuid} → ${repository.full_name}`);
+  }
+
   await insertEvent(
-    'coolify_deployment_started',
+    `${deployment.provider}_deployment_started`,
     result.deploymentUuid || null,
     repository.full_name,
     'webhook_called',
     {
-      app_uuid: deployment.coolify_app,
+      provider: deployment.provider,
+      app_uuid: result.appUuid || null,
       deployment_uuid: result.deploymentUuid,
       _source_repo: repository.full_name,
       _source_sha: headSha,
       package_url: packageUrl,
       package_version: packageVersion,
       environment,
-      logs_url: logsUrl,
-      app_url: appUrl,
+      logs_url: result.logsUrl,
+      app_url: result.appUrl,
     },
     'jean-ci'
   );
-  
-  console.log(`✅ Deploy triggered for ${repository.full_name}, waiting for Coolify webhook...`);
+
+  console.log(`✅ Deploy triggered for ${repository.full_name} via ${deployment.provider}`);
 }
 
 export async function handleEvent(event: string, payload: any) {

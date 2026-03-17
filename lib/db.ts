@@ -676,6 +676,20 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
   // Group by commit SHA
   const pipelineMap = new Map<string, Pipeline>();
 
+  // Build a lookup from deployment_uuid -> source SHA/repo using started events
+  // This lets us recover SHA even when success/failed webhooks arrive without _source_sha.
+  const deploymentSourceByUuid = new Map<string, { sha?: string; repo?: string }>();
+  for (const row of result.rows) {
+    if (row.event_type !== 'coolify_deployment_started') continue;
+    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    const deploymentUuid = payload?.deployment_uuid || payload?.deploymentUuid || payload?.deployment_id || payload?.deploymentId;
+    if (!deploymentUuid) continue;
+    deploymentSourceByUuid.set(String(deploymentUuid), {
+      sha: payload?._source_sha || payload?.commit_sha,
+      repo: payload?._source_repo || row.repo,
+    });
+  }
+
   for (const row of result.rows) {
     const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
     
@@ -698,10 +712,13 @@ export async function getDeploymentPipelines(page = 1, limit = 20): Promise<Pagi
       url = payload?.registry_package?.package_version?.html_url;
       repo = payload?.repository?.full_name || repo;
     } else if (row.event_type?.startsWith('coolify_')) {
-      // Coolify events might have SHA in _source_sha or we need to match by timing
-      sha = payload?._source_sha || payload?.commit_sha;
+      // Coolify events should carry _source_sha, but can occasionally miss it.
+      // Fall back to deployment_uuid -> started-event lookup.
+      const deploymentUuid = payload?.deployment_uuid || payload?.deploymentUuid || payload?.deployment_id || payload?.deploymentId;
+      const source = deploymentUuid ? deploymentSourceByUuid.get(String(deploymentUuid)) : undefined;
+      sha = payload?._source_sha || payload?.commit_sha || source?.sha;
       url = payload?.deployment_url;
-      repo = payload?._source_repo || repo;
+      repo = payload?._source_repo || source?.repo || repo;
     }
 
     if (!sha) continue;
@@ -859,6 +876,18 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
   // Group by commit SHA
   const pipelineMap = new Map<string, Pipeline>();
 
+  // Build deployment_uuid -> SHA lookup from started events (repo-scoped query)
+  const deploymentSourceByUuid = new Map<string, { sha?: string }>();
+  for (const row of result.rows) {
+    if (row.event_type !== 'coolify_deployment_started') continue;
+    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+    const deploymentUuid = payload?.deployment_uuid || payload?.deploymentUuid || payload?.deployment_id || payload?.deploymentId;
+    if (!deploymentUuid) continue;
+    deploymentSourceByUuid.set(String(deploymentUuid), {
+      sha: payload?._source_sha || payload?.commit_sha,
+    });
+  }
+
   for (const row of result.rows) {
     const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
     
@@ -877,7 +906,9 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
       sha = payload?.registry_package?.package_version?.target_oid;
       url = payload?.registry_package?.package_version?.html_url;
     } else if (row.event_type?.startsWith('coolify_')) {
-      sha = payload?._source_sha;
+      const deploymentUuid = payload?.deployment_uuid || payload?.deploymentUuid || payload?.deployment_id || payload?.deploymentId;
+      const source = deploymentUuid ? deploymentSourceByUuid.get(String(deploymentUuid)) : undefined;
+      sha = payload?._source_sha || payload?.commit_sha || source?.sha;
       url = payload?.deployment_url;
     }
 
@@ -1031,16 +1062,16 @@ export async function getAllPendingDeployments(): Promise<PendingDeployment[]> {
 
 export function buildCoolifyDeploymentUrl(appUuid: string, deploymentUuid: string, logsUrl?: string): string {
   // If we have the logs URL, try to extract project/env info from it
-  // Format: https://apps.telegraphic.app/project/{projectUuid}/environment/{envUuid}/application/{appUuid}/deployment/{deploymentUuid}
+  // Format: {dashboard}/project/{projectUuid}/{environmentName}/application/{appUuid}
   if (logsUrl) {
     const match = logsUrl.match(/\/project\/([^/]+)\/([^/]+)\/application\/[^/]+$/);
     if (match) {
       return `${logsUrl.split('/project/')[0]}/project/${match[1]}/${match[2]}/application/${appUuid}/deployment/${deploymentUuid}`;
     }
   }
-  // Fallback - just link to the deployment directly
-  const coolifyUrl = process.env.COOLIFY_DASHBOARD_URL || 'https://apps.telegraphic.app';
-  return `${coolifyUrl}/deployments/${deploymentUuid}`;
+  // Fallback - just link to the deployment directly when a dashboard URL is configured
+  const coolifyUrl = process.env.COOLIFY_DASHBOARD_URL || process.env.COOLIFY_URL || '';
+  return coolifyUrl ? `${coolifyUrl}/deployments/${deploymentUuid}` : deploymentUuid;
 }
 
 export async function getReposWithPRReviewEnabled(): Promise<{ full_name: string; installation_id: number }[]> {

@@ -1,6 +1,8 @@
 // Next.js instrumentation - runs on server startup
 // https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
 
+import { APP_BASE_URL, COOLIFY_URL, getConfigWarnings } from './lib/config';
+
 export async function register() {
   // Only run on server
   if (process.env.NEXT_RUNTIME === 'nodejs') {
@@ -25,11 +27,14 @@ export async function register() {
       setInterval(() => runSync().catch(console.error), 15 * 60 * 1000);
       
       console.log('');
-      console.log(`📡 Webhook: https://jean-ci.telegraphic.app/api/github/webhook`);
+      console.log(`📡 Webhook: ${APP_BASE_URL}/api/github/webhook`);
       console.log(`🔑 App ID: ${process.env.GITHUB_APP_ID}`);
       console.log(`👤 Admin: ${process.env.ADMIN_GITHUB_ID || '(anyone)'}`);
       console.log(`🗄️  Database: PostgreSQL ✅`);
-      console.log(`🚀 Coolify: ${process.env.COOLIFY_TOKEN ? process.env.COOLIFY_URL || 'https://apps.telegraphic.app' : '(not configured)'}`);
+      console.log(`🚀 Coolify: ${process.env.COOLIFY_TOKEN ? COOLIFY_URL || '(missing COOLIFY_URL)' : '(not configured)'}`);
+      for (const warning of getConfigWarnings()) {
+        console.log(`⚠️  Config: ${warning}`);
+      }
       console.log('');
       console.log(`${'='.repeat(50)}`);
       console.log(`Status: 🟢 READY`);

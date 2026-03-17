@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jean-ci quickstart</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+  <script defer src="./assets/docs.js"></script>
+</head>
+<body>
+  <main class="page-shell">
+    <div class="topbar">
+      <a class="toplink" href="./index.html">← Docs home</a>
+      <div class="subnav">
+        <a class="navlink" href="./prompt-handbook.html">Prompt handbook</a>
+        <a class="navlink" href="./troubleshooting.html">Troubleshooting</a>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="kicker">Quickstart</div>
+      <h1>Get from zero to your first jean-ci review.</h1>
+      <p>This path assumes you want the built-in review running first, then one extra repo-specific check. Each step includes what to paste and what success looks like.</p>
+      <div class="anchor-list">
+        <a href="#step-1">Start the app</a>
+        <a href="#step-2">Know defaults</a>
+        <a href="#step-3">Add a check</a>
+        <a href="#step-4">Trigger review</a>
+      </div>
+    </section>
+
+    <section id="step-1" class="section step">
+      <h2>1. Start jean-ci locally or in your environment</h2>
+      <p>Use the app normally first. Don’t add repo prompts until the base app health and GitHub App wiring are working.</p>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Start the app</div>
+          <button class="copy-button" data-copy-target="quickstart-start">Copy</button>
+        </div>
+        <pre><code id="quickstart-start">cp .env.example .env
+npm ci
+npm run build
+npm run start</code></pre>
+      </div>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Verify health</div>
+          <button class="copy-button" data-copy-target="quickstart-health">Copy</button>
+        </div>
+        <pre><code id="quickstart-health">curl -s http://localhost:3000/api/health</code></pre>
+      </div>
+      <div class="callout success">
+        <h3>Expected result</h3>
+        <p>A healthy response such as <code>{"ok":true}</code>.</p>
+      </div>
+    </section>
+
+    <section id="step-2" class="section dual">
+      <article class="callout info">
+        <h2>2. Know what runs by default</h2>
+        <p>The built-in <strong>jean-ci / Code Review</strong> check is the baseline review. If PR review is enabled for a repo, that check runs even if the repo has no <code>.jean-ci/pr-checks/</code> folder yet.</p>
+      </article>
+      <article class="callout warn">
+        <h2>What custom prompts do</h2>
+        <p>Files in <code>.jean-ci/pr-checks/*.md</code> only add extra checks. They do <strong>not</strong> replace the built-in review or the built-in PR review comment.</p>
+      </article>
+    </section>
+
+    <section id="step-3" class="section step">
+      <h2>3. Add one repo-specific check</h2>
+      <p>This creates an extra security check in addition to the default Code Review.</p>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Create <code>.jean-ci/pr-checks/security.md</code></div>
+          <button class="copy-button" data-copy-target="quickstart-security-check">Copy</button>
+        </div>
+        <pre><code id="quickstart-security-check">mkdir -p .jean-ci/pr-checks
+cat &gt; .jean-ci/pr-checks/security.md &lt;&lt;'EOF'
+# Security Review
+
+## Purpose
+Catch merge-blocking security regressions before they land.
+
+## Review Instructions
+Review the PR diff for exposed secrets, missing authorization checks, unsafe input handling, injection risk, path traversal, and broken trust boundaries.
+Reference the changed code paths when you find a blocking issue.
+Only fail for real merge-blocking problems.
+
+## Verdict Criteria
+- **FAIL** when the diff introduces a real vulnerability, exposes secrets, or removes a required authorization or validation guard.
+- **PASS** when no merge-blocking security issues are present in the diff.
+EOF</code></pre>
+      </div>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Commit the prompt</div>
+          <button class="copy-button" data-copy-target="quickstart-commit">Copy</button>
+        </div>
+        <pre><code id="quickstart-commit">git add .jean-ci/pr-checks/security.md
+git commit -m "chore: add jean-ci security review"</code></pre>
+      </div>
+    </section>
+
+    <section id="step-4" class="section step">
+      <h2>4. Trigger a review</h2>
+      <p>jean-ci runs on PR open, synchronize, ready-for-review, and explicit <code>/review</code> comments.</p>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Force a rerun on an existing PR</div>
+          <button class="copy-button" data-copy-target="quickstart-review">Copy</button>
+        </div>
+        <pre><code id="quickstart-review">gh pr comment &lt;pr-number&gt; --body "/review"</code></pre>
+      </div>
+      <div class="callout success">
+        <h3>Expected result</h3>
+        <ul class="checklist">
+          <li>One always-on <code>jean-ci / Code Review</code> check</li>
+          <li>One additional <code>jean-ci / security.md</code> check</li>
+          <li>A visible PR review comment created by the built-in Code Review</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section step">
+      <h2>5. OpenClaw-ready prompt to ask an agent for the setup</h2>
+      <p>If you want OpenClaw to generate the repo-side prompt files for you, paste this directly into your agent chat.</p>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">OpenClaw agent prompt</div>
+          <button class="copy-button" data-copy-target="quickstart-agent-prompt">Copy</button>
+        </div>
+        <pre><code id="quickstart-agent-prompt">Set up jean-ci PR reviews in this repository.
+
+Requirements:
+- Keep the built-in default `jean-ci / Code Review` enabled and untouched.
+- Add one additive custom check at `.jean-ci/pr-checks/security.md`.
+- Use the structured jean-ci prompt format with `## Purpose`, `## Review Instructions`, and `## Verdict Criteria`.
+- Make the custom check fail only for merge-blocking security issues.
+- Commit the changes on a fresh branch and open a PR.
+- In the PR summary, explicitly state that `.jean-ci/pr-checks/*` is additive and does not replace the built-in review.</code></pre>
+      </div>
+    </section>
+
+    <footer class="page-footer">If you only remember one thing: custom checks are additive; the built-in Code Review is the always-on default.</footer>
+  </main>
+</body>
+</html>

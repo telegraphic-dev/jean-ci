@@ -7,8 +7,8 @@ import {
   deletePRReview
 } from './db';
 import { getInstallationOctokit } from './github';
+import { COOLIFY_URL } from './config';
 
-const COOLIFY_URL = process.env.COOLIFY_URL || 'https://apps.telegraphic.app';
 const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
 
 // Pending deployments older than this are considered stale
@@ -46,7 +46,7 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
       }
       
       // If we have deployment UUID, check Coolify for status
-      if (pd.coolify_deployment_uuid && COOLIFY_TOKEN) {
+      if (pd.coolify_deployment_uuid && COOLIFY_TOKEN && COOLIFY_URL) {
         const response = await fetch(
           `${COOLIFY_URL}/api/v1/deployments/${pd.coolify_deployment_uuid}`,
           { headers: { 'Authorization': `Bearer ${COOLIFY_TOKEN}` } }

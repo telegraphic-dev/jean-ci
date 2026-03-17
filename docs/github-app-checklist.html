@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>jean-ci GitHub App checklist</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+  <script defer src="./assets/docs.js"></script>
+</head>
+<body>
+  <main class="page-shell">
+    <div class="topbar">
+      <a class="toplink" href="./index.html">← Docs home</a>
+      <div class="subnav">
+        <a class="navlink" href="./quickstart.html">Quickstart</a>
+        <a class="navlink" href="./troubleshooting.html">Troubleshooting</a>
+      </div>
+    </div>
+
+    <section class="hero">
+      <div class="kicker">GitHub App checklist</div>
+      <h1>Permissions and events that jean-ci actually needs.</h1>
+      <p>When PR checks don’t show up, the root cause is usually missing app permissions, missing events, or installing the app on the wrong repositories. Use this page as the reality check.</p>
+    </section>
+
+    <section class="section table-wrap">
+      <h2 class="section-title">Required repository permissions</h2>
+      <table class="doc-table">
+        <thead>
+          <tr><th>Permission</th><th>Level</th><th>Why jean-ci needs it</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Checks</td><td>Read &amp; write</td><td>Create and update check runs for the built-in review and custom prompt checks.</td></tr>
+          <tr><td>Contents</td><td>Read</td><td>Fetch <code>.jean-ci/pr-checks/*.md</code> and <code>.jean-ci/coolify.yml</code> from the repo.</td></tr>
+          <tr><td>Pull requests</td><td>Read</td><td>Read PR title, body, state, and diff metadata.</td></tr>
+          <tr><td>Metadata</td><td>Read</td><td>Repository identity, installation scope, and basic repo details.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section dual">
+      <article class="callout info">
+        <h2>Webhook events to subscribe to</h2>
+        <div class="code-card">
+          <div class="code-toolbar">
+            <div class="code-title">Event list</div>
+            <button class="copy-button" data-copy-target="app-events">Copy</button>
+          </div>
+          <pre><code id="app-events">pull_request
+pull_request_review
+issue_comment
+installation
+installation_repositories
+registry_package</code></pre>
+        </div>
+      </article>
+      <article class="callout warn">
+        <h2>Failure pattern to avoid</h2>
+        <p>If <code>issue_comment</code> is missing, <code>/review</code> comments will do nothing. If <code>registry_package</code> is missing, deployment automation will look dead even though PR reviews still work.</p>
+      </article>
+    </section>
+
+    <section class="section step">
+      <h2>Install verification</h2>
+      <p>After creating or updating the GitHub App, verify from the CLI before blaming jean-ci.</p>
+      <div class="code-card">
+        <div class="code-toolbar">
+          <div class="code-title">Verify app identity</div>
+          <button class="copy-button" data-copy-target="app-verify">Copy</button>
+        </div>
+        <pre><code id="app-verify">gh api /app</code></pre>
+      </div>
+      <div class="callout success">
+        <h3>What to check manually</h3>
+        <ul class="checklist">
+          <li>The app is installed on the repo you are testing.</li>
+          <li>The installation has access to the target repo, not just the org.</li>
+          <li>Permissions match the table above.</li>
+          <li>Webhook deliveries are reaching jean-ci.</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer class="page-footer">If checks never appear, start with the App config before digging into prompt files.</footer>
+  </main>
+</body>
+</html>
