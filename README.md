@@ -1,30 +1,38 @@
 # jean-ci
 
-GitHub webhook handler for automated PR reviews with LLM assistance.
+jean-ci is the OpenClaw review buddy for pull requests. It listens for GitHub events, runs human-readable review prompts through your OpenClaw gateway, and posts the results back as checks your team can act on.
 
-## Features
+It is built for teams that want useful review pressure without turning CI into a wall of noise.
 
-- **Automated PR Reviews**: Run LLM-powered code reviews on every PR
-- **Customizable Prompts**: Edit the global review prompt in the admin UI
-- **Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for custom checks
-- **GitHub Checks Integration**: Results appear as nested checks on PRs
-- **Admin Dashboard**: GitHub OAuth protected management interface
+## What it does
 
-## Architecture
+- Reviews every PR with a shared global prompt
+- Runs repo-specific checks from `.jean-ci/pr-checks/*.md`
+- Publishes findings as native GitHub Checks
+- Lets admins tune prompts and repository access from the dashboard
+- Can trigger Coolify restarts after GHCR publishes
+- Can run natural-language browser checks through OpenClaw responses
 
+## How the flow works
+
+```text
+Pull request opened
+  -> GitHub webhook
+  -> jean-ci
+  -> OpenClaw Gateway
+  -> LLM review pass
+  -> GitHub Checks with findings
 ```
-PR Opened → Webhook → jean-ci → OpenClaw Gateway → LLM
-                         ↓
-                  GitHub Checks API
-                         ↓
-                  ✅ Global Standards
-                  ✅ security.md
-                  ✅ style.md
-```
 
-## Setup
+Think of jean-ci as a steady buddy sitting in your CI lane:
 
-### 1. Environment Variables
+- One shared review standard for every repository
+- Extra pearls of guidance per repository when a team needs them
+- Clear pass/fail output instead of hidden side-channel logs
+
+## Quick setup
+
+### 1. Set the environment
 
 ```bash
 # GitHub App
@@ -32,119 +40,113 @@ GITHUB_APP_ID=your_app_id
 GITHUB_WEBHOOK_SECRET=your_webhook_secret
 GITHUB_APP_PRIVATE_KEY_B64=base64_encoded_private_key
 
-# GitHub OAuth (for admin UI)
+# GitHub OAuth for /admin
 GITHUB_CLIENT_ID=your_oauth_client_id
 GITHUB_CLIENT_SECRET=your_oauth_client_secret
-
-# Admin access (your GitHub user ID)
 ADMIN_GITHUB_ID=your_github_user_id
 
 # OpenClaw Gateway
 OPENCLAW_GATEWAY_URL=http://coolify-proxy/openclaw
 OPENCLAW_GATEWAY_TOKEN=your_gateway_token
 
-# Data storage
+# Persistent storage
 DATA_DIR=/data
 ```
 
-### 2. GitHub App Permissions
+### 2. Configure the GitHub App
 
 Required permissions:
-- **Checks**: Read & Write
-- **Contents**: Read (for fetching `.jean-ci/` files)
-- **Pull requests**: Read
-- **Metadata**: Read
 
-Subscribe to events:
+- `Checks`: Read & Write
+- `Contents`: Read
+- `Pull requests`: Read
+- `Metadata`: Read
+
+Subscribe to:
+
 - `pull_request`
 - `check_suite`
 - `installation`
 
-### 3. Custom PR Checks
+### 3. Add review prompts to a repo
 
-Add markdown files to `.jean-ci/pr-checks/` in your repository:
+Each markdown file in `.jean-ci/pr-checks/` becomes its own GitHub Check. Keep prompts plain, direct, and focused on what a human reviewer would care about.
 
-```
+```text
 .jean-ci/
   pr-checks/
-    security.md    # Security review prompt
-    style.md       # Code style review prompt
-    tests.md       # Test coverage review prompt
+    security.md
+    style.md
+    tests.md
 ```
-
-Each file becomes a separate GitHub Check with its own ✅/❌ status.
 
 Example `security.md`:
-```markdown
-Review this PR for security issues:
 
-- SQL injection vulnerabilities
-- XSS attacks
-- Exposed secrets or credentials
-- Unsafe deserialization
-- Missing input validation
+```md
+Review this pull request like a careful security engineer.
 
-Report any findings with specific line numbers.
+Look for:
+- auth or permission bypasses
+- unsafe input handling
+- secret leakage
+- SSRF, XSS, or injection paths
+- missing validation on newly added endpoints
+
+Return only concrete findings. Include file paths and line numbers when possible.
+If there are no real findings, say "No material security findings."
 ```
 
-## Admin Dashboard
+Example `tests.md`:
 
-Access at `/admin` after signing in with GitHub.
+```md
+Review this change for test risk.
 
-Features:
-- Edit global PR review prompt
-- Enable/disable PR reviews per repository
-- View recent webhook events
+Call out:
+- new behavior without coverage
+- fragile assertions
+- mocks that hide important regressions
+- edge cases the PR now depends on
 
-## Coolify Auto-Deploy
+Be concise. Prefer a short list of actionable findings over a long essay.
+```
 
-jean-ci can automatically deploy to Coolify when new container images are published to GHCR.
+## Admin dashboard
 
-### Setup
+The admin UI at `/admin` lets you:
 
-1. **Add `.jean-ci/coolify.yml`** to your repository:
+- edit the global review prompt
+- enable or disable repositories
+- inspect recent webhook activity
+
+The goal is simple: human operators should be able to tighten or relax review behavior without redeploying the service.
+
+## Coolify deploy hooks
+
+jean-ci can restart Coolify apps when GitHub publishes a matching GHCR package.
+
+Add `.jean-ci/coolify.yml` to the target repository:
 
 ```yaml
-# jean-ci Coolify Deployment Config
 deployments:
   - package: ghcr.io/your-org/your-repo
     coolify_app: your-coolify-app-uuid
     environment: production
 ```
 
-2. **Configure GitHub Actions** to build and push to GHCR on push to main.
+When jean-ci receives the `registry_package` webhook, it maps the package to `coolify_app` and calls Coolify's restart endpoint.
 
-3. **Install the jean-ci GitHub App** on your repository.
+### Docker Compose notes
 
-When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and triggers a Coolify deployment.
-
-### How It Works
-
-jean-ci is **buildpack-agnostic** — it doesn't know or care whether your Coolify app uses `dockerfile`, `dockerimage`, or `dockercompose`. It simply:
-
-1. Receives `registry_package` webhook from GitHub
-2. Matches the package URL to a `coolify_app` UUID in your `.jean-ci/coolify.yml`
-3. Calls `POST /applications/{uuid}/restart` on Coolify API
-4. Coolify handles the rest based on its own app configuration
-
-This means the **buildpack is configured in Coolify UI**, not in `coolify.yml`. The `coolify.yml` is just a mapping from GHCR package → Coolify app UUID.
-
-### Docker Compose Support
-
-For apps that need volumes or custom networking, use Coolify's `dockercompose` buildpack:
-
-1. **Set build_pack to `dockercompose`** in Coolify UI
-
-2. **Add `docker-compose.yml`** to your repo:
+If your Coolify app uses the `dockercompose` build pack, point it at a prebuilt GHCR image and keep routing in the compose file:
 
 ```yaml
 services:
   app:
-    image: ghcr.io/your-org/your-repo:latest  # Use pre-built GHCR image
+    image: ghcr.io/your-org/your-repo:latest
     environment:
       - NODE_ENV=production
     volumes:
-      - /host/path:/container/path  # Volumes work!
+      - /host/path:/container/path
     restart: unless-stopped
     networks:
       - coolify
@@ -161,35 +163,18 @@ networks:
     external: true
 ```
 
-Key points:
-- Use `image:` with GHCR URL (not `build:`) - GitHub Actions builds, not Coolify
-- Add Traefik labels for routing (dockercompose doesn't auto-add them)
-- Join the `coolify` external network for Traefik discovery
-- Volumes defined here actually work (unlike `custom_docker_run_options`)
+## Browser-based checks
 
-## Gateway Connection
-
-Uses the Coolify Traefik proxy bridge:
-- URL: `http://coolify-proxy/openclaw`
-- Auth: Bearer token
-
-See COOLIFY_INSTANCES.md for bridge setup details.
-
-## Advanced: Browser-Based E2E Tests
-
-jean-ci can run natural language E2E tests using OpenClaw's browser capabilities.
-
-### Enable OpenResponses API
-
-Set the environment variable to use the full agent codepath:
+If you want natural-language browser testing, enable OpenClaw responses:
 
 ```bash
 OPENCLAW_USE_RESPONSES=true
 ```
 
-This switches from `/v1/chat/completions` (LLM only) to `/v1/responses` (full agent with tools).
+That switches jean-ci from chat completions to the fuller responses path with tool use.
 
-**Requires:** The Gateway must have responses endpoint enabled:
+The gateway must expose the responses endpoint:
+
 ```json
 {
   "gateway": {
@@ -202,113 +187,25 @@ This switches from `/v1/chat/completions` (LLM only) to `/v1/responses` (full ag
 }
 ```
 
-### Writing E2E Tests
+Example E2E prompt:
 
-Create `.jean-ci/pr-checks/e2e-*.md` files with natural language test instructions:
+```md
+## Test: Login flow
 
-```markdown
-## Test: Login Flow
-
-1. Open https://your-app.com in the browser
+1. Open https://your-app.com
 2. Click "Sign In"
-3. Enter test@example.com as email
+3. Use test@example.com
 4. Submit the form
-5. Verify "Welcome back" appears on the dashboard
+5. Confirm "Welcome back" appears
 
-VERDICT: PASS if all steps succeed, FAIL otherwise.
+VERDICT: PASS if the full flow works. FAIL otherwise.
 ```
 
-The agent will:
-- Use browser automation to execute each step
-- Take screenshots on failure
-- Report PASS/FAIL based on results
-
-### Using Playwright CLI
-
-For reliable browser automation, instruct the agent to use Playwright CLI via exec:
-
-```markdown
-## Test: Verify Dashboard Loads
-
-Use the `exec` tool to run Playwright commands:
+## Development
 
 ```bash
-npx playwright screenshot --browser chromium 'https://your-app.com' /tmp/screenshot.png
+npm install
+npm run build
 ```
 
-### Steps:
-1. Run the Playwright screenshot command above
-2. Verify the command succeeds (exit code 0)
-3. Optionally fetch the page with web_fetch to verify content
-
-VERDICT: PASS if screenshot succeeds, FAIL otherwise.
-```
-
-This approach:
-- Works reliably without browser service configuration
-- Uses Playwright's built-in Chromium
-- Supports screenshots, PDFs, and page content verification
-
-## Post-Deployment Smoke Tests
-
-jean-ci can run smoke tests automatically after successful Coolify deployments.
-
-### Setup
-
-Add markdown files to `.jean-ci/smoke-tests/` in your repository:
-
-```
-.jean-ci/
-  pr-checks/         # Run on PRs (before merge)
-  smoke-tests/       # Run after deployment
-    health.md        # Basic health check
-    e2e-login.md     # Login flow test
-    api-check.md     # API endpoint verification
-```
-
-### How It Works
-
-```
-Coolify Deploy Success → Webhook → jean-ci:
-  1. Fetch .jean-ci/smoke-tests/*.md
-  2. Run each test via OpenResponses API
-  3. Report results as GitHub Check on commit
-```
-
-### Example Smoke Test
-
-`.jean-ci/smoke-tests/health.md`:
-```markdown
-## Post-Deployment Health Check
-
-Verify the deployed application is healthy.
-
-### Steps:
-1. Fetch {{APP_URL}}/api/health with web_fetch
-2. Verify response contains "ok" or "healthy"
-3. Use exec to run: `curl -s {{APP_URL}}/api/health | jq .status`
-
-### Verdict:
-- VERDICT: PASS if health endpoint returns success
-- VERDICT: FAIL if endpoint is unreachable or returns error
-```
-
-### Available Variables
-
-Variables in smoke test prompts are automatically replaced:
-
-| Variable | Description |
-|----------|-------------|
-| `{{APP_URL}}` | Deployed application URL |
-| `{{OWNER}}` | Repository owner |
-| `{{REPO}}` | Repository name |
-| `{{SHA}}` | Deployed commit SHA |
-
-### Viewing Results
-
-Smoke test results appear as GitHub Checks on the deployed commit:
-- `jean-ci / smoke-test: health` ✅
-- `jean-ci / smoke-test: e2e-login` ❌
-
-Click through to see detailed output and failure reasons
-
+The public docs are intentionally written for operators first: plain language, copyable prompts, and enough structure to get jean-ci live quickly.

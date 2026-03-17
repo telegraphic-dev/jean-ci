@@ -3,25 +3,71 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #fcf8f3;
-  --bg-secondary: #f6efe4;
-  --bg-card: #ffffff;
-  --bg-card-hover: #f8f1e8;
-  --border: #e2d5c2;
-  --text-primary: #2f2115;
-  --text-secondary: #5c4632;
-  --text-muted: #745d47;
-  --accent: #b7642b;
-  --accent-hover: #9f5522;
-  --on-accent: #ffffff;
-  --green: #2f7d4f;
-  --red: #b8473a;
-  --yellow: #9a6f00;
-  --purple: #7350ba;
-  --blue: #2563eb;
+  --bg-primary: #f4fbfb;
+  --bg-secondary: #dbf1ef;
+  --bg-card: rgba(255, 255, 255, 0.82);
+  --bg-card-strong: #ffffff;
+  --border: rgba(15, 76, 92, 0.16);
+  --border-strong: rgba(15, 76, 92, 0.28);
+  --text-primary: #12343d;
+  --text-secondary: #2f5c68;
+  --text-muted: #5d7f88;
+  --accent: #0f766e;
+  --accent-hover: #0b5f59;
+  --accent-soft: #c9f1ea;
+  --accent-warm: #ff8f5a;
+  --accent-deep: #083d4a;
+  --on-accent: #effcfb;
+  --success: #1f8f63;
+  --shadow-soft: 0 20px 60px rgba(7, 54, 68, 0.10);
+  --shadow-card: 0 18px 42px rgba(7, 54, 68, 0.08);
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   background: var(--bg-primary);
   color: var(--text-primary);
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  background-image:
+    radial-gradient(circle at top left, rgba(12, 160, 153, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(255, 143, 90, 0.16), transparent 24%),
+    linear-gradient(180deg, #f8fffe 0%, #eef9f8 52%, #f4fbfb 100%);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  letter-spacing: -0.02em;
+}
+
+::selection {
+  background: rgba(15, 118, 110, 0.18);
+}
+
+.shell {
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(8, 61, 74, 0.96), rgba(10, 49, 60, 0.98));
+  color: #dff8f4;
+  box-shadow: var(--shadow-card);
+}
+
+.shell pre {
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.glass {
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-card);
+}
+
+.sea-outline {
+  border: 1px solid var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
