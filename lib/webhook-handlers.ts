@@ -3,6 +3,7 @@ import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
 import { registerPendingDeployment } from './coolify';
 import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers';
+import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone } from './paperclip';
 
 // OpenClaw notification config
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
@@ -24,6 +25,35 @@ export async function handlePullRequest(payload: any) {
   const repo = repository.full_name;
 
   await upsertRepo(repo, installation.id, false);
+
+  if (action === 'closed' && pull_request?.merged) {
+    const issueIds = extractPaperclipIssueIds(
+      pull_request?.body,
+      pull_request?.title,
+      pull_request?.head?.ref,
+      pull_request?.base?.ref,
+    );
+
+    if (issueIds.length > 0) {
+      if (!isPaperclipConfigured()) {
+        console.warn(`Paperclip links found for ${repo}#${pull_request.number}, but Paperclip is not configured`);
+      } else {
+        try {
+          await markLinkedPaperclipIssuesDone({
+            prUrl: pull_request.html_url,
+            repoFullName: repo,
+            prNumber: pull_request.number,
+            prTitle: pull_request.title,
+            issueIds,
+          });
+          console.log(`✅ Marked Paperclip issues done for ${repo}#${pull_request.number}: ${issueIds.join(', ')}`);
+        } catch (error: any) {
+          console.error(`Failed to sync merged PR ${repo}#${pull_request.number} to Paperclip: ${error.message}`);
+        }
+      }
+    }
+  }
+
   const repoConfig = await getRepo(repo);
   if (!repoConfig?.pr_review_enabled) {
     return;
