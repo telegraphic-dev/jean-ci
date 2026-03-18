@@ -140,6 +140,10 @@ COOLIFY_DASHBOARD_URL=https://coolify.example.com
 COOLIFY_TOKEN=your_coolify_token
 DEFAULT_DEPLOYMENT_DOMAIN=apps.example.com
 
+# Optional Paperclip integration (mark linked issues done when PRs merge)
+PAPERCLIP_API_URL=https://paperclip.example.com
+PAPERCLIP_API_KEY=your_paperclip_api_key
+
 # Data storage
 DATA_DIR=/data
 ```
@@ -201,6 +205,17 @@ Features:
 ## Coolify Auto-Deploy
 
 jean-ci can automatically deploy to Coolify when new container images are published to GHCR.
+
+## Paperclip PR Sync
+
+If `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are set, jean-ci also watches merged GitHub pull requests and marks linked Paperclip issues as `done`.
+
+Supported link formats inside the PR body/title/branch name:
+- `https://paperclip.../issues/<issue-uuid>`
+- `Paperclip issue: <issue-uuid>`
+- `<!-- paperclip-issue-id:<issue-uuid> -->`
+
+When a PR is closed without merging, no Paperclip update is sent.
 
 ### Setup
 
