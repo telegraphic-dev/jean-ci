@@ -26,7 +26,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const name = body?.name?.trim();
+  if (typeof body?.name !== 'string') {
+    return NextResponse.json({ error: 'Token name must be a string' }, { status: 400 });
+  }
+
+  const name = body.name.trim();
   if (!name) {
     return NextResponse.json({ error: 'Token name is required' }, { status: 400 });
   }
