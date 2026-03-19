@@ -15,6 +15,10 @@ Validation expectations:
 - Run tests and confirm parity coverage passes.
 - Confirm docs still list `/api/public/openapi.json`.
 
+Required response format:
+- First non-empty line must be exactly `VERDICT: PASS` or `VERDICT: FAIL`.
+- After the verdict, provide 2-5 concise bullets with concrete findings tied to changed files/behavior.
+
 ## Verdict Criteria
 - PASS: API route surface, params, and behavior are consistent with OpenAPI for all changed public endpoints, and parity tests are updated/passing.
 - FAIL: Any API/OpenAPI mismatch exists, repo-scoped parity is incomplete, or parity validation coverage is missing/stale.
