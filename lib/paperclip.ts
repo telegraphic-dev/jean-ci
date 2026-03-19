@@ -40,6 +40,48 @@ export function isPaperclipConfigured(): boolean {
   return Boolean(PAPERCLIP_API_URL && PAPERCLIP_API_KEY);
 }
 
+function normalizeRepoFullName(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (!/github\.com$/i.test(parsed.hostname)) return null;
+    const parts = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length < 2) return null;
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, '');
+    if (!owner || !repo) return null;
+    return `${owner}/${repo}`.toLowerCase();
+  } catch {
+    const parts = trimmed.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length !== 2) return null;
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, '');
+    if (!owner || !repo) return null;
+    return `${owner}/${repo}`.toLowerCase();
+  }
+}
+
+function issueRepoMatches(issue: any, repoFullName: string): boolean {
+  const expected = normalizeRepoFullName(repoFullName);
+  if (!expected) return false;
+
+  const candidates = new Set<string>();
+  const primary = normalizeRepoFullName(issue?.project?.primaryWorkspace?.repoUrl);
+  if (primary) candidates.add(primary);
+
+  const workspaces = Array.isArray(issue?.project?.workspaces) ? issue.project.workspaces : [];
+  for (const workspace of workspaces) {
+    const candidate = normalizeRepoFullName(workspace?.repoUrl);
+    if (candidate) candidates.add(candidate);
+  }
+
+  if (candidates.size === 0) return false;
+  return candidates.has(expected);
+}
+
 async function paperclipFetch(path: string, init?: RequestInit) {
   if (!PAPERCLIP_API_URL || !PAPERCLIP_API_KEY) {
     throw new Error('Paperclip is not configured');
@@ -76,6 +118,14 @@ export async function markLinkedPaperclipIssuesDone(params: {
   const { prUrl, repoFullName, prNumber, prTitle, issueIds } = params;
 
   for (const issueId of issueIds) {
+    const issue = await paperclipFetch(`/api/issues/${issueId}`);
+    if (!issueRepoMatches(issue, repoFullName)) {
+      console.warn(
+        `Skipping Paperclip done-sync for issue ${issueId}: project repo does not match ${repoFullName}`
+      );
+      continue;
+    }
+
     await paperclipFetch(`/api/issues/${issueId}`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -198,6 +248,13 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
 
   for (const issueId of issueIds) {
     const issue = await paperclipFetch(`/api/issues/${issueId}`);
+    if (!issueRepoMatches(issue, repoFullName)) {
+      console.warn(
+        `Skipping Paperclip failing-check comment for issue ${issueId}: project repo does not match ${repoFullName}`
+      );
+      continue;
+    }
+
     const comments = await paperclipFetch(`/api/issues/${issueId}/comments`);
     const alreadyPosted = Array.isArray(comments)
       ? comments.some((entry) => readCommentText(entry).includes(marker))

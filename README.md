@@ -202,6 +202,38 @@ Features:
 - Enable/disable PR reviews per repository
 - View recent webhook events
 
+## Public REST API
+
+jean-ci now exposes a token-protected public API so external services can read operational data without direct database access.
+
+- OpenAPI spec: `/api/public/openapi.json`
+- Versioned endpoints: `/api/public/v1/*`
+- Auth: `Authorization: Bearer <token>`
+
+### Public endpoints
+
+- `GET /api/public/v1/health`
+- `GET /api/public/v1/stats`
+- `GET /api/public/v1/repos`
+- `GET /api/public/v1/checks?page=1&limit=50`
+- `GET /api/public/v1/pipelines?page=1&limit=20`
+- `GET /api/public/v1/events?page=1&limit=50&eventType=workflow_run`
+- `GET /api/public/v1/tasks?view=summary`
+- `GET /api/public/v1/tasks?view=events&page=1&limit=50&repo=owner/repo&task=nightly`
+
+### Token management
+
+Admin-authenticated API token management endpoints:
+
+- `GET /api/tokens` list issued tokens (hashed at rest; token value is not returned)
+- `POST /api/tokens` create a token (plain token is returned once)
+- `DELETE /api/tokens/{id}` revoke a token
+
+Optional bootstrap token(s) can be set via env vars:
+
+- `PUBLIC_API_TOKEN`
+- `PUBLIC_API_TOKENS` (comma-separated)
+
 ## Coolify Auto-Deploy
 
 jean-ci can automatically deploy to Coolify when new container images are published to GHCR.
@@ -474,4 +506,3 @@ Smoke test results appear as GitHub Checks on the deployed commit:
 - `jean-ci / smoke-test: e2e-login` ❌
 
 Click through to see detailed output and failure reasons
-
