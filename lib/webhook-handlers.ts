@@ -256,6 +256,10 @@ export async function handleCheckSuite(payload: any) {
       pull_number: prNumber,
     });
 
+    if (pr?.head?.sha !== check_suite.head_sha) {
+      continue;
+    }
+
     if (pr?.state === 'closed' && !pr?.merged_at) {
       continue;
     }
