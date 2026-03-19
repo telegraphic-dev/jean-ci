@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession } from '@/lib/auth';
-import { GITHUB_OAUTH } from '@/lib/github';
+import { getSession } from '../../../../lib/auth';
+import { GITHUB_OAUTH } from '../../../../lib/github';
 import crypto from 'crypto';
 
 export async function GET(req: NextRequest) {

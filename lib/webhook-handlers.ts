@@ -1,9 +1,10 @@
-import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping } from './db';
+import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getLatestCheckRunIdByGithubCheckId } from './db';
 import { runPRReview } from './pr-review';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
 import { registerPendingDeployment } from './coolify';
 import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers';
-import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone } from './paperclip';
+import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip';
+import { APP_BASE_URL } from './config';
 
 // OpenClaw notification config
 const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
@@ -14,6 +15,14 @@ const OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = process.env.OPENCLAW_NOTIFY_ON_CHAN
 const SESSION_REGEX = /<!--\s*oc-session:([^\s]+)\s*-->/;
 const REVIEW_TRIGGER_REGEX = /(^|\s)\/review(\s|$)/i;
 const MENTION_TRIGGER = '@jean-ci review';
+const FAILING_CHECK_CONCLUSIONS = new Set([
+  'action_required',
+  'cancelled',
+  'failure',
+  'stale',
+  'startup_failure',
+  'timed_out',
+]);
 
 function enqueuePRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string) {
   runPRReview(installationId, owner, repo, prNumber, headSha)
@@ -160,6 +169,127 @@ export async function handleIssueComment(payload: any) {
   });
 
   enqueuePRReview(installation.id, owner, repoName, prNumber, pr.head.sha);
+}
+
+function getFailedCheckRuns(checkRuns: any[]): any[] {
+  return checkRuns.filter((run) => {
+    const conclusion = String(run?.conclusion || '').toLowerCase();
+    return run?.status === 'completed' && FAILING_CHECK_CONCLUSIONS.has(conclusion);
+  });
+}
+
+async function resolveJeanCheckUrl(githubCheckRunId: number | null | undefined): Promise<string | null> {
+  if (!githubCheckRunId) return null;
+
+  const checkId = await getLatestCheckRunIdByGithubCheckId(githubCheckRunId);
+  if (!checkId) return null;
+
+  return `${APP_BASE_URL}/checks/${checkId}`;
+}
+
+export async function handleCheckSuite(payload: any) {
+  const { action, check_suite, repository, installation } = payload;
+
+  if (action !== 'completed') {
+    return;
+  }
+
+  if (!check_suite?.head_sha || !repository?.full_name || !installation?.id) {
+    return;
+  }
+
+  if (!isPaperclipConfigured()) {
+    return;
+  }
+
+  const pullRequests = check_suite.pull_requests || [];
+  if (!Array.isArray(pullRequests) || pullRequests.length === 0) {
+    return;
+  }
+
+  const [owner, repo] = String(repository.full_name).split('/');
+  const octokit = await getInstallationOctokit(installation.id);
+  const { data: checkRunsResponse } = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+    owner,
+    repo,
+    ref: check_suite.head_sha,
+    per_page: 100,
+  });
+  const checkRuns = checkRunsResponse?.check_runs || [];
+
+  if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
+    return;
+  }
+
+  const allChecksCompleted = checkRuns.every((run: any) => run?.status === 'completed');
+  if (!allChecksCompleted) {
+    return;
+  }
+
+  const failedCheckRuns = getFailedCheckRuns(checkRuns);
+  if (failedCheckRuns.length === 0) {
+    return;
+  }
+
+  const failedChecks: FailedCheckSummary[] = [];
+  for (const run of failedCheckRuns) {
+    const checkRunUrl = run?.html_url || null;
+    const workflowUrl = run?.details_url || null;
+    const jeanCheckUrl = await resolveJeanCheckUrl(run?.id);
+
+    failedChecks.push({
+      name: run?.name || `check-${run?.id || 'unknown'}`,
+      conclusion: String(run?.conclusion || 'failure'),
+      checkRunUrl,
+      workflowUrl,
+      jeanCheckUrl,
+    });
+  }
+
+  for (const linkedPr of pullRequests) {
+    const prNumber = linkedPr?.number;
+    if (!prNumber) continue;
+
+    const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner,
+      repo,
+      pull_number: prNumber,
+    });
+
+    if (pr?.head?.sha !== check_suite.head_sha) {
+      continue;
+    }
+
+    if (pr?.state === 'closed' && !pr?.merged_at) {
+      continue;
+    }
+
+    const issueIds = extractPaperclipIssueIds(
+      pr?.body,
+      pr?.title,
+      pr?.head?.ref,
+      pr?.base?.ref,
+    );
+
+    if (issueIds.length === 0) {
+      continue;
+    }
+
+    try {
+      await commentLinkedPaperclipIssuesOnFailedChecks({
+        issueIds,
+        repoFullName: repository.full_name,
+        prNumber,
+        headSha: check_suite.head_sha,
+        prTitle: pr?.title || `PR #${prNumber}`,
+        prUrl: pr?.html_url || `https://github.com/${repository.full_name}/pull/${prNumber}`,
+        failedChecks,
+      });
+      console.log(`⚠️ Posted Paperclip failing-checks comment for ${repository.full_name}#${prNumber}`);
+    } catch (error: any) {
+      console.error(`Failed to post Paperclip failing-checks comment for ${repository.full_name}#${prNumber}: ${error.message}`);
+    }
+  }
 }
 
 export async function handlePullRequestReview(payload: any) {
@@ -428,6 +558,9 @@ export async function handleEvent(event: string, payload: any) {
       break;
     case 'pull_request_review':
       await handlePullRequestReview(payload);
+      break;
+    case 'check_suite':
+      await handleCheckSuite(payload);
       break;
     case 'issue_comment':
       await handleIssueComment(payload);

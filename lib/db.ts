@@ -376,6 +376,17 @@ export async function getCheckRun(id: number): Promise<CheckRun | null> {
   return result.rows[0] || null;
 }
 
+export async function getLatestCheckRunIdByGithubCheckId(githubCheckId: number): Promise<number | null> {
+  const result = await pool.query(
+    `SELECT id FROM jean_ci_check_runs
+     WHERE github_check_id = $1
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [githubCheckId]
+  );
+  return result.rows[0]?.id ?? null;
+}
+
 export async function getPRReviewState(repo: string, prNumber: number): Promise<PRReviewState | null> {
   const result = await pool.query(
     'SELECT * FROM jean_ci_pr_reviews WHERE repo = $1 AND pr_number = $2',

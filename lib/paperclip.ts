@@ -1,5 +1,6 @@
 const PAPERCLIP_API_URL = (process.env.PAPERCLIP_API_URL || '').replace(/\/$/, '');
 const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY;
+const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID;
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
 const PAPERCLIP_URL_ISSUE_RE = /https?:\/\/[^\s]*paperclip[^\s]*\/issues\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/ig;
@@ -47,19 +48,17 @@ function normalizeRepoFullName(value?: string | null): string | null {
   try {
     const parsed = new URL(trimmed);
     if (!/github\.com$/i.test(parsed.hostname)) return null;
-
     const parts = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
     if (parts.length < 2) return null;
-
     const owner = parts[0];
     const repo = parts[1].replace(/\.git$/i, '');
     if (!owner || !repo) return null;
     return `${owner}/${repo}`.toLowerCase();
   } catch {
-    const pieces = trimmed.replace(/^\/+|\/+$/g, '').split('/');
-    if (pieces.length !== 2) return null;
-    const owner = pieces[0];
-    const repo = pieces[1].replace(/\.git$/i, '');
+    const parts = trimmed.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length !== 2) return null;
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, '');
     if (!owner || !repo) return null;
     return `${owner}/${repo}`.toLowerCase();
   }
@@ -69,23 +68,18 @@ function issueRepoMatches(issue: any, repoFullName: string): boolean {
   const expected = normalizeRepoFullName(repoFullName);
   if (!expected) return false;
 
-  const repoCandidates = new Set<string>();
-  const project = issue?.project;
+  const candidates = new Set<string>();
+  const primary = normalizeRepoFullName(issue?.project?.primaryWorkspace?.repoUrl);
+  if (primary) candidates.add(primary);
 
-  const primaryRepo = normalizeRepoFullName(project?.primaryWorkspace?.repoUrl);
-  if (primaryRepo) repoCandidates.add(primaryRepo);
-
-  const workspaces = Array.isArray(project?.workspaces) ? project.workspaces : [];
+  const workspaces = Array.isArray(issue?.project?.workspaces) ? issue.project.workspaces : [];
   for (const workspace of workspaces) {
-    const repo = normalizeRepoFullName(workspace?.repoUrl);
-    if (repo) repoCandidates.add(repo);
+    const candidate = normalizeRepoFullName(workspace?.repoUrl);
+    if (candidate) candidates.add(candidate);
   }
 
-  if (repoCandidates.size === 0) {
-    return false;
-  }
-
-  return repoCandidates.has(expected);
+  if (candidates.size === 0) return false;
+  return candidates.has(expected);
 }
 
 async function paperclipFetch(path: string, init?: RequestInit) {
@@ -127,7 +121,7 @@ export async function markLinkedPaperclipIssuesDone(params: {
     const issue = await paperclipFetch(`/api/issues/${issueId}`);
     if (!issueRepoMatches(issue, repoFullName)) {
       console.warn(
-        `Skipping Paperclip sync for issue ${issueId}: project repo does not match merged PR repo ${repoFullName}`
+        `Skipping Paperclip done-sync for issue ${issueId}: project repo does not match ${repoFullName}`
       );
       continue;
     }
@@ -137,6 +131,152 @@ export async function markLinkedPaperclipIssuesDone(params: {
       body: JSON.stringify({
         status: 'done',
         comment: `Marked done automatically after GitHub PR merged: ${repoFullName}#${prNumber} — ${prTitle} (${prUrl})`,
+      }),
+    });
+  }
+}
+
+export interface FailedCheckSummary {
+  name: string;
+  conclusion: string;
+  checkRunUrl?: string | null;
+  workflowUrl?: string | null;
+  jeanCheckUrl?: string | null;
+}
+
+export function buildFailedChecksNotificationMarker(repoFullName: string, prNumber: number, headSha: string): string {
+  return `<!-- jean-ci:paperclip-failing-checks repo=${repoFullName} pr=${prNumber} sha=${headSha} -->`;
+}
+
+export function buildFailedChecksComment(params: {
+  marker: string;
+  prTitle: string;
+  prUrl: string;
+  failedChecks: FailedCheckSummary[];
+  ownerMention?: string | null;
+}): string {
+  const ownerLine = params.ownerMention
+    ? `${params.ownerMention} checks are complete and failures need follow-up.`
+    : null;
+  const lines: string[] = [
+    '## PR checks failed',
+    '',
+    `Checks finished with failures for [${params.prTitle}](${params.prUrl}).`,
+    ...(ownerLine ? ['', ownerLine] : []),
+    '',
+    `- Failed checks: ${params.failedChecks.length}`,
+    ...params.failedChecks.map((check) => {
+      const links: string[] = [];
+      if (check.checkRunUrl) links.push(`[check run](${check.checkRunUrl})`);
+      if (check.workflowUrl && check.workflowUrl !== check.checkRunUrl) links.push(`[workflow/job](${check.workflowUrl})`);
+      if (check.jeanCheckUrl) links.push(`[jean-ci](${check.jeanCheckUrl})`);
+
+      const parts = [`\`${check.name}\` (${check.conclusion})`];
+      if (links.length > 0) {
+        parts.push(links.join(' | '));
+      }
+      return `- ${parts.join(' - ')}`;
+    }),
+    '',
+    params.marker,
+  ];
+
+  return lines.join('\n');
+}
+
+function readCommentText(comment: any): string {
+  return (
+    comment?.body ||
+    comment?.content ||
+    comment?.markdown ||
+    comment?.text ||
+    ''
+  );
+}
+
+let cachedAgentMentions: Map<string, string> | null = null;
+
+async function getAgentMentionsById(): Promise<Map<string, string>> {
+  if (cachedAgentMentions) {
+    return cachedAgentMentions;
+  }
+
+  if (!PAPERCLIP_COMPANY_ID) {
+    cachedAgentMentions = new Map();
+    return cachedAgentMentions;
+  }
+
+  const agents = await paperclipFetch(`/api/companies/${PAPERCLIP_COMPANY_ID}/agents`);
+  const mentions = new Map<string, string>();
+  if (Array.isArray(agents)) {
+    for (const agent of agents) {
+      if (!agent?.id) continue;
+      if (agent?.urlKey) {
+        mentions.set(agent.id, `@${agent.urlKey}`);
+      }
+    }
+  }
+
+  cachedAgentMentions = mentions;
+  return mentions;
+}
+
+async function resolveIssueOwnerMention(issue: any): Promise<string | null> {
+  const assigneeAgentId = issue?.assigneeAgentId;
+  if (!assigneeAgentId) return null;
+
+  try {
+    const mentionsById = await getAgentMentionsById();
+    return mentionsById.get(assigneeAgentId) || null;
+  } catch (error: any) {
+    console.warn(`Failed to resolve Paperclip assignee mention for ${assigneeAgentId}: ${error?.message || error}`);
+    return null;
+  }
+}
+
+export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
+  issueIds: string[];
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+  prTitle: string;
+  prUrl: string;
+  failedChecks: FailedCheckSummary[];
+}) {
+  const { issueIds, repoFullName, prNumber, headSha, prTitle, prUrl, failedChecks } = params;
+  const marker = buildFailedChecksNotificationMarker(repoFullName, prNumber, headSha);
+
+  for (const issueId of issueIds) {
+    const issue = await paperclipFetch(`/api/issues/${issueId}`);
+    if (!issueRepoMatches(issue, repoFullName)) {
+      console.warn(
+        `Skipping Paperclip failing-check comment for issue ${issueId}: project repo does not match ${repoFullName}`
+      );
+      continue;
+    }
+
+    const comments = await paperclipFetch(`/api/issues/${issueId}/comments`);
+    const alreadyPosted = Array.isArray(comments)
+      ? comments.some((entry) => readCommentText(entry).includes(marker))
+      : false;
+
+    if (alreadyPosted) {
+      continue;
+    }
+
+    const ownerMention = await resolveIssueOwnerMention(issue);
+    const comment = buildFailedChecksComment({
+      marker,
+      prTitle,
+      prUrl,
+      failedChecks,
+      ownerMention,
+    });
+
+    await paperclipFetch(`/api/issues/${issueId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        comment,
       }),
     });
   }
