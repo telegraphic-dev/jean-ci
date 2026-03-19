@@ -4,6 +4,7 @@ import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus,
 import { registerPendingDeployment } from './coolify';
 import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers';
 import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip';
+import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite';
 import { APP_BASE_URL } from './config';
 
 // OpenClaw notification config
@@ -190,15 +191,11 @@ async function resolveJeanCheckUrl(githubCheckRunId: number | null | undefined):
 export async function handleCheckSuite(payload: any) {
   const { action, check_suite, repository, installation } = payload;
 
-  if (action !== 'completed') {
+  if (!handlesCheckSuiteAction(action)) {
     return;
   }
 
   if (!check_suite?.head_sha || !repository?.full_name || !installation?.id) {
-    return;
-  }
-
-  if (!isPaperclipConfigured()) {
     return;
   }
 
@@ -209,6 +206,51 @@ export async function handleCheckSuite(payload: any) {
 
   const [owner, repo] = String(repository.full_name).split('/');
   const octokit = await getInstallationOctokit(installation.id);
+
+  if (action === 'rerequested') {
+    await upsertRepo(repository.full_name, installation.id, false);
+    const repoConfig = await getRepo(repository.full_name);
+    if (!shouldQueueRerequestedReview(repoConfig?.pr_review_enabled)) {
+      return;
+    }
+
+    for (const linkedPr of pullRequests) {
+      const prNumber = linkedPr?.number;
+      if (!prNumber) continue;
+
+      const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+
+      if (pr?.head?.sha !== check_suite.head_sha) {
+        continue;
+      }
+
+      if (pr?.state === 'closed' && !pr?.merged_at) {
+        continue;
+      }
+
+      const previousState = await getPRReviewState(repository.full_name, prNumber);
+      await upsertPRReviewState({
+        repo: repository.full_name,
+        pr_number: prNumber,
+        last_reviewed_sha: check_suite.head_sha,
+        is_draft: !!pr?.draft,
+        draft_reviewed: previousState?.draft_reviewed ?? false,
+      });
+      enqueuePRReview(installation.id, owner, repo, prNumber, check_suite.head_sha);
+      console.log(`🔁 Re-requested check suite; queued PR review for ${repository.full_name}#${prNumber}`);
+    }
+
+    return;
+  }
+
+  if (!isPaperclipConfigured()) {
+    return;
+  }
+
   const { data: checkRunsResponse } = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
     owner,
     repo,
