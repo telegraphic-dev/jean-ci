@@ -190,7 +190,7 @@ async function resolveJeanCheckUrl(githubCheckRunId: number | null | undefined):
 export async function handleCheckSuite(payload: any) {
   const { action, check_suite, repository, installation } = payload;
 
-  if (action !== 'completed') {
+  if (action !== 'completed' && action !== 'rerequested') {
     return;
   }
 
@@ -209,6 +209,43 @@ export async function handleCheckSuite(payload: any) {
 
   const [owner, repo] = String(repository.full_name).split('/');
   const octokit = await getInstallationOctokit(installation.id);
+
+  if (action === 'rerequested') {
+    await upsertRepo(repository.full_name, installation.id, false);
+
+    for (const linkedPr of pullRequests) {
+      const prNumber = linkedPr?.number;
+      if (!prNumber) continue;
+
+      const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+
+      if (pr?.head?.sha !== check_suite.head_sha) {
+        continue;
+      }
+
+      if (pr?.state === 'closed' && !pr?.merged_at) {
+        continue;
+      }
+
+      const previousState = await getPRReviewState(repository.full_name, prNumber);
+      await upsertPRReviewState({
+        repo: repository.full_name,
+        pr_number: prNumber,
+        last_reviewed_sha: check_suite.head_sha,
+        is_draft: !!pr?.draft,
+        draft_reviewed: previousState?.draft_reviewed ?? false,
+      });
+      enqueuePRReview(installation.id, owner, repo, prNumber, check_suite.head_sha);
+      console.log(`🔁 Re-requested check suite; queued PR review for ${repository.full_name}#${prNumber}`);
+    }
+
+    return;
+  }
+
   const { data: checkRunsResponse } = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
     owner,
     repo,
