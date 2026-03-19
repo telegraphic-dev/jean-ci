@@ -3,6 +3,7 @@ import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, create
 import { callOpenClaw } from './llm';
 import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output';
 import { APP_BASE_URL } from './config';
+import { buildExecutionFailureOutcome } from './review-failure';
 
 const BASE_URL = APP_BASE_URL;
 
@@ -72,7 +73,7 @@ async function completeCheck(
   checkRunId: number,
   dbId: number,
   payload: {
-    conclusion: 'success' | 'failure';
+    conclusion: 'success' | 'failure' | 'neutral';
     title: string;
     summary: string;
   },
@@ -172,12 +173,13 @@ export async function runPRReview(installationId: number, owner: string, repo: s
 
       const result = await callOpenClaw(check.prompt, reviewContext);
       if (!result.success) {
+        const failure = buildExecutionFailureOutcome(result.errorType, result.error);
         await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
-          conclusion: 'failure',
-          title: '❌ Review failed',
-          summary: `Reviewer execution failed.\n\n- ${result.error}`,
+          conclusion: failure.conclusion,
+          title: failure.title,
+          summary: failure.summary,
         });
-        console.log(`Check "${check.name}" failed during reviewer execution`);
+        console.log(`Check "${check.name}" ${failure.conclusion === 'neutral' ? 'marked neutral due to gateway outage' : 'failed during reviewer execution'}`);
         continue;
       }
 

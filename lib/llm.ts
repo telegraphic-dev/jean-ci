@@ -1,8 +1,5 @@
 import { SYSTEM_PROMPT } from './db';
 
-const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
-const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
-
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
 const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
@@ -10,37 +7,61 @@ const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
 // Discriminated union type for proper TypeScript narrowing
 type OpenClawResult = 
   | { success: true; response: string; error?: undefined }
-  | { success: false; error: string; response?: undefined };
+  | { success: false; error: string; errorType: 'gateway'; response?: undefined };
 
 export async function callOpenClaw(userPrompt: string, context = ''): Promise<OpenClawResult> {
-  if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
+  const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
+  const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const maxAttempts = getMaxAttempts();
+  const retryBaseMs = getRetryBaseDelayMs();
+
+  if (!gatewayUrl || !gatewayToken) {
     console.log('[MOCK] Would call OpenClaw');
     return { success: true, response: '**VERDICT: PASS**\n\n[Mock mode] Code looks good!' };
   }
 
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
+  let lastError = 'Unknown gateway error';
 
-  try {
-    if (USE_RESPONSES_API) {
-      return await callOpenClawResponses(userMessage);
-    } else {
-      return await callOpenClawChat(userMessage);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const result = USE_RESPONSES_API
+        ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken)
+        : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken);
+
+      if (result.success) {
+        return result;
+      }
+
+      lastError = result.error;
+      console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} failed: ${lastError}`);
+    } catch (error: any) {
+      lastError = error?.message || String(error);
+      console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} errored: ${lastError}`);
     }
-  } catch (error: any) {
-    return { success: false, error: error.message };
+
+    if (attempt < maxAttempts) {
+      await sleep(getRetryDelayMs(attempt, retryBaseMs));
+    }
   }
+
+  return {
+    success: false,
+    errorType: 'gateway',
+    error: `OpenClaw gateway failed after ${maxAttempts} attempts. Last error: ${lastError}`,
+  };
 }
 
 /**
  * OpenResponses API (/v1/responses)
  * Full agent codepath with tool access (browser, exec, etc.)
  */
-async function callOpenClawResponses(userMessage: string): Promise<OpenClawResult> {
-  const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/responses`, {
+async function callOpenClawResponses(userMessage: string, gatewayUrl: string, gatewayToken: string): Promise<OpenClawResult> {
+  const response = await fetch(`${gatewayUrl}/v1/responses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+      'Authorization': `Bearer ${gatewayToken}`,
       'x-openclaw-agent-id': 'main',
     },
     body: JSON.stringify({
@@ -72,12 +93,12 @@ async function callOpenClawResponses(userMessage: string): Promise<OpenClawResul
  * Chat Completions API (/v1/chat/completions)
  * Simple LLM call without tool access
  */
-async function callOpenClawChat(userMessage: string): Promise<OpenClawResult> {
-  const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
+async function callOpenClawChat(userMessage: string, gatewayUrl: string, gatewayToken: string): Promise<OpenClawResult> {
+  const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+      'Authorization': `Bearer ${gatewayToken}`,
     },
     body: JSON.stringify({
       model: 'default',
@@ -118,4 +139,20 @@ function extractTextFromOutput(output: any[]): string {
   }
   
   return textParts.join('\n').trim();
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getMaxAttempts() {
+  return Math.max(1, parseInt(process.env.OPENCLAW_GATEWAY_MAX_ATTEMPTS || '3', 10));
+}
+
+function getRetryBaseDelayMs() {
+  return Math.max(0, parseInt(process.env.OPENCLAW_GATEWAY_RETRY_BASE_MS || '100', 10));
+}
+
+export function getRetryDelayMs(attempt: number, retryBaseMs: number) {
+  return retryBaseMs * 2 ** (attempt - 1);
 }
