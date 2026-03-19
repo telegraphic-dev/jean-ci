@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllCheckRunsPaginated } from '@/lib/db';
+import { getPublicCheckRunsPaginated } from '@/lib/db';
 import { parsePaginationParams, requirePublicApiToken } from '@/lib/public-api';
 
 export async function GET(req: NextRequest) {
@@ -9,6 +9,6 @@ export async function GET(req: NextRequest) {
   }
 
   const { page, limit } = parsePaginationParams(req, { defaultLimit: 50, maxLimit: 100 });
-  const result = await getAllCheckRunsPaginated(page, limit);
+  const result = await getPublicCheckRunsPaginated(page, limit);
   return NextResponse.json(result);
 }

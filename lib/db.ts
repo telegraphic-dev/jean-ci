@@ -666,6 +666,37 @@ export async function getAllCheckRunsPaginated(page = 1, limit = 50): Promise<Pa
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
+export interface PublicCheckRun {
+  id: number;
+  github_check_id?: number;
+  repo: string;
+  pr_number: number;
+  check_name: string;
+  head_sha?: string;
+  status: string;
+  conclusion?: string;
+  title?: string;
+  summary?: string;
+  created_at: Date;
+  completed_at?: Date;
+}
+
+export async function getPublicCheckRunsPaginated(page = 1, limit = 50): Promise<PaginatedResult<PublicCheckRun>> {
+  const offset = (page - 1) * limit;
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      `SELECT id, github_check_id, repo, pr_number, check_name, head_sha, status, conclusion, title, summary, created_at, completed_at
+       FROM jean_ci_check_runs
+       ORDER BY created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    ),
+    pool.query('SELECT COUNT(*) FROM jean_ci_check_runs')
+  ]);
+  const total = parseInt(countResult.rows[0].count);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
 export async function getRecentEventsPaginated(page = 1, limit = 50, eventType?: string): Promise<PaginatedResult<WebhookEvent>> {
   const offset = (page - 1) * limit;
   

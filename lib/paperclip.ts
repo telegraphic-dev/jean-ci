@@ -39,6 +39,55 @@ export function isPaperclipConfigured(): boolean {
   return Boolean(PAPERCLIP_API_URL && PAPERCLIP_API_KEY);
 }
 
+function normalizeRepoFullName(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (!/github\.com$/i.test(parsed.hostname)) return null;
+
+    const parts = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
+    if (parts.length < 2) return null;
+
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, '');
+    if (!owner || !repo) return null;
+    return `${owner}/${repo}`.toLowerCase();
+  } catch {
+    const pieces = trimmed.replace(/^\/+|\/+$/g, '').split('/');
+    if (pieces.length !== 2) return null;
+    const owner = pieces[0];
+    const repo = pieces[1].replace(/\.git$/i, '');
+    if (!owner || !repo) return null;
+    return `${owner}/${repo}`.toLowerCase();
+  }
+}
+
+function issueRepoMatches(issue: any, repoFullName: string): boolean {
+  const expected = normalizeRepoFullName(repoFullName);
+  if (!expected) return false;
+
+  const repoCandidates = new Set<string>();
+  const project = issue?.project;
+
+  const primaryRepo = normalizeRepoFullName(project?.primaryWorkspace?.repoUrl);
+  if (primaryRepo) repoCandidates.add(primaryRepo);
+
+  const workspaces = Array.isArray(project?.workspaces) ? project.workspaces : [];
+  for (const workspace of workspaces) {
+    const repo = normalizeRepoFullName(workspace?.repoUrl);
+    if (repo) repoCandidates.add(repo);
+  }
+
+  if (repoCandidates.size === 0) {
+    return false;
+  }
+
+  return repoCandidates.has(expected);
+}
+
 async function paperclipFetch(path: string, init?: RequestInit) {
   if (!PAPERCLIP_API_URL || !PAPERCLIP_API_KEY) {
     throw new Error('Paperclip is not configured');
@@ -75,6 +124,14 @@ export async function markLinkedPaperclipIssuesDone(params: {
   const { prUrl, repoFullName, prNumber, prTitle, issueIds } = params;
 
   for (const issueId of issueIds) {
+    const issue = await paperclipFetch(`/api/issues/${issueId}`);
+    if (!issueRepoMatches(issue, repoFullName)) {
+      console.warn(
+        `Skipping Paperclip sync for issue ${issueId}: project repo does not match merged PR repo ${repoFullName}`
+      );
+      continue;
+    }
+
     await paperclipFetch(`/api/issues/${issueId}`, {
       method: 'PATCH',
       body: JSON.stringify({
