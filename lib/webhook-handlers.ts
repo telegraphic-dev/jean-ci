@@ -209,12 +209,13 @@ export async function handleCheckSuite(payload: any) {
 
   const [owner, repo] = String(repository.full_name).split('/');
   const octokit = await getInstallationOctokit(installation.id);
-  const checkRuns = await octokit.paginate('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+  const { data: checkRunsResponse } = await octokit.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
     owner,
     repo,
     ref: check_suite.head_sha,
     per_page: 100,
-  }, (response: any) => response.data.check_runs || []);
+  });
+  const checkRuns = checkRunsResponse?.check_runs || [];
 
   if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
     return;
