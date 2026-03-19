@@ -692,36 +692,58 @@ export interface PublicCheckRun {
   completed_at?: Date;
 }
 
-export async function getPublicCheckRunsPaginated(page = 1, limit = 50): Promise<PaginatedResult<PublicCheckRun>> {
+export async function getPublicCheckRunsPaginated(
+  page = 1,
+  limit = 50,
+  repo?: string
+): Promise<PaginatedResult<PublicCheckRun>> {
   const offset = (page - 1) * limit;
+
+  const whereClause = repo ? 'WHERE repo = $1' : '';
+  const pageParams = repo ? [repo, limit, offset] : [limit, offset];
+  const countParams = repo ? [repo] : [];
+
   const [items, countResult] = await Promise.all([
     pool.query(
       `SELECT id, github_check_id, repo, pr_number, check_name, head_sha, status, conclusion, title, summary, created_at, completed_at
        FROM jean_ci_check_runs
+       ${whereClause}
        ORDER BY created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
+       LIMIT $${repo ? 2 : 1} OFFSET $${repo ? 3 : 2}`,
+      pageParams
     ),
-    pool.query('SELECT COUNT(*) FROM jean_ci_check_runs')
+    pool.query(`SELECT COUNT(*) FROM jean_ci_check_runs ${whereClause}`, countParams)
   ]);
   const total = parseInt(countResult.rows[0].count);
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
-export async function getRecentEventsPaginated(page = 1, limit = 50, eventType?: string): Promise<PaginatedResult<WebhookEvent>> {
+export async function getRecentEventsPaginated(
+  page = 1,
+  limit = 50,
+  eventType?: string,
+  repo?: string
+): Promise<PaginatedResult<WebhookEvent>> {
   const offset = (page - 1) * limit;
   
   let query = `SELECT id, event_type, delivery_id, repo, action, processed, source, created_at 
                FROM jean_ci_webhook_events`;
   let countQuery = 'SELECT COUNT(*) FROM jean_ci_webhook_events';
   const params: any[] = [];
-  const countParams: any[] = [];
-  
+  const whereClauses: string[] = [];
   if (eventType) {
-    query += ` WHERE event_type = $1`;
-    countQuery += ` WHERE event_type = $1`;
+    whereClauses.push(`event_type = $${whereClauses.length + 1}`);
     params.push(eventType);
-    countParams.push(eventType);
+  }
+  if (repo) {
+    whereClauses.push(`repo = $${whereClauses.length + 1}`);
+    params.push(repo);
+  }
+
+  if (whereClauses.length > 0) {
+    const where = whereClauses.join(' AND ');
+    query += ` WHERE ${where}`;
+    countQuery += ` WHERE ${where}`;
   }
   
   query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
@@ -729,7 +751,7 @@ export async function getRecentEventsPaginated(page = 1, limit = 50, eventType?:
   
   const [items, countResult] = await Promise.all([
     pool.query(query, params),
-    pool.query(countQuery, countParams)
+    pool.query(countQuery, params.slice(0, params.length - 2))
   ]);
   const total = parseInt(countResult.rows[0].count);
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };

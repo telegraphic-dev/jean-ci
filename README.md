@@ -215,11 +215,17 @@ jean-ci now exposes a token-protected public API so external services can read o
 - `GET /api/public/v1/health`
 - `GET /api/public/v1/stats`
 - `GET /api/public/v1/repos`
-- `GET /api/public/v1/checks?page=1&limit=50`
-- `GET /api/public/v1/pipelines?page=1&limit=20`
-- `GET /api/public/v1/events?page=1&limit=50&eventType=workflow_run`
+- `GET /api/public/v1/checks?page=1&limit=50&repo=owner/repo`
+- `GET /api/public/v1/pipelines?page=1&limit=20&repo=owner/repo`
+- `GET /api/public/v1/events?page=1&limit=50&eventType=workflow_run&repo=owner/repo`
 - `GET /api/public/v1/tasks?view=summary`
 - `GET /api/public/v1/tasks?view=events&page=1&limit=50&repo=owner/repo&task=nightly`
+- `GET /api/public/v1/repos/{owner}/{repo}`
+- `GET /api/public/v1/repos/{owner}/{repo}/counts`
+- `GET /api/public/v1/repos/{owner}/{repo}/checks?page=1&limit=50`
+- `GET /api/public/v1/repos/{owner}/{repo}/pipelines?page=1&limit=20`
+- `GET /api/public/v1/repos/{owner}/{repo}/events?page=1&limit=50`
+- `GET /api/public/v1/repos/{owner}/{repo}/deployments?page=1&limit=50`
 
 ### Token management
 

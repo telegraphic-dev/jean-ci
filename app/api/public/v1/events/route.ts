@@ -9,7 +9,9 @@ export async function GET(req: NextRequest) {
   }
 
   const { page, limit } = parsePaginationParams(req, { defaultLimit: 50, maxLimit: 100 });
-  const eventType = new URL(req.url).searchParams.get('eventType') || undefined;
-  const result = await getRecentEventsPaginated(page, limit, eventType);
+  const url = new URL(req.url);
+  const eventType = url.searchParams.get('eventType') || undefined;
+  const repo = url.searchParams.get('repo') || undefined;
+  const result = await getRecentEventsPaginated(page, limit, eventType, repo);
   return NextResponse.json(result);
 }
