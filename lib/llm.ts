@@ -1,7 +1,10 @@
 import { SYSTEM_PROMPT } from './db';
-
-const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
-const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
+import {
+  classifyGatewayException,
+  classifyGatewayHttpFailure,
+  OpenClawGatewayFailure,
+  runWithExponentialRetry,
+} from './openclaw-gateway';
 
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
@@ -10,90 +13,134 @@ const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
 // Discriminated union type for proper TypeScript narrowing
 type OpenClawResult = 
   | { success: true; response: string; error?: undefined }
-  | { success: false; error: string; response?: undefined };
+  | { success: false; error: string; errorType: 'gateway' | 'unknown'; response?: undefined };
 
 export async function callOpenClaw(userPrompt: string, context = ''): Promise<OpenClawResult> {
-  if (!OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
+  const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
+  const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const maxAttempts = getMaxAttempts();
+  const retryBaseMs = getRetryBaseDelayMs();
+
+  if (!gatewayUrl || !gatewayToken) {
     console.log('[MOCK] Would call OpenClaw');
     return { success: true, response: '**VERDICT: PASS**\n\n[Mock mode] Code looks good!' };
   }
 
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
+  const execution = await runWithExponentialRetry(async (attempt) => {
+    const result = USE_RESPONSES_API
+      ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken)
+      : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken);
 
-  try {
-    if (USE_RESPONSES_API) {
-      return await callOpenClawResponses(userMessage);
-    } else {
-      return await callOpenClawChat(userMessage);
+    if (!result.success) {
+      console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} failed (${result.failure.errorType}): ${result.failure.error}`);
+      return { success: false as const, failure: result.failure };
     }
-  } catch (error: any) {
-    return { success: false, error: error.message };
+
+    return { success: true as const, value: result.response };
+  }, {
+    maxAttempts,
+    retryBaseMs,
+  });
+
+  if (execution.success) {
+    return { success: true, response: execution.value };
   }
+
+  return {
+    success: false,
+    errorType: execution.failure.errorType,
+    error: `OpenClaw request failed after ${execution.attempts} attempt(s). Last error: ${execution.failure.error}`,
+  };
 }
 
 /**
  * OpenResponses API (/v1/responses)
  * Full agent codepath with tool access (browser, exec, etc.)
  */
-async function callOpenClawResponses(userMessage: string): Promise<OpenClawResult> {
-  const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-      'x-openclaw-agent-id': 'main',
-    },
-    body: JSON.stringify({
-      model: 'openclaw:main',
-      input: [
-        { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
-        { type: 'message', role: 'user', content: userMessage },
-      ],
-    }),
-  });
+async function callOpenClawResponses(
+  userMessage: string,
+  gatewayUrl: string,
+  gatewayToken: string,
+): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${gatewayToken}`,
+        'x-openclaw-agent-id': 'main',
+      },
+      body: JSON.stringify({
+        model: 'openclaw:main',
+        input: [
+          { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
+          { type: 'message', role: 'user', content: userMessage },
+        ],
+      }),
+    });
 
-  if (!response.ok) {
-    return { success: false, error: await response.text() };
-  }
+    if (!response.ok) {
+      return { success: false, failure: classifyGatewayHttpFailure(response.status, await response.text()) };
+    }
 
-  const data = await response.json();
-  
-  // Extract text from output items
-  const textContent = extractTextFromOutput(data.output || []);
-  
-  if (!textContent) {
-    return { success: false, error: 'No text response from agent' };
+    const data = await response.json();
+    const textContent = extractTextFromOutput(data.output || []);
+    if (!textContent) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No text response from agent' },
+      };
+    }
+
+    return { success: true, response: textContent };
+  } catch (error) {
+    return { success: false, failure: classifyGatewayException(error) };
   }
-  
-  return { success: true, response: textContent };
 }
 
 /**
  * Chat Completions API (/v1/chat/completions)
  * Simple LLM call without tool access
  */
-async function callOpenClawChat(userMessage: string): Promise<OpenClawResult> {
-  const response = await fetch(`${OPENCLAW_GATEWAY_URL}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-    },
-    body: JSON.stringify({
-      model: 'default',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-    }),
-  });
+async function callOpenClawChat(
+  userMessage: string,
+  gatewayUrl: string,
+  gatewayToken: string,
+): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${gatewayToken}`,
+      },
+      body: JSON.stringify({
+        model: 'default',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+      }),
+    });
 
-  if (!response.ok) {
-    return { success: false, error: await response.text() };
+    if (!response.ok) {
+      return { success: false, failure: classifyGatewayHttpFailure(response.status, await response.text()) };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No response content from chat completion' },
+      };
+    }
+
+    return { success: true, response: content };
+  } catch (error) {
+    return { success: false, failure: classifyGatewayException(error) };
   }
-
-  const data = await response.json();
-  return { success: true, response: data.choices?.[0]?.message?.content || 'No response' };
 }
 
 /**
@@ -118,4 +165,12 @@ function extractTextFromOutput(output: any[]): string {
   }
   
   return textParts.join('\n').trim();
+}
+
+function getMaxAttempts() {
+  return Math.max(1, parseInt(process.env.OPENCLAW_GATEWAY_MAX_ATTEMPTS || '3', 10));
+}
+
+function getRetryBaseDelayMs() {
+  return Math.max(0, parseInt(process.env.OPENCLAW_GATEWAY_RETRY_BASE_MS || '100', 10));
 }

@@ -7,6 +7,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   output: 'standalone',
   outputFileTracingRoot: __dirname,
+  webpack: (config) => {
+    config.resolve.alias = {
+      ...config.resolve.alias,
+      '@': __dirname,
+    };
+    return config;
+  },
 };
 
 export default nextConfig;
