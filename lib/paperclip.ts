@@ -84,3 +84,93 @@ export async function markLinkedPaperclipIssuesDone(params: {
     });
   }
 }
+
+export interface FailedCheckSummary {
+  name: string;
+  conclusion: string;
+  checkRunUrl?: string | null;
+  workflowUrl?: string | null;
+  jeanCheckUrl?: string | null;
+}
+
+export function buildFailedChecksNotificationMarker(repoFullName: string, prNumber: number, headSha: string): string {
+  return `<!-- jean-ci:paperclip-failing-checks repo=${repoFullName} pr=${prNumber} sha=${headSha} -->`;
+}
+
+export function buildFailedChecksComment(params: {
+  marker: string;
+  prTitle: string;
+  prUrl: string;
+  failedChecks: FailedCheckSummary[];
+}): string {
+  const lines: string[] = [
+    '## PR checks failed',
+    '',
+    `Checks finished with failures for [${params.prTitle}](${params.prUrl}).`,
+    '',
+    `- Failed checks: ${params.failedChecks.length}`,
+    ...params.failedChecks.map((check) => {
+      const links: string[] = [];
+      if (check.checkRunUrl) links.push(`[check run](${check.checkRunUrl})`);
+      if (check.workflowUrl && check.workflowUrl !== check.checkRunUrl) links.push(`[workflow/job](${check.workflowUrl})`);
+      if (check.jeanCheckUrl) links.push(`[jean-ci](${check.jeanCheckUrl})`);
+
+      const parts = [`\`${check.name}\` (${check.conclusion})`];
+      if (links.length > 0) {
+        parts.push(links.join(' | '));
+      }
+      return `- ${parts.join(' - ')}`;
+    }),
+    '',
+    params.marker,
+  ];
+
+  return lines.join('\n');
+}
+
+function readCommentText(comment: any): string {
+  return (
+    comment?.body ||
+    comment?.content ||
+    comment?.markdown ||
+    comment?.text ||
+    ''
+  );
+}
+
+export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
+  issueIds: string[];
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+  prTitle: string;
+  prUrl: string;
+  failedChecks: FailedCheckSummary[];
+}) {
+  const { issueIds, repoFullName, prNumber, headSha, prTitle, prUrl, failedChecks } = params;
+  const marker = buildFailedChecksNotificationMarker(repoFullName, prNumber, headSha);
+  const comment = buildFailedChecksComment({
+    marker,
+    prTitle,
+    prUrl,
+    failedChecks,
+  });
+
+  for (const issueId of issueIds) {
+    const comments = await paperclipFetch(`/api/issues/${issueId}/comments`);
+    const alreadyPosted = Array.isArray(comments)
+      ? comments.some((entry) => readCommentText(entry).includes(marker))
+      : false;
+
+    if (alreadyPosted) {
+      continue;
+    }
+
+    await paperclipFetch(`/api/issues/${issueId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        comment,
+      }),
+    });
+  }
+}
