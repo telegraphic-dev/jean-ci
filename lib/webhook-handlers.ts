@@ -4,6 +4,7 @@ import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus,
 import { registerPendingDeployment } from './coolify';
 import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers';
 import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip';
+import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite';
 import { APP_BASE_URL } from './config';
 
 // OpenClaw notification config
@@ -190,15 +191,11 @@ async function resolveJeanCheckUrl(githubCheckRunId: number | null | undefined):
 export async function handleCheckSuite(payload: any) {
   const { action, check_suite, repository, installation } = payload;
 
-  if (action !== 'completed' && action !== 'rerequested') {
+  if (!handlesCheckSuiteAction(action)) {
     return;
   }
 
   if (!check_suite?.head_sha || !repository?.full_name || !installation?.id) {
-    return;
-  }
-
-  if (!isPaperclipConfigured()) {
     return;
   }
 
@@ -212,6 +209,10 @@ export async function handleCheckSuite(payload: any) {
 
   if (action === 'rerequested') {
     await upsertRepo(repository.full_name, installation.id, false);
+    const repoConfig = await getRepo(repository.full_name);
+    if (!shouldQueueRerequestedReview(repoConfig?.pr_review_enabled)) {
+      return;
+    }
 
     for (const linkedPr of pullRequests) {
       const prNumber = linkedPr?.number;
@@ -243,6 +244,10 @@ export async function handleCheckSuite(payload: any) {
       console.log(`🔁 Re-requested check suite; queued PR review for ${repository.full_name}#${prNumber}`);
     }
 
+    return;
+  }
+
+  if (!isPaperclipConfigured()) {
     return;
   }
 
