@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getPublicCheckRunsPaginated } from '@/lib/db';
+import { getDeploymentsByRepoPaginated } from '@/lib/db';
 import { parsePaginationParams, requirePublicApiToken } from '@/lib/public-api';
 
-export async function GET(req: NextRequest) {
+type Params = { params: Promise<{ owner: string; repo: string }> };
+
+export async function GET(req: NextRequest, { params }: Params) {
   const auth = await requirePublicApiToken(req);
   if (!auth.authorized) {
     return auth.response;
   }
 
-  const repo = new URL(req.url).searchParams.get('repo') || undefined;
+  const { owner, repo } = await params;
+  const fullName = `${owner}/${repo}`;
   const { page, limit } = parsePaginationParams(req, { defaultLimit: 50, maxLimit: 100 });
-  const result = await getPublicCheckRunsPaginated(page, limit, repo);
+
+  const result = await getDeploymentsByRepoPaginated(fullName, page, limit);
   return NextResponse.json(result);
 }
