@@ -1,4 +1,10 @@
 import { SYSTEM_PROMPT } from './db';
+import {
+  classifyGatewayException,
+  classifyGatewayHttpFailure,
+  OpenClawGatewayFailure,
+  runWithExponentialRetry,
+} from './openclaw-gateway';
 
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
@@ -7,7 +13,7 @@ const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
 // Discriminated union type for proper TypeScript narrowing
 type OpenClawResult = 
   | { success: true; response: string; error?: undefined }
-  | { success: false; error: string; errorType: 'gateway'; response?: undefined };
+  | { success: false; error: string; errorType: 'gateway' | 'unknown'; response?: undefined };
 
 export async function callOpenClaw(userPrompt: string, context = ''): Promise<OpenClawResult> {
   const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
@@ -21,34 +27,30 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
   }
 
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
-  let lastError = 'Unknown gateway error';
+  const execution = await runWithExponentialRetry(async (attempt) => {
+    const result = USE_RESPONSES_API
+      ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken)
+      : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken);
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const result = USE_RESPONSES_API
-        ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken)
-        : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken);
-
-      if (result.success) {
-        return result;
-      }
-
-      lastError = result.error;
-      console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} failed: ${lastError}`);
-    } catch (error: any) {
-      lastError = error?.message || String(error);
-      console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} errored: ${lastError}`);
+    if (!result.success) {
+      console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} failed (${result.failure.errorType}): ${result.failure.error}`);
+      return { success: false as const, failure: result.failure };
     }
 
-    if (attempt < maxAttempts) {
-      await sleep(getRetryDelayMs(attempt, retryBaseMs));
-    }
+    return { success: true as const, value: result.response };
+  }, {
+    maxAttempts,
+    retryBaseMs,
+  });
+
+  if (execution.success) {
+    return { success: true, response: execution.value };
   }
 
   return {
     success: false,
-    errorType: 'gateway',
-    error: `OpenClaw gateway failed after ${maxAttempts} attempts. Last error: ${lastError}`,
+    errorType: execution.failure.errorType,
+    error: `OpenClaw request failed after ${execution.attempts} attempt(s). Last error: ${execution.failure.error}`,
   };
 }
 
@@ -56,65 +58,89 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
  * OpenResponses API (/v1/responses)
  * Full agent codepath with tool access (browser, exec, etc.)
  */
-async function callOpenClawResponses(userMessage: string, gatewayUrl: string, gatewayToken: string): Promise<OpenClawResult> {
-  const response = await fetch(`${gatewayUrl}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${gatewayToken}`,
-      'x-openclaw-agent-id': 'main',
-    },
-    body: JSON.stringify({
-      model: 'openclaw:main',
-      input: [
-        { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
-        { type: 'message', role: 'user', content: userMessage },
-      ],
-    }),
-  });
+async function callOpenClawResponses(
+  userMessage: string,
+  gatewayUrl: string,
+  gatewayToken: string,
+): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${gatewayToken}`,
+        'x-openclaw-agent-id': 'main',
+      },
+      body: JSON.stringify({
+        model: 'openclaw:main',
+        input: [
+          { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
+          { type: 'message', role: 'user', content: userMessage },
+        ],
+      }),
+    });
 
-  if (!response.ok) {
-    return { success: false, error: await response.text() };
-  }
+    if (!response.ok) {
+      return { success: false, failure: classifyGatewayHttpFailure(response.status, await response.text()) };
+    }
 
-  const data = await response.json();
-  
-  // Extract text from output items
-  const textContent = extractTextFromOutput(data.output || []);
-  
-  if (!textContent) {
-    return { success: false, error: 'No text response from agent' };
+    const data = await response.json();
+    const textContent = extractTextFromOutput(data.output || []);
+    if (!textContent) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No text response from agent' },
+      };
+    }
+
+    return { success: true, response: textContent };
+  } catch (error) {
+    return { success: false, failure: classifyGatewayException(error) };
   }
-  
-  return { success: true, response: textContent };
 }
 
 /**
  * Chat Completions API (/v1/chat/completions)
  * Simple LLM call without tool access
  */
-async function callOpenClawChat(userMessage: string, gatewayUrl: string, gatewayToken: string): Promise<OpenClawResult> {
-  const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${gatewayToken}`,
-    },
-    body: JSON.stringify({
-      model: 'default',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-    }),
-  });
+async function callOpenClawChat(
+  userMessage: string,
+  gatewayUrl: string,
+  gatewayToken: string,
+): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${gatewayToken}`,
+      },
+      body: JSON.stringify({
+        model: 'default',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+      }),
+    });
 
-  if (!response.ok) {
-    return { success: false, error: await response.text() };
+    if (!response.ok) {
+      return { success: false, failure: classifyGatewayHttpFailure(response.status, await response.text()) };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No response content from chat completion' },
+      };
+    }
+
+    return { success: true, response: content };
+  } catch (error) {
+    return { success: false, failure: classifyGatewayException(error) };
   }
-
-  const data = await response.json();
-  return { success: true, response: data.choices?.[0]?.message?.content || 'No response' };
 }
 
 /**
@@ -141,18 +167,10 @@ function extractTextFromOutput(output: any[]): string {
   return textParts.join('\n').trim();
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function getMaxAttempts() {
   return Math.max(1, parseInt(process.env.OPENCLAW_GATEWAY_MAX_ATTEMPTS || '3', 10));
 }
 
 function getRetryBaseDelayMs() {
   return Math.max(0, parseInt(process.env.OPENCLAW_GATEWAY_RETRY_BASE_MS || '100', 10));
-}
-
-export function getRetryDelayMs(attempt: number, retryBaseMs: number) {
-  return retryBaseMs * 2 ** (attempt - 1);
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession } from '@/lib/auth';
-import { exchangeCodeForToken, getGitHubUser } from '@/lib/github';
+import { getSession } from '../../../../lib/auth';
+import { exchangeCodeForToken, getGitHubUser } from '../../../../lib/github';
 
 const ADMIN_GITHUB_ID = process.env.ADMIN_GITHUB_ID;
 
