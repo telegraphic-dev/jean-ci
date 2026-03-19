@@ -62,6 +62,17 @@ export async function initDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS jean_ci_api_tokens (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        token_hash TEXT UNIQUE NOT NULL,
+        token_prefix TEXT NOT NULL,
+        last_used_at TIMESTAMP,
+        revoked_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_api_tokens_revoked ON jean_ci_api_tokens(revoked_at);
+
       CREATE TABLE IF NOT EXISTS jean_ci_repos (
         id SERIAL PRIMARY KEY,
         full_name TEXT UNIQUE NOT NULL,
@@ -191,6 +202,64 @@ export async function setConfig(key: string, value: string) {
     VALUES ($1, $2, CURRENT_TIMESTAMP)
     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = CURRENT_TIMESTAMP
   `, [key, value]);
+}
+
+export interface ApiTokenRecord {
+  id: number;
+  name: string;
+  token_prefix: string;
+  last_used_at: Date | null;
+  revoked_at: Date | null;
+  created_at: Date;
+}
+
+export async function createApiToken(name: string, tokenHash: string, tokenPrefix: string): Promise<ApiTokenRecord> {
+  const result = await pool.query(
+    `INSERT INTO jean_ci_api_tokens (name, token_hash, token_prefix)
+     VALUES ($1, $2, $3)
+     RETURNING id, name, token_prefix, last_used_at, revoked_at, created_at`,
+    [name, tokenHash, tokenPrefix]
+  );
+  return result.rows[0];
+}
+
+export async function listApiTokens(): Promise<ApiTokenRecord[]> {
+  const result = await pool.query(
+    `SELECT id, name, token_prefix, last_used_at, revoked_at, created_at
+     FROM jean_ci_api_tokens
+     ORDER BY created_at DESC`
+  );
+  return result.rows;
+}
+
+export async function revokeApiToken(id: number): Promise<ApiTokenRecord | null> {
+  const result = await pool.query(
+    `UPDATE jean_ci_api_tokens
+     SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+     WHERE id = $1
+     RETURNING id, name, token_prefix, last_used_at, revoked_at, created_at`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getActiveApiTokenByHash(tokenHash: string): Promise<ApiTokenRecord | null> {
+  const result = await pool.query(
+    `SELECT id, name, token_prefix, last_used_at, revoked_at, created_at
+     FROM jean_ci_api_tokens
+     WHERE token_hash = $1 AND revoked_at IS NULL`,
+    [tokenHash]
+  );
+  return result.rows[0] || null;
+}
+
+export async function touchApiTokenLastUsed(id: number): Promise<void> {
+  await pool.query(
+    `UPDATE jean_ci_api_tokens
+     SET last_used_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [id]
+  );
 }
 
 // Repo helpers
