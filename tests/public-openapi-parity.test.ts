@@ -26,14 +26,57 @@ function toOpenApiPath(routeFile: string): string {
   return `/v1${normalized}`.replace(/\[([^\]]+)\]/g, '{$1}').replace(/\\/g, '/');
 }
 
+function extractImplementedPathParams(routeFile: string): Set<string> {
+  const params = new Set<string>();
+  const matches = routeFile.matchAll(/\[([^\]]+)\]/g);
+  for (const match of matches) {
+    params.add(match[1]);
+  }
+  return params;
+}
+
+function extractImplementedQueryParams(source: string): Set<string> {
+  const params = new Set<string>();
+  const matches = source.matchAll(/searchParams\.get\(['"]([^'"]+)['"]\)/g);
+  for (const match of matches) {
+    params.add(match[1]);
+  }
+  if (source.includes('parsePaginationParams(')) {
+    params.add('page');
+    params.add('limit');
+  }
+  return params;
+}
+
+function extractDocumentedParams(specPath: any): { path: Set<string>; query: Set<string> } {
+  const path = new Set<string>();
+  const query = new Set<string>();
+  const params = specPath?.get?.parameters ?? [];
+  for (const param of params) {
+    if (param?.in === 'path' && typeof param.name === 'string') {
+      path.add(param.name);
+    }
+    if (param?.in === 'query' && typeof param.name === 'string') {
+      query.add(param.name);
+    }
+  }
+  return { path, query };
+}
+
 test('public OpenAPI paths stay in sync with implemented GET routes', async () => {
   const routeFiles = await listRouteFiles(ROUTES_ROOT);
 
   const implementedPaths: string[] = [];
+  const implementationByPath = new Map<string, { path: Set<string>; query: Set<string> }>();
   for (const routeFile of routeFiles) {
     const source = await fs.readFile(routeFile, 'utf8');
     if (source.includes('export async function GET')) {
-      implementedPaths.push(toOpenApiPath(routeFile));
+      const pathName = toOpenApiPath(routeFile);
+      implementedPaths.push(pathName);
+      implementationByPath.set(pathName, {
+        path: extractImplementedPathParams(routeFile),
+        query: extractImplementedQueryParams(source),
+      });
     }
   }
 
@@ -43,6 +86,22 @@ test('public OpenAPI paths stay in sync with implemented GET routes', async () =
 
   assert.deepEqual(documented, uniqueImplemented);
   for (const pathName of documented) {
-    assert.ok(spec.paths[pathName as keyof typeof spec.paths]?.get, `Missing GET operation for ${pathName}`);
+    const specPath = spec.paths[pathName as keyof typeof spec.paths];
+    assert.ok(specPath?.get, `Missing GET operation for ${pathName}`);
+
+    const implemented = implementationByPath.get(pathName);
+    assert.ok(implemented, `Missing implementation metadata for ${pathName}`);
+
+    const documentedParams = extractDocumentedParams(specPath);
+    assert.deepEqual(
+      [...documentedParams.path].sort(),
+      [...implemented.path].sort(),
+      `Path param mismatch for ${pathName}`
+    );
+    assert.deepEqual(
+      [...documentedParams.query].sort(),
+      [...implemented.query].sort(),
+      `Query param mismatch for ${pathName}`
+    );
   }
 });

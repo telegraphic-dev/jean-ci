@@ -212,6 +212,7 @@ jean-ci now exposes a token-protected public API so external services can read o
 
 ### Public endpoints
 
+- `GET /api/public/openapi.json`
 - `GET /api/public/v1/health`
 - `GET /api/public/v1/stats`
 - `GET /api/public/v1/repos`
