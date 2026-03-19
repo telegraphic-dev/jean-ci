@@ -1,5 +1,6 @@
 const PAPERCLIP_API_URL = (process.env.PAPERCLIP_API_URL || '').replace(/\/$/, '');
 const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY;
+const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID;
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
 const PAPERCLIP_URL_ISSUE_RE = /https?:\/\/[^\s]*paperclip[^\s]*\/issues\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/ig;
@@ -102,11 +103,16 @@ export function buildFailedChecksComment(params: {
   prTitle: string;
   prUrl: string;
   failedChecks: FailedCheckSummary[];
+  ownerMention?: string | null;
 }): string {
+  const ownerLine = params.ownerMention
+    ? `${params.ownerMention} checks are complete and failures need follow-up.`
+    : null;
   const lines: string[] = [
     '## PR checks failed',
     '',
     `Checks finished with failures for [${params.prTitle}](${params.prUrl}).`,
+    ...(ownerLine ? ['', ownerLine] : []),
     '',
     `- Failed checks: ${params.failedChecks.length}`,
     ...params.failedChecks.map((check) => {
@@ -138,6 +144,46 @@ function readCommentText(comment: any): string {
   );
 }
 
+let cachedAgentMentions: Map<string, string> | null = null;
+
+async function getAgentMentionsById(): Promise<Map<string, string>> {
+  if (cachedAgentMentions) {
+    return cachedAgentMentions;
+  }
+
+  if (!PAPERCLIP_COMPANY_ID) {
+    cachedAgentMentions = new Map();
+    return cachedAgentMentions;
+  }
+
+  const agents = await paperclipFetch(`/api/companies/${PAPERCLIP_COMPANY_ID}/agents`);
+  const mentions = new Map<string, string>();
+  if (Array.isArray(agents)) {
+    for (const agent of agents) {
+      if (!agent?.id) continue;
+      if (agent?.urlKey) {
+        mentions.set(agent.id, `@${agent.urlKey}`);
+      }
+    }
+  }
+
+  cachedAgentMentions = mentions;
+  return mentions;
+}
+
+async function resolveIssueOwnerMention(issue: any): Promise<string | null> {
+  const assigneeAgentId = issue?.assigneeAgentId;
+  if (!assigneeAgentId) return null;
+
+  try {
+    const mentionsById = await getAgentMentionsById();
+    return mentionsById.get(assigneeAgentId) || null;
+  } catch (error: any) {
+    console.warn(`Failed to resolve Paperclip assignee mention for ${assigneeAgentId}: ${error?.message || error}`);
+    return null;
+  }
+}
+
 export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
   issueIds: string[];
   repoFullName: string;
@@ -149,14 +195,9 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
 }) {
   const { issueIds, repoFullName, prNumber, headSha, prTitle, prUrl, failedChecks } = params;
   const marker = buildFailedChecksNotificationMarker(repoFullName, prNumber, headSha);
-  const comment = buildFailedChecksComment({
-    marker,
-    prTitle,
-    prUrl,
-    failedChecks,
-  });
 
   for (const issueId of issueIds) {
+    const issue = await paperclipFetch(`/api/issues/${issueId}`);
     const comments = await paperclipFetch(`/api/issues/${issueId}/comments`);
     const alreadyPosted = Array.isArray(comments)
       ? comments.some((entry) => readCommentText(entry).includes(marker))
@@ -165,6 +206,15 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
     if (alreadyPosted) {
       continue;
     }
+
+    const ownerMention = await resolveIssueOwnerMention(issue);
+    const comment = buildFailedChecksComment({
+      marker,
+      prTitle,
+      prUrl,
+      failedChecks,
+      ownerMention,
+    });
 
     await paperclipFetch(`/api/issues/${issueId}`, {
       method: 'PATCH',
