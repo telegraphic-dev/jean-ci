@@ -50,3 +50,22 @@ test('buildFailedChecksComment includes failed checks and links', () => {
   assert.ok(comment.includes('[jean-ci](https://jean-ci.example.com/checks/9)'));
   assert.ok(comment.includes(marker));
 });
+
+test('buildFailedChecksComment includes owner mention when provided', () => {
+  const marker = buildFailedChecksNotificationMarker('owner/repo', 42, 'abc123');
+  const comment = buildFailedChecksComment({
+    marker,
+    prTitle: 'Fix flaky workflow',
+    prUrl: 'https://github.com/owner/repo/pull/42',
+    ownerMention: '@founding-engineer',
+    failedChecks: [
+      {
+        name: 'test',
+        conclusion: 'failure',
+      },
+    ],
+  });
+
+  assert.ok(comment.includes('@founding-engineer checks are complete and failures need follow-up.'));
+  assert.ok(comment.includes(marker));
+});
