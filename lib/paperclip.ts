@@ -3,6 +3,7 @@ const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY;
 const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID;
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
+const UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAPERCLIP_URL_ISSUE_RE = /https?:\/\/[^\s]*paperclip[^\s]*\/issues\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/ig;
 const PAPERCLIP_MARKER_RE = /paperclip(?:[-_ ]issue(?:[-_ ]id)?)?\s*[:#]?\s*([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/ig;
 const PAPERCLIP_HTML_COMMENT_RE = /<!--\s*paperclip-issue-id\s*:\s*([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->/ig;
@@ -38,6 +39,22 @@ export function extractPaperclipIssueIds(...inputs: Array<string | null | undefi
 
 export function isPaperclipConfigured(): boolean {
   return Boolean(PAPERCLIP_API_URL && PAPERCLIP_API_KEY);
+}
+
+function normalizeUuid(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return UUID_EXACT_RE.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+export function resolvePaperclipCompanyId(...candidates: Array<string | null | undefined>): string | null {
+  for (const candidate of candidates) {
+    const normalized = normalizeUuid(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
 }
 
 function normalizeRepoFullName(value?: string | null): string | null {
@@ -195,18 +212,47 @@ function readCommentText(comment: any): string {
 }
 
 let cachedAgentMentions: Map<string, string> | null = null;
+let cachedCompanyId: string | null | undefined = undefined;
 
-async function getAgentMentionsById(): Promise<Map<string, string>> {
+async function getPaperclipCompanyId(issue?: any): Promise<string | null> {
+  if (cachedCompanyId !== undefined) {
+    return cachedCompanyId;
+  }
+
+  const configuredCompanyId = resolvePaperclipCompanyId(PAPERCLIP_COMPANY_ID);
+  if (configuredCompanyId) {
+    cachedCompanyId = configuredCompanyId;
+    return cachedCompanyId;
+  }
+
+  try {
+    const me = await paperclipFetch('/api/agents/me');
+    const meCompanyId = resolvePaperclipCompanyId(me?.companyId);
+    if (meCompanyId) {
+      cachedCompanyId = meCompanyId;
+      return cachedCompanyId;
+    }
+  } catch (error: any) {
+    console.warn(`Failed to resolve Paperclip company id from /api/agents/me: ${error?.message || error}`);
+  }
+
+  const issueCompanyId = resolvePaperclipCompanyId(issue?.companyId, issue?.project?.companyId);
+  cachedCompanyId = issueCompanyId;
+  return cachedCompanyId;
+}
+
+async function getAgentMentionsById(issue?: any): Promise<Map<string, string>> {
   if (cachedAgentMentions) {
     return cachedAgentMentions;
   }
 
-  if (!PAPERCLIP_COMPANY_ID) {
+  const companyId = await getPaperclipCompanyId(issue);
+  if (!companyId) {
     cachedAgentMentions = new Map();
     return cachedAgentMentions;
   }
 
-  const agents = await paperclipFetch(`/api/companies/${PAPERCLIP_COMPANY_ID}/agents`);
+  const agents = await paperclipFetch(`/api/companies/${companyId}/agents`);
   const mentions = new Map<string, string>();
   if (Array.isArray(agents)) {
     for (const agent of agents) {
@@ -226,7 +272,7 @@ async function resolveIssueOwnerMention(issue: any): Promise<string | null> {
   if (!assigneeAgentId) return null;
 
   try {
-    const mentionsById = await getAgentMentionsById();
+    const mentionsById = await getAgentMentionsById(issue);
     return mentionsById.get(assigneeAgentId) || null;
   } catch (error: any) {
     console.warn(`Failed to resolve Paperclip assignee mention for ${assigneeAgentId}: ${error?.message || error}`);
