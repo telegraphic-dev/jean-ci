@@ -4,6 +4,7 @@ import {
   buildFailedChecksComment,
   buildFailedChecksNotificationMarker,
   extractPaperclipIssueIds,
+  resolvePaperclipCompanyId,
 } from '../lib/paperclip.ts';
 
 test('extractPaperclipIssueIds parses supported marker formats', () => {
@@ -68,4 +69,10 @@ test('buildFailedChecksComment includes owner mention when provided', () => {
 
   assert.ok(comment.includes('@founding-engineer checks are complete and failures need follow-up.'));
   assert.ok(comment.includes(marker));
+});
+
+test('resolvePaperclipCompanyId prefers first valid UUID and ignores invalid values', () => {
+  const valid = 'fa801dbc-afa1-4435-b12c-4e15dbc7a3bf';
+  assert.equal(resolvePaperclipCompanyId('THE', valid), valid);
+  assert.equal(resolvePaperclipCompanyId('invalid', null, undefined), null);
 });
