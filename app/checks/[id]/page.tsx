@@ -1,9 +1,15 @@
 import { getCheckRun } from '@/lib/db';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { Markdown } from '@/components/Markdown';
+import { requireAuth } from '@/lib/auth';
 
 export default async function CheckPage({ params }: { params: Promise<{ id: string }> }) {
+  const auth = await requireAuth();
+  if (!auth.authorized) {
+    redirect('/admin');
+  }
+
   const { id } = await params;
   const checkRun = await getCheckRun(parseInt(id));
   
