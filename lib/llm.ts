@@ -72,7 +72,7 @@ async function callOpenClawResponses(
         'x-openclaw-agent-id': 'main',
       },
       body: JSON.stringify({
-        model: 'openclaw:main',
+        model: process.env.OPENCLAW_RESPONSES_MODEL || 'openclaw',
         input: [
           { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
           { type: 'message', role: 'user', content: userMessage },
@@ -116,7 +116,7 @@ async function callOpenClawChat(
         'Authorization': `Bearer ${gatewayToken}`,
       },
       body: JSON.stringify({
-        model: 'default',
+        model: process.env.OPENCLAW_CHAT_MODEL || 'openclaw',
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userMessage },
