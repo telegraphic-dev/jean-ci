@@ -257,6 +257,15 @@ async function getAgentMentionsById(issue?: any): Promise<Map<string, string>> {
   if (Array.isArray(agents)) {
     for (const agent of agents) {
       if (!agent?.id) continue;
+
+      const humanName = [agent?.name, agent?.displayName, agent?.fullName]
+        .find((value) => typeof value === 'string' && value.trim().length > 0);
+
+      if (humanName) {
+        mentions.set(agent.id, `@${humanName.trim()}`);
+        continue;
+      }
+
       if (agent?.urlKey) {
         mentions.set(agent.id, `@${agent.urlKey}`);
       }

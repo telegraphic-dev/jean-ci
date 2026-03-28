@@ -58,7 +58,7 @@ test('buildFailedChecksComment includes owner mention when provided', () => {
     marker,
     prTitle: 'Fix flaky workflow',
     prUrl: 'https://github.com/owner/repo/pull/42',
-    ownerMention: '@founding-engineer',
+    ownerMention: '@Founding Engineer',
     failedChecks: [
       {
         name: 'test',
@@ -67,7 +67,7 @@ test('buildFailedChecksComment includes owner mention when provided', () => {
     ],
   });
 
-  assert.ok(comment.includes('@founding-engineer checks are complete and failures need follow-up.'));
+  assert.ok(comment.includes('@Founding Engineer checks are complete and failures need follow-up.'));
   assert.ok(comment.includes(marker));
 });
 
