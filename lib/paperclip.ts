@@ -1,3 +1,5 @@
+import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
+
 const PAPERCLIP_API_URL = (process.env.PAPERCLIP_API_URL || '').replace(/\/$/, '');
 const PAPERCLIP_API_KEY = process.env.PAPERCLIP_API_KEY;
 const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID;
@@ -99,23 +101,48 @@ function issueRepoMatches(issue: any, repoFullName: string): boolean {
   return candidates.has(expected);
 }
 
-async function paperclipFetch(path: string, init?: RequestInit) {
+async function paperclipFetch(path: string, init?: RequestInit, operation = 'paperclip.request') {
   if (!PAPERCLIP_API_URL || !PAPERCLIP_API_KEY) {
     throw new Error('Paperclip is not configured');
   }
 
-  const response = await fetch(`${PAPERCLIP_API_URL}${path}`, {
-    ...init,
-    headers: {
-      'Authorization': `Bearer ${PAPERCLIP_API_KEY}`,
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
-  });
+  const method = (init?.method || 'GET').toUpperCase();
+  const url = `${PAPERCLIP_API_URL}${path}`;
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        'Authorization': `Bearer ${PAPERCLIP_API_KEY}`,
+        'Content-Type': 'application/json',
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (error) {
+    logExternalCallFailure({
+      service: 'paperclip',
+      operation,
+      url,
+      method,
+      phase: 'transport',
+      error,
+    });
+    throw error;
+  }
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Paperclip API ${response.status}: ${errorText}`);
+    const errorText = await readResponseBodySnippet(response);
+    logExternalCallFailure({
+      service: 'paperclip',
+      operation,
+      url,
+      method,
+      phase: 'remote_response',
+      status: response.status,
+      responseBody: errorText,
+    });
+    throw new Error(`Paperclip API ${response.status}: ${errorText || 'No response body'}`);
   }
 
   if (response.status === 204) {
@@ -135,7 +162,7 @@ export async function markLinkedPaperclipIssuesDone(params: {
   const { prUrl, repoFullName, prNumber, prTitle, issueIds } = params;
 
   for (const issueId of issueIds) {
-    const issue = await paperclipFetch(`/api/issues/${issueId}`);
+    const issue = await paperclipFetch(`/api/issues/${issueId}`, undefined, 'paperclip.done_sync.fetch_issue');
     if (!issueRepoMatches(issue, repoFullName)) {
       console.warn(
         `Skipping Paperclip done-sync for issue ${issueId}: project repo does not match ${repoFullName}`
@@ -149,7 +176,7 @@ export async function markLinkedPaperclipIssuesDone(params: {
         status: 'done',
         comment: `Marked done automatically after GitHub PR merged: ${repoFullName}#${prNumber} — ${prTitle} (${prUrl})`,
       }),
-    });
+    }, 'paperclip.done_sync.patch_issue');
   }
 }
 
@@ -226,7 +253,7 @@ async function getPaperclipCompanyId(issue?: any): Promise<string | null> {
   }
 
   try {
-    const me = await paperclipFetch('/api/agents/me');
+    const me = await paperclipFetch('/api/agents/me', undefined, 'paperclip.company_resolution.fetch_me');
     const meCompanyId = resolvePaperclipCompanyId(me?.companyId);
     if (meCompanyId) {
       cachedCompanyId = meCompanyId;
@@ -252,7 +279,7 @@ async function getAgentMentionsById(issue?: any): Promise<Map<string, string>> {
     return cachedAgentMentions;
   }
 
-  const agents = await paperclipFetch(`/api/companies/${companyId}/agents`);
+  const agents = await paperclipFetch(`/api/companies/${companyId}/agents`, undefined, 'paperclip.owner_mention.fetch_agents');
   const mentions = new Map<string, string>();
   if (Array.isArray(agents)) {
     for (const agent of agents) {
@@ -303,7 +330,7 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
   const marker = buildFailedChecksNotificationMarker(repoFullName, prNumber, headSha);
 
   for (const issueId of issueIds) {
-    const issue = await paperclipFetch(`/api/issues/${issueId}`);
+    const issue = await paperclipFetch(`/api/issues/${issueId}`, undefined, 'paperclip.failed_checks.fetch_issue');
     if (!issueRepoMatches(issue, repoFullName)) {
       console.warn(
         `Skipping Paperclip failing-check comment for issue ${issueId}: project repo does not match ${repoFullName}`
@@ -311,7 +338,7 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
       continue;
     }
 
-    const comments = await paperclipFetch(`/api/issues/${issueId}/comments`);
+    const comments = await paperclipFetch(`/api/issues/${issueId}/comments`, undefined, 'paperclip.failed_checks.fetch_comments');
     const alreadyPosted = Array.isArray(comments)
       ? comments.some((entry) => readCommentText(entry).includes(marker))
       : false;
@@ -334,6 +361,6 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
       body: JSON.stringify({
         comment,
       }),
-    });
+    }, 'paperclip.failed_checks.post_comment');
   }
 }
