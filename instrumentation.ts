@@ -33,7 +33,7 @@ export async function register() {
       console.log(`👤 Admin: ${process.env.ADMIN_GITHUB_ID || '(anyone)'}`);
       console.log(`🗄️  Database: PostgreSQL ✅`);
       console.log(`🚀 Coolify: ${process.env.COOLIFY_TOKEN ? COOLIFY_URL || '(missing COOLIFY_URL)' : '(not configured)'}`);
-      const openClawAuth = getOpenClawDeviceAuthDebugInfo();
+      const openClawAuth = await getOpenClawDeviceAuthDebugInfo();
       console.log(`🧠 OpenClaw WS: ${openClawAuth.websocketEnabled ? 'enabled' : 'disabled'}`);
       console.log(`🧠 OpenClaw gateway: ${openClawAuth.gatewayUrl || '(missing OPENCLAW_GATEWAY_URL)'}`);
       console.log(`🧠 OpenClaw device: ${openClawAuth.deviceId}`);
