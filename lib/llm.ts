@@ -7,8 +7,9 @@ import {
   parseGatewayAuthRecoveryHint,
   runWithExponentialRetry,
 } from './openclaw-gateway';
+import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 type GatewayRpcResult<T> =
@@ -21,9 +22,22 @@ type OpenClawWsModule = {
 };
 
 async function loadOpenClawWs(): Promise<OpenClawWsModule> {
-  const standaloneModulePath = path.join(process.cwd(), 'lib', 'openclaw-ws.ts');
-
   if (process.env.NODE_ENV === 'production' && process.env.__NEXT_PRIVATE_STANDALONE_CONFIG) {
+    const currentFilePath = fileURLToPath(import.meta.url);
+    const currentDir = path.dirname(currentFilePath);
+    const standaloneCandidates = [
+      path.resolve(process.cwd(), 'lib', 'openclaw-ws.ts'),
+      path.resolve(process.cwd(), '.next', 'standalone', 'lib', 'openclaw-ws.ts'),
+      path.resolve(currentDir, 'openclaw-ws.ts'),
+      path.resolve(currentDir, '..', 'lib', 'openclaw-ws.ts'),
+    ];
+
+    const standaloneModulePath = standaloneCandidates.find((candidate) => fs.existsSync(candidate));
+
+    if (!standaloneModulePath) {
+      throw new Error(`Unable to locate standalone openclaw-ws module. Tried: ${standaloneCandidates.join(', ')}`);
+    }
+
     return import(pathToFileURL(standaloneModulePath).href);
   }
 
