@@ -5,10 +5,9 @@
  * Enable with OPENCLAW_USE_WEBSOCKET=true
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
 import { createRequire } from 'node:module';
 import crypto, { randomUUID } from 'crypto';
+import { getJsonState, setJsonState } from './db.ts';
 
 process.env.WS_NO_BUFFER_UTIL ??= '1';
 process.env.WS_NO_UTF_8_VALIDATE ??= '1';
@@ -116,7 +115,7 @@ export async function callGatewayRpc<T>(
       const WebSocket = getWebSocketCtor();
       return new WebSocket(url);
     },
-    loadIdentity: () => loadOrCreateDeviceIdentity(getDeviceIdentityPath()),
+    loadIdentity: () => loadOrCreateDeviceIdentity(),
     readDeviceTokenStore,
     writeDeviceTokenStore,
     clearStoredDeviceToken,
@@ -163,20 +162,17 @@ export async function listSessions(options: {
   return callGatewayRpc<unknown[]>('sessions.list', options);
 }
 
-export function getOpenClawDeviceAuthDebugInfo() {
-  const identityPath = getDeviceIdentityPath();
-  const tokenStorePath = getDeviceTokenStorePath();
-  const identityExists = fs.existsSync(identityPath);
-  const identity = loadOrCreateDeviceIdentity(identityPath);
-  const storedToken = readStoredDeviceToken(identity.deviceId, ROLE, readDeviceTokenStore);
+export async function getOpenClawDeviceAuthDebugInfo() {
+  const identity = await loadOrCreateDeviceIdentity();
+  const storedToken = await readStoredDeviceToken(identity.deviceId, ROLE, readDeviceTokenStore);
 
   return {
     websocketEnabled: isWebSocketEnabled(),
     gatewayUrl: process.env.OPENCLAW_GATEWAY_URL || null,
-    identityPath,
-    identityExists,
-    tokenStorePath,
-    tokenStoreExists: fs.existsSync(tokenStorePath),
+    identityPath: 'postgres:jean_ci_openclaw_device_state:identity',
+    identityExists: true,
+    tokenStorePath: 'postgres:jean_ci_openclaw_device_state:token-store',
+    tokenStoreExists: !!storedToken,
     deviceId: identity.deviceId,
     role: ROLE,
     scopes: [...SCOPES],
@@ -188,10 +184,10 @@ export function getOpenClawDeviceAuthDebugInfo() {
 
 type RuntimeDeps = {
   createWebSocket: (url: string) => WebSocketLike;
-  loadIdentity: () => DeviceIdentity;
-  readDeviceTokenStore: (deviceId: string) => StoredDeviceTokenStore | null;
-  writeDeviceTokenStore: (store: StoredDeviceTokenStore) => void;
-  clearStoredDeviceToken: (deviceId: string, role: string) => void;
+  loadIdentity: () => Promise<DeviceIdentity> | DeviceIdentity;
+  readDeviceTokenStore: (deviceId: string) => Promise<StoredDeviceTokenStore | null> | StoredDeviceTokenStore | null;
+  writeDeviceTokenStore: (store: StoredDeviceTokenStore) => Promise<void> | void;
+  clearStoredDeviceToken: (deviceId: string, role: string) => Promise<void> | void;
   now: () => number;
   randomId: () => string;
   signPayload: (privateKeyPem: string, payload: string) => string;
@@ -225,8 +221,8 @@ export async function connectAndCallGatewayRpc<T>(
     return { success: false, error: 'WebSocket URL or token not configured' };
   }
 
-  const identity = deps.loadIdentity();
-  const storedToken = readStoredDeviceToken(identity.deviceId, ROLE, deps.readDeviceTokenStore)?.token;
+  const identity = await deps.loadIdentity();
+  const storedToken = (await readStoredDeviceToken(identity.deviceId, ROLE, deps.readDeviceTokenStore))?.token;
 
   const firstPlan: ConnectPlan = {
     role: ROLE,
@@ -281,7 +277,7 @@ export async function connectAndCallGatewayRpc<T>(
         deviceId: shortDeviceId(identity.deviceId),
         role: ROLE,
       });
-      deps.clearStoredDeviceToken(identity.deviceId, ROLE);
+      await deps.clearStoredDeviceToken(identity.deviceId, ROLE);
     }
     return { success: false, error: retry.error, errorDetails: retryDetails };
   }
@@ -291,7 +287,7 @@ export async function connectAndCallGatewayRpc<T>(
       deviceId: shortDeviceId(identity.deviceId),
       role: ROLE,
     });
-    deps.clearStoredDeviceToken(identity.deviceId, ROLE);
+    await deps.clearStoredDeviceToken(identity.deviceId, ROLE);
   }
 
   return { success: false, error: firstAttempt.error, errorDetails: firstAttemptDetails };
@@ -376,7 +372,7 @@ async function runGatewayRpcAttempt<T>(
         }, deps.challengeTimeoutMs);
       });
 
-      ws.on('message', (data: Buffer | string) => {
+      ws.on('message', async (data: Buffer | string) => {
         let msg: GatewayMessage;
         try {
           msg = JSON.parse(data.toString());
@@ -480,7 +476,7 @@ async function runGatewayRpcAttempt<T>(
               deviceId: shortDeviceId(plan.deviceIdentity.deviceId),
               role: msg.auth?.role || plan.role,
             });
-            writeStoredDeviceToken({
+            await writeStoredDeviceToken({
               deviceId: plan.deviceIdentity.deviceId,
               role: msg.auth?.role || plan.role,
               token: deviceToken,
@@ -579,19 +575,12 @@ function compactObject<T extends Record<string, unknown>>(obj: T): T {
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined)) as T;
 }
 
-function getDeviceIdentityPath() {
-  return process.env.OPENCLAW_DEVICE_IDENTITY_PATH || '/data/openclaw-device-identity.json';
-}
+const DEVICE_IDENTITY_STATE_KEY = 'identity';
+const DEVICE_TOKEN_STORE_STATE_KEY = 'token-store';
 
-function getDeviceTokenStorePath() {
-  return process.env.OPENCLAW_DEVICE_TOKEN_STORE_PATH || '/data/openclaw-device-tokens.json';
-}
-
-function readDeviceTokenStore(deviceId: string): StoredDeviceTokenStore | null {
+async function readDeviceTokenStore(deviceId: string): Promise<StoredDeviceTokenStore | null> {
   try {
-    const file = getDeviceTokenStorePath();
-    if (!fs.existsSync(file)) return null;
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as StoredDeviceTokenStore;
+    const raw = await getJsonState<StoredDeviceTokenStore>(DEVICE_TOKEN_STORE_STATE_KEY);
     if (!raw || raw.version !== DEVICE_TOKEN_STORE_VERSION || raw.deviceId !== deviceId || typeof raw.tokens !== 'object') {
       return null;
     }
@@ -601,40 +590,37 @@ function readDeviceTokenStore(deviceId: string): StoredDeviceTokenStore | null {
   }
 }
 
-function writeDeviceTokenStore(store: StoredDeviceTokenStore) {
-  const file = getDeviceTokenStorePath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  fs.chmodSync(file, 0o600);
+async function writeDeviceTokenStore(store: StoredDeviceTokenStore): Promise<void> {
+  await setJsonState(DEVICE_TOKEN_STORE_STATE_KEY, store);
 }
 
-function clearStoredDeviceToken(deviceId: string, role: string) {
-  const existing = readDeviceTokenStore(deviceId);
+async function clearStoredDeviceToken(deviceId: string, role: string): Promise<void> {
+  const existing = await readDeviceTokenStore(deviceId);
   if (!existing?.tokens?.[role]) return;
   const next: StoredDeviceTokenStore = {
     ...existing,
     tokens: { ...existing.tokens },
   };
   delete next.tokens[role];
-  writeDeviceTokenStore(next);
+  await writeDeviceTokenStore(next);
 }
 
-function readStoredDeviceToken(
+async function readStoredDeviceToken(
   deviceId: string,
   role: string,
-  reader: (deviceId: string) => StoredDeviceTokenStore | null,
-): StoredDeviceTokenRecord | null {
-  const store = reader(deviceId);
+  reader: (deviceId: string) => Promise<StoredDeviceTokenStore | null> | StoredDeviceTokenStore | null,
+): Promise<StoredDeviceTokenRecord | null> {
+  const store = await reader(deviceId);
   if (!store || store.deviceId !== deviceId) return null;
   return store.tokens?.[role] || null;
 }
 
-function writeStoredDeviceToken(
+async function writeStoredDeviceToken(
   input: { deviceId: string; role: string; token: string; scopes: string[]; updatedAtMs: number },
-  writer: (store: StoredDeviceTokenStore) => void,
-  reader: (deviceId: string) => StoredDeviceTokenStore | null,
+  writer: (store: StoredDeviceTokenStore) => Promise<void> | void,
+  reader: (deviceId: string) => Promise<StoredDeviceTokenStore | null> | StoredDeviceTokenStore | null,
 ) {
-  const current = reader(input.deviceId);
+  const current = await reader(input.deviceId);
   const next: StoredDeviceTokenStore = {
     version: DEVICE_TOKEN_STORE_VERSION,
     deviceId: input.deviceId,
@@ -646,7 +632,37 @@ function writeStoredDeviceToken(
     scopes: [...new Set(input.scopes)],
     updatedAtMs: input.updatedAtMs,
   };
-  writer(next);
+  await writer(next);
+}
+
+async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
+  const existing = await getJsonState<{ version: number; deviceId: string; publicKeyPem: string; privateKeyPem: string }>(DEVICE_IDENTITY_STATE_KEY);
+  if (
+    existing?.version === 1 &&
+    typeof existing.deviceId === 'string' &&
+    typeof existing.publicKeyPem === 'string' &&
+    typeof existing.privateKeyPem === 'string'
+  ) {
+    const derivedId = fingerprintPublicKey(existing.publicKeyPem);
+    if (derivedId !== existing.deviceId) {
+      const updated = { ...existing, deviceId: derivedId };
+      await setJsonState(DEVICE_IDENTITY_STATE_KEY, updated);
+      return {
+        deviceId: derivedId,
+        publicKeyPem: existing.publicKeyPem,
+        privateKeyPem: existing.privateKeyPem,
+      };
+    }
+    return {
+      deviceId: existing.deviceId,
+      publicKeyPem: existing.publicKeyPem,
+      privateKeyPem: existing.privateKeyPem,
+    };
+  }
+
+  const identity = generateDeviceIdentity();
+  await setJsonState(DEVICE_IDENTITY_STATE_KEY, { version: 1, ...identity, createdAtMs: Date.now() });
+  return identity;
 }
 
 function readConnectErrorDetailCode(details: unknown): string | null {
@@ -703,50 +719,6 @@ function generateDeviceIdentity(): DeviceIdentity {
     publicKeyPem,
     privateKeyPem,
   };
-}
-
-function loadOrCreateDeviceIdentity(filePath: string): DeviceIdentity {
-  try {
-    if (fs.existsSync(filePath)) {
-      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      if (
-        raw?.version === 1 &&
-        typeof raw.deviceId === 'string' &&
-        typeof raw.publicKeyPem === 'string' &&
-        typeof raw.privateKeyPem === 'string'
-      ) {
-        const derivedId = fingerprintPublicKey(raw.publicKeyPem);
-        if (derivedId !== raw.deviceId) {
-          const updated = { ...raw, deviceId: derivedId };
-          fs.mkdirSync(path.dirname(filePath), { recursive: true });
-          fs.writeFileSync(filePath, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
-          fs.chmodSync(filePath, 0o600);
-          return {
-            deviceId: derivedId,
-            publicKeyPem: raw.publicKeyPem,
-            privateKeyPem: raw.privateKeyPem,
-          };
-        }
-        return {
-          deviceId: raw.deviceId,
-          publicKeyPem: raw.publicKeyPem,
-          privateKeyPem: raw.privateKeyPem,
-        };
-      }
-    }
-  } catch {
-    // fall through to regenerate
-  }
-
-  const identity = generateDeviceIdentity();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(
-    filePath,
-    `${JSON.stringify({ version: 1, ...identity, createdAtMs: Date.now() }, null, 2)}\n`,
-    { mode: 0o600 },
-  );
-  fs.chmodSync(filePath, 0o600);
-  return identity;
 }
 
 function signDevicePayload(privateKeyPem: string, payload: string) {

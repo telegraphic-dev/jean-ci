@@ -171,6 +171,12 @@ export async function initDatabase() {
       );
 
       CREATE INDEX IF NOT EXISTS idx_jean_ci_app_mappings_repo ON jean_ci_app_mappings(github_repo);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_openclaw_device_state (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -259,6 +265,25 @@ export async function touchApiTokenLastUsed(id: number): Promise<void> {
      SET last_used_at = CURRENT_TIMESTAMP
      WHERE id = $1`,
     [id]
+  );
+}
+
+export async function getJsonState<T>(key: string): Promise<T | null> {
+  const result = await pool.query(
+    `SELECT value
+     FROM jean_ci_openclaw_device_state
+     WHERE key = $1`,
+    [key],
+  );
+  return (result.rows[0]?.value as T | undefined) ?? null;
+}
+
+export async function setJsonState(key: string, value: unknown): Promise<void> {
+  await pool.query(
+    `INSERT INTO jean_ci_openclaw_device_state (key, value, updated_at)
+     VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
+     ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, updated_at = CURRENT_TIMESTAMP`,
+    [key, JSON.stringify(value)],
   );
 }
 

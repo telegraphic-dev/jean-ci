@@ -13,9 +13,9 @@ class FakeWebSocket {
     this.handlers.set(event, arr);
   }
 
-  emit(event: string, ...args: any[]) {
+  async emit(event: string, ...args: any[]) {
     for (const listener of this.handlers.get(event) || []) {
-      listener(...args);
+      await listener(...args);
     }
   }
 
@@ -115,9 +115,11 @@ test('connectAndCallGatewayRpc performs challenge-based device auth and stores r
     challengeTimeoutMs: 1000,
     requestTimeoutMs: 1000,
   });
+  await new Promise((resolve) => setImmediate(resolve));
 
-  fake.emit('open');
-  fake.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-1' } }));
+  await fake.emit('open');
+  await fake.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-1' } }));
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(fake.sent[0].method, 'connect');
   assert.equal(fake.sent[0].params.auth.token, 'shared-token');
@@ -125,12 +127,12 @@ test('connectAndCallGatewayRpc performs challenge-based device auth and stores r
   assert.equal(fake.sent[0].params.device.publicKey, 'pubkey-raw');
   assert.match(fake.sent[0].params.device.signature, /^signed:v2\|device-1\|gateway-client\|backend\|operator\|operator.read,operator.write\|1234567890\|shared-token\|nonce-1$/);
 
-  fake.emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'device-token-1', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
+  await fake.emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'device-token-1', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
 
   assert.equal(fake.sent[1].method, 'sessions.list');
   assert.deepEqual(fake.sent[1].params, { limit: 1 });
 
-  fake.emit('message', JSON.stringify({ type: 'res', id: 'req-1', ok: true, payload: { ok: true } }));
+  await fake.emit('message', JSON.stringify({ type: 'res', id: 'req-1', ok: true, payload: { ok: true } }));
 
   const result = await promise;
   assert.equal(result.success, true);
@@ -179,10 +181,11 @@ test('connectAndCallGatewayRpc retries once with stored device token on AUTH_TOK
     challengeTimeoutMs: 1000,
     requestTimeoutMs: 1000,
   });
+  await new Promise((resolve) => setImmediate(resolve));
 
-  fakes[0].emit('open');
-  fakes[0].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-1' } }));
-  fakes[0].emit('message', JSON.stringify({
+  await fakes[0].emit('open');
+  await fakes[0].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-1' } }));
+  await fakes[0].emit('message', JSON.stringify({
     type: 'res',
     id: 'connect-1',
     ok: false,
@@ -197,15 +200,16 @@ test('connectAndCallGatewayRpc retries once with stored device token on AUTH_TOK
   }));
 
   await new Promise((resolve) => setImmediate(resolve));
-  fakes[1].emit('open');
-  fakes[1].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-2' } }));
+  await fakes[1].emit('open');
+  await fakes[1].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-2' } }));
+  await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(fakes[1].sent.length, 1);
   assert.equal(fakes[1].sent[0].params.auth.token, 'shared-token');
   assert.equal(fakes[1].sent[0].params.auth.deviceToken, 'stored-device-token');
 
-  fakes[1].emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'rotated-device-token', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
-  fakes[1].emit('message', JSON.stringify({ type: 'res', id: 'req-1', ok: true, payload: { value: 42 } }));
+  await fakes[1].emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'rotated-device-token', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
+  await fakes[1].emit('message', JSON.stringify({ type: 'res', id: 'req-1', ok: true, payload: { value: 42 } }));
 
   const result = await promise;
   assert.equal(result.success, true);
@@ -258,10 +262,11 @@ test('connectAndCallGatewayRpc clears stored device token on AUTH_DEVICE_TOKEN_M
     challengeTimeoutMs: 1000,
     requestTimeoutMs: 1000,
   });
+  await new Promise((resolve) => setImmediate(resolve));
 
-  fakes[0].emit('open');
-  fakes[0].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-1' } }));
-  fakes[0].emit('message', JSON.stringify({
+  await fakes[0].emit('open');
+  await fakes[0].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-1' } }));
+  await fakes[0].emit('message', JSON.stringify({
     type: 'res',
     id: 'connect-1',
     ok: false,
@@ -275,11 +280,12 @@ test('connectAndCallGatewayRpc clears stored device token on AUTH_DEVICE_TOKEN_M
   }));
 
   await new Promise((resolve) => setImmediate(resolve));
-  fakes[1].emit('open');
-  fakes[1].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-2' } }));
+  await fakes[1].emit('open');
+  await fakes[1].emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'nonce-2' } }));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(fakes[1].sent.length, 1);
   assert.equal(fakes[1].sent[0].params.auth.deviceToken, 'stored-device-token');
-  fakes[1].emit('message', JSON.stringify({
+  await fakes[1].emit('message', JSON.stringify({
     type: 'res',
     id: 'connect-1',
     ok: false,
