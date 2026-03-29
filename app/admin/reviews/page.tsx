@@ -128,9 +128,9 @@ export default function ReviewsPage() {
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
                 <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)] w-16">Status</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Author</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Updated</th>
               </tr>
@@ -146,10 +146,15 @@ export default function ReviewsPage() {
                     <td className="py-3 px-4 text-center text-lg">
                       {getCheckStatusIcon(pr.checkStatus)}
                     </td>
-                    <td className="py-3 px-4">
-                      <Link href={`/admin/repos/${pr.repo}`} className="text-[var(--accent)] hover:underline">
-                        {pr.repo}
-                      </Link>
+                    <td className="py-3 px-4 max-w-xs" title={pr.title}>
+                      <a
+                        href={pr.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block truncate text-[var(--accent)] hover:underline font-medium"
+                      >
+                        {pr.title}
+                      </a>
                     </td>
                     <td className="py-3 px-4">
                       <a 
@@ -162,8 +167,10 @@ export default function ReviewsPage() {
                       </a>
                       <span className="ml-2 text-xs text-[var(--text-muted)] font-mono">{pr.headSha}</span>
                     </td>
-                    <td className="py-3 px-4 text-[var(--text-secondary)] max-w-xs truncate" title={pr.title}>
-                      {pr.title}
+                    <td className="py-3 px-4">
+                      <Link href={`/admin/repos/${pr.repo}`} className="text-[var(--accent)] hover:underline">
+                        {pr.repo}
+                      </Link>
                     </td>
                     <td className="py-3 px-4 text-[var(--text-muted)]">
                       {pr.author}
