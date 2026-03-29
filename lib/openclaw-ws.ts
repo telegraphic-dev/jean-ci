@@ -337,6 +337,45 @@ async function runGatewayRpcAttempt<T>(
       resolve(result);
     };
 
+    const acceptConnectAndSendRpc = async (hello?: HelloOk) => {
+      connected = true;
+      const deviceToken = hello?.auth?.deviceToken;
+      logWs('connect accepted', {
+        method,
+        role: hello?.auth?.role || plan.role,
+        scopes: hello?.auth?.scopes || plan.scopes,
+        receivedDeviceToken: !!deviceToken,
+      });
+      if (deviceToken) {
+        logWs('persisting returned device token', {
+          method,
+          deviceId: shortDeviceId(plan.deviceIdentity.deviceId),
+          role: hello?.auth?.role || plan.role,
+        });
+        await writeStoredDeviceToken({
+          deviceId: plan.deviceIdentity.deviceId,
+          role: hello?.auth?.role || plan.role,
+          token: deviceToken,
+          scopes: hello?.auth?.scopes || plan.scopes,
+          updatedAtMs: deps.now(),
+        }, deps.writeDeviceTokenStore, deps.readDeviceTokenStore);
+      }
+
+      requestTimer = setTimeout(() => {
+        settle({ success: false, error: `Request timeout after ${deps.requestTimeoutMs}ms` });
+      }, deps.requestTimeoutMs);
+
+      logWs('sending rpc request', { method, requestId });
+
+      const rpcReq: RpcRequest = {
+        type: 'req',
+        id: requestId,
+        method,
+        params,
+      };
+      ws!.send(JSON.stringify(rpcReq));
+    };
+
     try {
       logWs('opening websocket', { wsUrl, method, deviceId: shortDeviceId(plan.deviceIdentity.deviceId) });
       ws = deps.createWebSocket(wsUrl);
@@ -458,46 +497,9 @@ async function runGatewayRpcAttempt<T>(
         }
 
         if (msg.type === 'hello-ok') {
-          if (connectResponseTimer) {
-            clearTimeout(connectResponseTimer);
-            connectResponseTimer = null;
-          }
-          connected = true;
-          const deviceToken = msg.auth?.deviceToken;
-          logWs('connect accepted (hello-ok)', {
-            method,
-            role: msg.auth?.role || plan.role,
-            scopes: msg.auth?.scopes || plan.scopes,
-            receivedDeviceToken: !!deviceToken,
-          });
-          if (deviceToken) {
-            logWs('persisting returned device token', {
-              method,
-              deviceId: shortDeviceId(plan.deviceIdentity.deviceId),
-              role: msg.auth?.role || plan.role,
-            });
-            await writeStoredDeviceToken({
-              deviceId: plan.deviceIdentity.deviceId,
-              role: msg.auth?.role || plan.role,
-              token: deviceToken,
-              scopes: msg.auth?.scopes || plan.scopes,
-              updatedAtMs: deps.now(),
-            }, deps.writeDeviceTokenStore, deps.readDeviceTokenStore);
-          }
-
-          requestTimer = setTimeout(() => {
-            settle({ success: false, error: `Request timeout after ${deps.requestTimeoutMs}ms` });
-          }, deps.requestTimeoutMs);
-
-          logWs('sending rpc request', { method, requestId });
-
-          const rpcReq: RpcRequest = {
-            type: 'req',
-            id: requestId,
-            method,
-            params,
-          };
-          ws!.send(JSON.stringify(rpcReq));
+          logWs('received legacy hello-ok event', { method });
+          const hello = msg as HelloOk;
+          await acceptConnectAndSendRpc(hello);
           return;
         }
 
@@ -518,7 +520,11 @@ async function runGatewayRpcAttempt<T>(
               error: `Connect failed: ${msg.error?.message || 'unknown'}`,
               errorDetails: msg.error?.details,
             });
+            return;
           }
+
+          logWs('connect accepted (rpc response)', { method });
+          await acceptConnectAndSendRpc(msg.payload as HelloOk | undefined);
           return;
         }
 
