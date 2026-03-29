@@ -2,6 +2,7 @@
 // https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
 
 import { APP_BASE_URL, COOLIFY_URL, getConfigWarnings } from './lib/config';
+import { getOpenClawDeviceAuthDebugInfo } from './lib/openclaw-ws';
 
 export async function register() {
   // Only run on server
@@ -32,6 +33,14 @@ export async function register() {
       console.log(`👤 Admin: ${process.env.ADMIN_GITHUB_ID || '(anyone)'}`);
       console.log(`🗄️  Database: PostgreSQL ✅`);
       console.log(`🚀 Coolify: ${process.env.COOLIFY_TOKEN ? COOLIFY_URL || '(missing COOLIFY_URL)' : '(not configured)'}`);
+      const openClawAuth = getOpenClawDeviceAuthDebugInfo();
+      console.log(`🧠 OpenClaw WS: ${openClawAuth.websocketEnabled ? 'enabled' : 'disabled'}`);
+      console.log(`🧠 OpenClaw gateway: ${openClawAuth.gatewayUrl || '(missing OPENCLAW_GATEWAY_URL)'}`);
+      console.log(`🧠 OpenClaw device: ${openClawAuth.deviceId}`);
+      console.log(`🧠 OpenClaw identity file: ${openClawAuth.identityPath} ${openClawAuth.identityExists ? '(existing)' : '(created on startup)'}`);
+      console.log(`🧠 OpenClaw token store: ${openClawAuth.tokenStorePath} ${openClawAuth.tokenStoreExists ? '(present)' : '(missing)'}`);
+      console.log(`🧠 OpenClaw shared token: ${openClawAuth.hasSharedToken ? 'present' : 'missing'}`);
+      console.log(`🧠 OpenClaw stored device token: ${openClawAuth.hasStoredDeviceToken ? 'present' : 'missing'}`);
       for (const warning of getConfigWarnings()) {
         console.log(`⚠️  Config: ${warning}`);
       }
