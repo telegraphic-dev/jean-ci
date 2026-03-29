@@ -16,9 +16,25 @@ test('getGatewayDashboardStatus returns disabled when websocket is off', async (
 
   const status = await getGatewayDashboardStatus({
     isWebSocketEnabled: () => false,
+    getDebugInfo: () => ({
+      websocketEnabled: false,
+      gatewayUrl: 'ws://gateway.example.com',
+      identityPath: '/data/device.json',
+      identityExists: false,
+      tokenStorePath: '/data/tokens.json',
+      tokenStoreExists: false,
+      deviceId: 'dev_disabled',
+      role: 'operator',
+      scopes: ['operator.read'],
+      hasSharedToken: true,
+      hasStoredDeviceToken: false,
+      storedDeviceTokenUpdatedAtMs: null,
+    }),
   });
   assert.equal(status.status, 'disabled');
   assert.match(status.detail, /not enabled/i);
+  assert.equal(status.deviceId, 'dev_disabled');
+  assert.equal(status.debug.identityPath, '/data/device.json');
 
   restoreEnv('OPENCLAW_USE_WEBSOCKET', prev);
 });
@@ -30,9 +46,30 @@ test('getGatewayDashboardStatus returns connected on successful probe', async ()
   const status = await getGatewayDashboardStatus({
     isWebSocketEnabled: () => true,
     callGatewayRpc: async () => ({ success: true as const, result: { items: [] } }),
+    getDebugInfo: () => ({
+      websocketEnabled: true,
+      gatewayUrl: 'ws://gateway.example.com',
+      identityPath: '/data/device.json',
+      identityExists: true,
+      tokenStorePath: '/data/tokens.json',
+      tokenStoreExists: true,
+      deviceId: 'dev_connected',
+      role: 'operator',
+      scopes: ['operator.read', 'operator.write'],
+      hasSharedToken: true,
+      hasStoredDeviceToken: true,
+      storedDeviceTokenUpdatedAtMs: 123,
+    }),
+    now: (() => {
+      let t = 100;
+      return () => (t += 7);
+    })(),
   });
   assert.equal(status.status, 'connected');
   assert.equal(status.color, 'green');
+  assert.equal(status.deviceId, 'dev_connected');
+  assert.equal(status.latencyMs, 7);
+  assert.equal(status.debug.hasStoredDeviceToken, true);
 
   restoreEnv('OPENCLAW_USE_WEBSOCKET', prev);
 });
@@ -52,9 +89,29 @@ test('getGatewayDashboardStatus surfaces pairing required guidance and device id
         recommendedNextStep: 'review_auth_configuration',
       },
     }),
+    getDebugInfo: () => ({
+      websocketEnabled: true,
+      gatewayUrl: 'ws://gateway.example.com',
+      identityPath: '/data/device.json',
+      identityExists: true,
+      tokenStorePath: '/data/tokens.json',
+      tokenStoreExists: false,
+      deviceId: 'dev_debug',
+      role: 'operator',
+      scopes: ['operator.read', 'operator.write'],
+      hasSharedToken: true,
+      hasStoredDeviceToken: false,
+      storedDeviceTokenUpdatedAtMs: null,
+    }),
+    now: (() => {
+      let t = 200;
+      return () => (t += 11);
+    })(),
   });
   assert.equal(status.status, 'pairing_required');
   assert.equal(status.deviceId, 'dev_123');
+  assert.equal(status.latencyMs, 11);
+  assert.equal(status.debug.tokenStoreExists, false);
   assert.match(status.guidance || '', /openclaw devices approve <requestId>/i);
 
   restoreEnv('OPENCLAW_USE_WEBSOCKET', prev);

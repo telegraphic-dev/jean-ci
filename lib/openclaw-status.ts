@@ -1,5 +1,5 @@
 import { buildGatewayAuthGuidance, classifyGatewayException, type GatewayAuthRecoveryHint } from './openclaw-gateway.ts';
-import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws.ts';
+import { callGatewayRpc, getOpenClawDeviceAuthDebugInfo, isWebSocketEnabled } from './openclaw-ws.ts';
 
 export type GatewayDashboardStatus = {
   status: 'connected' | 'pairing_required' | 'auth_error' | 'unreachable' | 'disabled';
@@ -9,13 +9,35 @@ export type GatewayDashboardStatus = {
   guidance: string | null;
   usingWebSocket: boolean;
   deviceId: string | null;
+  latencyMs: number | null;
+  debug: {
+    gatewayUrl: string | null;
+    identityPath: string | null;
+    identityExists: boolean;
+    tokenStorePath: string | null;
+    tokenStoreExists: boolean;
+    hasSharedToken: boolean;
+    hasStoredDeviceToken: boolean;
+  };
 };
 
 export async function getGatewayDashboardStatus(deps: {
   isWebSocketEnabled?: () => boolean;
   callGatewayRpc?: typeof callGatewayRpc;
+  getDebugInfo?: typeof getOpenClawDeviceAuthDebugInfo;
+  now?: () => number;
 } = {}): Promise<GatewayDashboardStatus> {
   const usingWebSocket = (deps.isWebSocketEnabled || isWebSocketEnabled)();
+  const debugInfo = (deps.getDebugInfo || getOpenClawDeviceAuthDebugInfo)();
+  const debug = {
+    gatewayUrl: debugInfo.gatewayUrl,
+    identityPath: debugInfo.identityPath,
+    identityExists: debugInfo.identityExists,
+    tokenStorePath: debugInfo.tokenStorePath,
+    tokenStoreExists: debugInfo.tokenStoreExists,
+    hasSharedToken: debugInfo.hasSharedToken,
+    hasStoredDeviceToken: debugInfo.hasStoredDeviceToken,
+  };
 
   if (!usingWebSocket) {
     return {
@@ -25,12 +47,17 @@ export async function getGatewayDashboardStatus(deps: {
       detail: 'OPENCLAW_USE_WEBSOCKET is not enabled.',
       guidance: 'Enable OPENCLAW_USE_WEBSOCKET=true to use device-auth websocket gateway status checks.',
       usingWebSocket,
-      deviceId: null,
+      deviceId: debugInfo.deviceId ?? null,
+      latencyMs: null,
+      debug,
     };
   }
 
   const gatewayRpc = deps.callGatewayRpc || callGatewayRpc;
+  const now = deps.now || Date.now;
+  const startedAt = now();
   const result = await gatewayRpc<{ items?: unknown[] }>('sessions.list', { limit: 1 });
+  const latencyMs = Math.max(0, now() - startedAt);
   if (result.success) {
     return {
       status: 'connected',
@@ -39,7 +66,9 @@ export async function getGatewayDashboardStatus(deps: {
       detail: 'Gateway websocket/device auth is healthy.',
       guidance: null,
       usingWebSocket,
-      deviceId: null,
+      deviceId: debugInfo.deviceId ?? null,
+      latencyMs,
+      debug,
     };
   }
 
@@ -52,7 +81,9 @@ export async function getGatewayDashboardStatus(deps: {
       detail: 'jean-ci must be approved on the OpenClaw gateway before reviews can run.',
       guidance: buildGatewayAuthGuidance(hint),
       usingWebSocket,
-      deviceId: hint.deviceId ?? null,
+      deviceId: hint.deviceId ?? debugInfo.deviceId ?? null,
+      latencyMs,
+      debug,
     };
   }
 
@@ -64,7 +95,9 @@ export async function getGatewayDashboardStatus(deps: {
       detail: 'Gateway rejected jean-ci authentication.',
       guidance: buildGatewayAuthGuidance(hint),
       usingWebSocket,
-      deviceId: hint.deviceId ?? null,
+      deviceId: hint.deviceId ?? debugInfo.deviceId ?? null,
+      latencyMs,
+      debug,
     };
   }
 
@@ -76,7 +109,9 @@ export async function getGatewayDashboardStatus(deps: {
     detail: result.error,
     guidance: null,
     usingWebSocket,
-    deviceId: null,
+    deviceId: debugInfo.deviceId ?? null,
+    latencyMs,
+    debug,
   };
 }
 

@@ -19,6 +19,16 @@ interface GatewayStatus {
   guidance: string | null;
   usingWebSocket: boolean;
   deviceId: string | null;
+  latencyMs: number | null;
+  debug: {
+    gatewayUrl: string | null;
+    identityPath: string | null;
+    identityExists: boolean;
+    tokenStorePath: string | null;
+    tokenStoreExists: boolean;
+    hasSharedToken: boolean;
+    hasStoredDeviceToken: boolean;
+  };
 }
 
 export default function AdminOverview() {
@@ -126,9 +136,10 @@ export default function AdminOverview() {
                   </div>
                 )}
                 {gateway?.guidance && (
-                  <div className="mt-2 text-xs text-[var(--text-secondary)] max-w-sm whitespace-normal">
-                    {gateway.guidance}
-                  </div>
+                  <details className="mt-3 text-xs text-[var(--text-secondary)] max-w-sm whitespace-pre-line rounded-lg border border-[var(--border)] p-3">
+                    <summary className="cursor-pointer select-none font-medium text-[var(--text-primary)]">Recovery steps</summary>
+                    <div className="mt-2">{gateway.guidance}</div>
+                  </details>
                 )}
               </div>
             </div>
@@ -136,6 +147,43 @@ export default function AdminOverview() {
               <span className="text-[var(--text-secondary)]">Transport</span>
               <span className="text-sm">{gateway ? (gateway.usingWebSocket ? 'WebSocket' : 'HTTP') : '...'}</span>
             </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--text-secondary)]">Probe latency</span>
+              <span className="font-mono text-sm">{gateway?.latencyMs != null ? `${gateway.latencyMs} ms` : '—'}</span>
+            </div>
+            <details className="rounded-lg border border-[var(--border)] p-3">
+              <summary className="cursor-pointer select-none text-sm font-medium">Gateway debug</summary>
+              <div className="mt-3 space-y-2 text-xs text-[var(--text-secondary)]">
+                <div className="flex items-center justify-between gap-4">
+                  <span>Gateway URL</span>
+                  <span className="font-mono text-right text-[var(--text-primary)] break-all">{gateway?.debug.gatewayUrl ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Identity path</span>
+                  <span className="font-mono text-right text-[var(--text-primary)] break-all">{gateway?.debug.identityPath ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Identity file</span>
+                  <span>{gateway ? (gateway.debug.identityExists ? 'Present' : 'Missing') : '...'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Token store path</span>
+                  <span className="font-mono text-right text-[var(--text-primary)] break-all">{gateway?.debug.tokenStorePath ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Token store</span>
+                  <span>{gateway ? (gateway.debug.tokenStoreExists ? 'Present' : 'Missing') : '...'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Shared token</span>
+                  <span>{gateway ? (gateway.debug.hasSharedToken ? 'Present' : 'Missing') : '...'}</span>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Stored device token</span>
+                  <span>{gateway ? (gateway.debug.hasStoredDeviceToken ? 'Present' : 'Missing') : '...'}</span>
+                </div>
+              </div>
+            </details>
             <div className="flex items-center justify-between">
               <span className="text-[var(--text-secondary)]">Version</span>
               <span className="font-mono text-sm">0.13.0</span>
