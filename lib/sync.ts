@@ -8,6 +8,7 @@ import {
 } from './db';
 import { getInstallationOctokit } from './github';
 import { COOLIFY_URL } from './config';
+import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
 
@@ -47,10 +48,21 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
       
       // If we have deployment UUID, check Coolify for status
       if (pd.coolify_deployment_uuid && COOLIFY_TOKEN && COOLIFY_URL) {
-        const response = await fetch(
-          `${COOLIFY_URL}/api/v1/deployments/${pd.coolify_deployment_uuid}`,
-          { headers: { 'Authorization': `Bearer ${COOLIFY_TOKEN}` } }
-        );
+        const url = `${COOLIFY_URL}/api/v1/deployments/${pd.coolify_deployment_uuid}`;
+        let response: Response;
+        try {
+          response = await fetch(url, { headers: { 'Authorization': `Bearer ${COOLIFY_TOKEN}` } });
+        } catch (error) {
+          logExternalCallFailure({
+            service: 'coolify',
+            operation: 'sync.pending_deployments.fetch_status',
+            url,
+            method: 'GET',
+            phase: 'transport',
+            error,
+          });
+          throw error;
+        }
         
         if (response.ok) {
           const data = await response.json();
@@ -65,6 +77,17 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
           console.log(`[Sync] Cleaning orphaned pending deployment ${pd.coolify_deployment_uuid} (not found in Coolify)`);
           await deletePendingDeployment(pd.app_uuid);
           cleaned++;
+        } else {
+          const responseBody = await readResponseBodySnippet(response);
+          logExternalCallFailure({
+            service: 'coolify',
+            operation: 'sync.pending_deployments.fetch_status',
+            url,
+            method: 'GET',
+            phase: 'remote_response',
+            status: response.status,
+            responseBody,
+          });
         }
       }
     } catch (e: any) {
