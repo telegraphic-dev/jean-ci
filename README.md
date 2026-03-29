@@ -380,6 +380,24 @@ Useful commands:
 - `openclaw devices approve <requestId>`
 - `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write`
 
+### Pairing required: what to do
+
+If jean-ci logs or PR checks show `PAIRING_REQUIRED`, the gateway is rejecting the websocket connect until this jean-ci device is explicitly approved.
+
+Recommended recovery flow:
+1. Run `openclaw devices list`
+2. Find the pending jean-ci device request and note both the request id and device id
+3. Approve it with `openclaw devices approve <requestId>`
+4. Run `openclaw devices list` again and verify the device is now approved
+5. Re-run the failed jean-ci check/job
+
+If approval does not fix it, rotate the credential for that device:
+- `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write`
+
+Operational note:
+- jean-ci should use its own dedicated gateway identity/device, not a personal human operator token
+- if the gateway returns a specific device id in the error details, surface it directly in logs/errors to make approval faster
+
 ## Using doubleagent for local GitHub testing
 
 Repo: <https://github.com/islo-labs/doubleagent>

@@ -48,6 +48,22 @@ test('parseGatewayAuthRecoveryHint extracts structured auth details', () => {
   });
 });
 
+test('parseGatewayAuthRecoveryHint extracts optional device id', () => {
+  const hint = parseGatewayAuthRecoveryHint(JSON.stringify({
+    error: {
+      details: {
+        code: 'PAIRING_REQUIRED',
+        deviceId: 'dev_123',
+      },
+    },
+  }));
+
+  assert.deepEqual(hint, {
+    code: 'PAIRING_REQUIRED',
+    deviceId: 'dev_123',
+  });
+});
+
 test('buildGatewayAuthGuidance renders retry guidance for token mismatch', () => {
   const guidance = buildGatewayAuthGuidance({
     code: 'AUTH_TOKEN_MISMATCH',
@@ -61,10 +77,15 @@ test('buildGatewayAuthGuidance renders retry guidance for token mismatch', () =>
 test('buildGatewayAuthGuidance renders pairing guidance', () => {
   const guidance = buildGatewayAuthGuidance({
     code: 'PAIRING_REQUIRED',
+    deviceId: 'dev_123',
     recommendedNextStep: 'review_auth_configuration',
   });
 
-  assert.match(guidance || '', /approve the jean-ci device/i);
+  assert.match(guidance || '', /paired before it can review prs/i);
+  assert.match(guidance || '', /openclaw devices list/i);
+  assert.match(guidance || '', /openclaw devices approve <requestId>/i);
+  assert.match(guidance || '', /openclaw devices rotate --device <deviceId>/i);
+  assert.match(guidance || '', /dev_123/i);
   assert.match(guidance || '', /review jean-ci gateway auth configuration/i);
 });
 
