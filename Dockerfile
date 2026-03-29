@@ -26,6 +26,10 @@ RUN npm run build
 RUN cp -r .next/static .next/standalone/.next/static
 RUN cp -r public .next/standalone/public
 
+# Runtime-loaded module is imported dynamically from lib/llm.ts and may not be
+# picked up by Next standalone tracing, so copy it explicitly.
+RUN mkdir -p .next/standalone/lib && cp lib/openclaw-ws.ts .next/standalone/lib/openclaw-ws.ts
+
 # Create non-root user
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs && \
