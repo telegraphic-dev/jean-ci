@@ -5,6 +5,7 @@ import {
   OpenClawGatewayFailure,
   runWithExponentialRetry,
 } from './openclaw-gateway';
+import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
@@ -29,8 +30,8 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
   const execution = await runWithExponentialRetry(async (attempt) => {
     const result = USE_RESPONSES_API
-      ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken)
-      : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken);
+      ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts)
+      : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts);
 
     if (!result.success) {
       console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} failed (${result.failure.errorType}): ${result.failure.error}`);
@@ -62,9 +63,13 @@ async function callOpenClawResponses(
   userMessage: string,
   gatewayUrl: string,
   gatewayToken: string,
+  attempt: number,
+  maxAttempts: number,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  const url = `${gatewayUrl}/v1/responses`;
+
   try {
-    const response = await fetch(`${gatewayUrl}/v1/responses`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -81,7 +86,21 @@ async function callOpenClawResponses(
     });
 
     if (!response.ok) {
-      return { success: false, failure: classifyGatewayHttpFailure(response.status, await response.text()) };
+      const responseBody = await readResponseBodySnippet(response);
+      const failure = classifyGatewayHttpFailure(response.status, responseBody || 'No response body');
+      logExternalCallFailure({
+        service: 'openclaw_gateway',
+        operation: 'openclaw.responses.create',
+        url,
+        method: 'POST',
+        phase: 'remote_response',
+        status: response.status,
+        responseBody,
+        attempt,
+        maxAttempts,
+        retryable: failure.retryable,
+      });
+      return { success: false, failure };
     }
 
     const data = await response.json();
@@ -95,7 +114,19 @@ async function callOpenClawResponses(
 
     return { success: true, response: textContent };
   } catch (error) {
-    return { success: false, failure: classifyGatewayException(error) };
+    const failure = classifyGatewayException(error);
+    logExternalCallFailure({
+      service: 'openclaw_gateway',
+      operation: 'openclaw.responses.create',
+      url,
+      method: 'POST',
+      phase: 'transport',
+      attempt,
+      maxAttempts,
+      retryable: failure.retryable,
+      error,
+    });
+    return { success: false, failure };
   }
 }
 
@@ -107,9 +138,13 @@ async function callOpenClawChat(
   userMessage: string,
   gatewayUrl: string,
   gatewayToken: string,
+  attempt: number,
+  maxAttempts: number,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  const url = `${gatewayUrl}/v1/chat/completions`;
+
   try {
-    const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -125,7 +160,21 @@ async function callOpenClawChat(
     });
 
     if (!response.ok) {
-      return { success: false, failure: classifyGatewayHttpFailure(response.status, await response.text()) };
+      const responseBody = await readResponseBodySnippet(response);
+      const failure = classifyGatewayHttpFailure(response.status, responseBody || 'No response body');
+      logExternalCallFailure({
+        service: 'openclaw_gateway',
+        operation: 'openclaw.chat_completions.create',
+        url,
+        method: 'POST',
+        phase: 'remote_response',
+        status: response.status,
+        responseBody,
+        attempt,
+        maxAttempts,
+        retryable: failure.retryable,
+      });
+      return { success: false, failure };
     }
 
     const data = await response.json();
@@ -139,7 +188,19 @@ async function callOpenClawChat(
 
     return { success: true, response: content };
   } catch (error) {
-    return { success: false, failure: classifyGatewayException(error) };
+    const failure = classifyGatewayException(error);
+    logExternalCallFailure({
+      service: 'openclaw_gateway',
+      operation: 'openclaw.chat_completions.create',
+      url,
+      method: 'POST',
+      phase: 'transport',
+      attempt,
+      maxAttempts,
+      retryable: failure.retryable,
+      error,
+    });
+    return { success: false, failure };
   }
 }
 

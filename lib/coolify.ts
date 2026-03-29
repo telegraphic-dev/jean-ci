@@ -1,4 +1,5 @@
 import { COOLIFY_URL } from './config';
+import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
 
@@ -43,12 +44,24 @@ function parseSimpleYaml(content: string) {
 
 export async function getCoolifyAppDetails(appUuid: string) {
   if (!COOLIFY_TOKEN || !COOLIFY_URL) return null;
+  const url = `${COOLIFY_URL}/api/v1/applications/${appUuid}`;
   
   try {
-    const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}`, {
+    const response = await fetch(url, {
       headers: { 'Authorization': `Bearer ${COOLIFY_TOKEN}` },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      logExternalCallFailure({
+        service: 'coolify',
+        operation: 'coolify.get_app_details',
+        url,
+        method: 'GET',
+        phase: 'remote_response',
+        status: response.status,
+        responseBody: await readResponseBodySnippet(response),
+      });
+      return null;
+    }
     const data = await response.json();
     return {
       fqdn: data.fqdn,
@@ -58,6 +71,14 @@ export async function getCoolifyAppDetails(appUuid: string) {
       environmentName: data.environment?.name,
     };
   } catch (e: any) {
+    logExternalCallFailure({
+      service: 'coolify',
+      operation: 'coolify.get_app_details',
+      url,
+      method: 'GET',
+      phase: 'transport',
+      error: e,
+    });
     console.error('Error fetching Coolify app details:', e.message);
     return null;
   }
@@ -68,10 +89,11 @@ export async function triggerCoolifyDeploy(appUuid: string) {
     console.log('[MOCK] Would trigger Coolify deploy for:', appUuid);
     return { success: true, mock: true };
   }
+  const url = `${COOLIFY_URL}/api/v1/applications/${appUuid}/start`;
 
   try {
     // Use /start instead of /restart - /start triggers deployment webhooks, /restart doesn't
-    const response = await fetch(`${COOLIFY_URL}/api/v1/applications/${appUuid}/start`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${COOLIFY_TOKEN}`,
@@ -80,13 +102,30 @@ export async function triggerCoolifyDeploy(appUuid: string) {
     });
     
     if (!response.ok) {
-      const error = await response.text();
+      const error = await readResponseBodySnippet(response);
+      logExternalCallFailure({
+        service: 'coolify',
+        operation: 'coolify.trigger_deploy',
+        url,
+        method: 'POST',
+        phase: 'remote_response',
+        status: response.status,
+        responseBody: error,
+      });
       return { success: false, error };
     }
     
     const data = await response.json();
     return { success: true, deploymentUuid: data.deployment_uuid };
   } catch (error: any) {
+    logExternalCallFailure({
+      service: 'coolify',
+      operation: 'coolify.trigger_deploy',
+      url,
+      method: 'POST',
+      phase: 'transport',
+      error,
+    });
     return { success: false, error: error.message };
   }
 }
