@@ -7,12 +7,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+import crypto, { randomUUID } from 'crypto';
 
 process.env.WS_NO_BUFFER_UTIL ??= '1';
 process.env.WS_NO_UTF_8_VALIDATE ??= '1';
 
-import WebSocket from 'ws';
-import crypto, { randomUUID } from 'crypto';
+const require = createRequire(import.meta.url);
 
 const PROTOCOL_VERSION = 3;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -109,7 +110,10 @@ export async function callGatewayRpc<T>(
   params: Record<string, unknown> = {},
 ): Promise<GatewayRpcResult<T>> {
   return connectAndCallGatewayRpc<T>(method, params, {
-    createWebSocket: (url: string) => new WebSocket(url),
+    createWebSocket: (url: string) => {
+      const WebSocket = getWebSocketCtor();
+      return new WebSocket(url);
+    },
     loadIdentity: () => loadOrCreateDeviceIdentity(getDeviceIdentityPath()),
     readDeviceTokenStore,
     writeDeviceTokenStore,
@@ -177,6 +181,12 @@ type WebSocketLike = {
   close: (code?: number, reason?: string) => void;
   on: (event: string, listener: (...args: any[]) => void) => void;
 };
+
+type WebSocketCtor = new (url: string) => WebSocketLike;
+
+function getWebSocketCtor(): WebSocketCtor {
+  return require('ws');
+}
 
 export async function connectAndCallGatewayRpc<T>(
   method: string,
