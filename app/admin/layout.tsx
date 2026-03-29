@@ -60,6 +60,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: '/admin/deployments', label: 'Deployments', icon: '🚀' },
     { href: '/admin/tasks', label: 'Scheduled Tasks', icon: '⏰' },
     { href: '/admin/events', label: 'Events', icon: '📋' },
+    { href: '/admin/gateway', label: 'Gateway', icon: '🔌' },
     { href: '/admin/prompt', label: 'Prompt', icon: '📝' },
   ];
 

@@ -580,11 +580,11 @@ function compactObject<T extends Record<string, unknown>>(obj: T): T {
 }
 
 function getDeviceIdentityPath() {
-  return process.env.OPENCLAW_DEVICE_IDENTITY_PATH || '.data/openclaw-device-identity.json';
+  return process.env.OPENCLAW_DEVICE_IDENTITY_PATH || '/data/openclaw-device-identity.json';
 }
 
 function getDeviceTokenStorePath() {
-  return process.env.OPENCLAW_DEVICE_TOKEN_STORE_PATH || '.data/openclaw-device-tokens.json';
+  return process.env.OPENCLAW_DEVICE_TOKEN_STORE_PATH || '/data/openclaw-device-tokens.json';
 }
 
 function readDeviceTokenStore(deviceId: string): StoredDeviceTokenStore | null {
