@@ -5,6 +5,8 @@
  * Enable with OPENCLAW_USE_WEBSOCKET=true
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import WebSocket from 'ws';
 import crypto, { randomUUID } from 'crypto';
 
@@ -274,6 +276,7 @@ async function runGatewayRpcAttempt<T>(
     let settled = false;
     let connectTimer: NodeJS.Timeout | null = null;
     let challengeTimer: NodeJS.Timeout | null = null;
+    let connectResponseTimer: NodeJS.Timeout | null = null;
     let requestTimer: NodeJS.Timeout | null = null;
     const requestId = deps.randomId();
     let challengeNonce: string | null = null;
@@ -282,6 +285,7 @@ async function runGatewayRpcAttempt<T>(
     const cleanup = () => {
       if (connectTimer) clearTimeout(connectTimer);
       if (challengeTimer) clearTimeout(challengeTimer);
+      if (connectResponseTimer) clearTimeout(connectResponseTimer);
       if (requestTimer) clearTimeout(requestTimer);
       if (ws) {
         try {
@@ -383,6 +387,11 @@ async function runGatewayRpcAttempt<T>(
             deviceId: shortDeviceId(plan.deviceIdentity.deviceId),
           });
 
+          connectResponseTimer = setTimeout(() => {
+            logWs('connect response timeout', { method });
+            settle({ success: false, error: `Connect response timeout after ${deps.connectTimeoutMs}ms` });
+          }, deps.connectTimeoutMs);
+
           const connectReq: RpcRequest = {
             type: 'req',
             id: 'connect-1',
@@ -416,6 +425,10 @@ async function runGatewayRpcAttempt<T>(
         }
 
         if (msg.type === 'hello-ok') {
+          if (connectResponseTimer) {
+            clearTimeout(connectResponseTimer);
+            connectResponseTimer = null;
+          }
           connected = true;
           const deviceToken = msg.auth?.deviceToken;
           logWs('connect accepted (hello-ok)', {
@@ -455,6 +468,10 @@ async function runGatewayRpcAttempt<T>(
         }
 
         if (msg.type === 'res' && msg.id === 'connect-1') {
+          if (connectResponseTimer) {
+            clearTimeout(connectResponseTimer);
+            connectResponseTimer = null;
+          }
           if (!msg.ok) {
             logWs('connect rejected', {
               method,
@@ -534,10 +551,9 @@ function getDeviceTokenStorePath() {
 
 function readDeviceTokenStore(deviceId: string): StoredDeviceTokenStore | null {
   try {
-    const fs = requireNodeFs();
-    const path = getDeviceTokenStorePath();
-    if (!fs.existsSync(path)) return null;
-    const raw = JSON.parse(fs.readFileSync(path, 'utf8')) as StoredDeviceTokenStore;
+    const file = getDeviceTokenStorePath();
+    if (!fs.existsSync(file)) return null;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as StoredDeviceTokenStore;
     if (!raw || raw.version !== DEVICE_TOKEN_STORE_VERSION || raw.deviceId !== deviceId || typeof raw.tokens !== 'object') {
       return null;
     }
@@ -548,11 +564,10 @@ function readDeviceTokenStore(deviceId: string): StoredDeviceTokenStore | null {
 }
 
 function writeDeviceTokenStore(store: StoredDeviceTokenStore) {
-  const fs = requireNodeFs();
-  const path = requireNodePath();
   const file = getDeviceTokenStorePath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
 }
 
 function clearStoredDeviceToken(deviceId: string, role: string) {
@@ -653,9 +668,6 @@ function generateDeviceIdentity(): DeviceIdentity {
 }
 
 function loadOrCreateDeviceIdentity(filePath: string): DeviceIdentity {
-  const fs = requireNodeFs();
-  const path = requireNodePath();
-
   try {
     if (fs.existsSync(filePath)) {
       const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -669,8 +681,8 @@ function loadOrCreateDeviceIdentity(filePath: string): DeviceIdentity {
         if (derivedId !== raw.deviceId) {
           const updated = { ...raw, deviceId: derivedId };
           fs.mkdirSync(path.dirname(filePath), { recursive: true });
-          fs.writeFileSync(filePath, `${JSON.stringify(updated, null, 2)}
-`, { mode: 0o600 });
+          fs.writeFileSync(filePath, `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
+          fs.chmodSync(filePath, 0o600);
           return {
             deviceId: derivedId,
             publicKeyPem: raw.publicKeyPem,
@@ -692,10 +704,10 @@ function loadOrCreateDeviceIdentity(filePath: string): DeviceIdentity {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(
     filePath,
-    `${JSON.stringify({ version: 1, ...identity, createdAtMs: Date.now() }, null, 2)}
-`,
+    `${JSON.stringify({ version: 1, ...identity, createdAtMs: Date.now() }, null, 2)}\n`,
     { mode: 0o600 },
   );
+  fs.chmodSync(filePath, 0o600);
   return identity;
 }
 
@@ -706,14 +718,6 @@ function signDevicePayload(privateKeyPem: string, payload: string) {
 
 function publicKeyRawBase64UrlFromPem(publicKeyPem: string) {
   return base64UrlEncode(derivePublicKeyRaw(publicKeyPem));
-}
-
-function requireNodeFs() {
-  return require('fs') as typeof import('fs');
-}
-
-function requireNodePath() {
-  return require('path') as typeof import('path');
 }
 
 function logWs(message: string, details?: Record<string, unknown>) {
