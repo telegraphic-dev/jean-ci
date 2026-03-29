@@ -10,6 +10,7 @@ export interface GatewayAuthRecoveryHint {
   code?: string;
   canRetryWithDeviceToken?: boolean;
   recommendedNextStep?: string;
+  deviceId?: string;
 }
 
 export function getRetryDelayMs(attempt: number, retryBaseMs: number) {
@@ -59,15 +60,19 @@ export function parseGatewayAuthRecoveryHint(body: string | null | undefined): G
     const recommendedNextStep = typeof details.recommendedNextStep === 'string'
       ? details.recommendedNextStep
       : undefined;
+    const deviceId = typeof details.deviceId === 'string'
+      ? details.deviceId
+      : undefined;
 
-    if (!code && canRetryWithDeviceToken === undefined && !recommendedNextStep) {
+    if (!code && canRetryWithDeviceToken === undefined && !recommendedNextStep && !deviceId) {
       return null;
     }
 
     return {
-      code,
-      canRetryWithDeviceToken,
-      recommendedNextStep,
+      ...(code ? { code } : {}),
+      ...(canRetryWithDeviceToken !== undefined ? { canRetryWithDeviceToken } : {}),
+      ...(recommendedNextStep ? { recommendedNextStep } : {}),
+      ...(deviceId ? { deviceId } : {}),
     };
   } catch {
     return null;
@@ -88,7 +93,12 @@ export function buildGatewayAuthGuidance(hint: GatewayAuthRecoveryHint | null): 
   }
 
   if (hint.code === 'PAIRING_REQUIRED') {
-    lines.push('Gateway reported PAIRING_REQUIRED. Approve the jean-ci device in `openclaw devices list`, then retry.');
+    const pairTarget = hint.deviceId
+      ? `device \`${hint.deviceId}\``
+      : 'pending jean-ci device request';
+    lines.push(`Gateway reported PAIRING_REQUIRED. jean-ci must be paired before it can review PRs. Approve the ${pairTarget} and then retry.`);
+    lines.push('How to pair it: 1) run `openclaw devices list` to find the pending request, 2) note the request id and device id, 3) approve it with `openclaw devices approve <requestId>`, 4) verify the device is approved with `openclaw devices list`, 5) re-run the failed jean-ci check.');
+    lines.push('If approval fails or the device/token drifted, rotate the jean-ci device credential with `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write`, update the stored credential if needed, and retry.');
   }
 
   if (hint.recommendedNextStep === 'retry_with_device_token') {

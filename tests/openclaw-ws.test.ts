@@ -123,7 +123,7 @@ test('connectAndCallGatewayRpc performs challenge-based device auth and stores r
   assert.equal(fake.sent[0].params.auth.token, 'shared-token');
   assert.equal(fake.sent[0].params.device.nonce, 'nonce-1');
   assert.equal(fake.sent[0].params.device.publicKey, 'pubkey-raw');
-  assert.match(fake.sent[0].params.device.signature, /^signed:v2\|device-1\|jean-ci\|backend\|operator\|operator.read,operator.write\|1234567890\|shared-token\|nonce-1$/);
+  assert.match(fake.sent[0].params.device.signature, /^signed:v2\|device-1\|gateway-client\|backend\|operator\|operator.read,operator.write\|1234567890\|shared-token\|nonce-1$/);
 
   fake.emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'device-token-1', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
 
