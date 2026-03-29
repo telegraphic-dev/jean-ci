@@ -90,10 +90,8 @@ jobs:
             echo 'notes<<EOF'
             echo "## Container image"
             echo
-            echo "- Image: \
-`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}`"
-            echo "- Tags: \
-`${{ steps.meta.outputs.tags }}`"
+            echo "- Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}`"
+            echo "- Tags: `${{ steps.meta.outputs.tags }}`"
             echo "- SBOM: attached via Docker Buildx"
             echo "- Provenance: GitHub artifact attestation + Buildx provenance"
             echo "- Cosign: keyless signature published for the image digest"
