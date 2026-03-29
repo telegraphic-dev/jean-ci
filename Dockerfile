@@ -2,8 +2,8 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Install wget for healthcheck
-RUN apk add --no-cache wget
+# Install wget for healthcheck and native build deps for ws optional addons (bufferutil)
+RUN apk add --no-cache wget python3 make g++
 
 # Build arg for commit SHA
 ARG COMMIT_SHA=unknown
