@@ -279,7 +279,6 @@ async function runGatewayRpcAttempt<T>(
     let connectResponseTimer: NodeJS.Timeout | null = null;
     let requestTimer: NodeJS.Timeout | null = null;
     const requestId = deps.randomId();
-    let challengeNonce: string | null = null;
     let connected = false;
 
     const cleanup = () => {
@@ -354,7 +353,6 @@ async function runGatewayRpcAttempt<T>(
             return;
           }
 
-          challengeNonce = nonce;
           logWs('received connect challenge', {
             method,
             nonceLength: nonce.length,
@@ -448,6 +446,7 @@ async function runGatewayRpcAttempt<T>(
               role: msg.auth?.role || plan.role,
               token: deviceToken,
               scopes: msg.auth?.scopes || plan.scopes,
+              updatedAtMs: deps.now(),
             }, deps.writeDeviceTokenStore, deps.readDeviceTokenStore);
           }
 
@@ -592,7 +591,7 @@ function readStoredDeviceToken(
 }
 
 function writeStoredDeviceToken(
-  input: { deviceId: string; role: string; token: string; scopes: string[] },
+  input: { deviceId: string; role: string; token: string; scopes: string[]; updatedAtMs: number },
   writer: (store: StoredDeviceTokenStore) => void,
   reader: (deviceId: string) => StoredDeviceTokenStore | null,
 ) {
@@ -606,7 +605,7 @@ function writeStoredDeviceToken(
     token: input.token,
     role: input.role,
     scopes: [...new Set(input.scopes)],
-    updatedAtMs: Date.now(),
+    updatedAtMs: input.updatedAtMs,
   };
   writer(next);
 }

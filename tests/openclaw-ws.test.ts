@@ -46,6 +46,46 @@ test('getWebSocketUrl converts http URL to ws URL', () => {
   process.env.OPENCLAW_GATEWAY_URL = original;
 });
 
+
+test('getWebSocketUrl returns null when gateway URL is not set', () => {
+  const original = process.env.OPENCLAW_GATEWAY_URL;
+  delete process.env.OPENCLAW_GATEWAY_URL;
+
+  assert.equal(getWebSocketUrl(), null);
+
+  process.env.OPENCLAW_GATEWAY_URL = original;
+});
+
+test('getWebSocketUrl converts https URL to wss URL', () => {
+  const original = process.env.OPENCLAW_GATEWAY_URL;
+  process.env.OPENCLAW_GATEWAY_URL = 'https://gateway.example.com';
+
+  assert.equal(getWebSocketUrl(), 'wss://gateway.example.com');
+
+  process.env.OPENCLAW_GATEWAY_URL = original;
+});
+
+test('getWebSocketUrl preserves websocket URLs', () => {
+  const original = process.env.OPENCLAW_GATEWAY_URL;
+
+  process.env.OPENCLAW_GATEWAY_URL = 'ws://gateway.example.com';
+  assert.equal(getWebSocketUrl(), 'ws://gateway.example.com');
+
+  process.env.OPENCLAW_GATEWAY_URL = 'wss://gateway.example.com';
+  assert.equal(getWebSocketUrl(), 'wss://gateway.example.com');
+
+  process.env.OPENCLAW_GATEWAY_URL = original;
+});
+
+test('getWebSocketUrl prefixes bare host values with ws', () => {
+  const original = process.env.OPENCLAW_GATEWAY_URL;
+  process.env.OPENCLAW_GATEWAY_URL = 'gateway.example.com:18789';
+
+  assert.equal(getWebSocketUrl(), 'ws://gateway.example.com:18789');
+
+  process.env.OPENCLAW_GATEWAY_URL = original;
+});
+
 test('connectAndCallGatewayRpc performs challenge-based device auth and stores returned device token', async () => {
   const originalUrl = process.env.OPENCLAW_GATEWAY_URL;
   const originalToken = process.env.OPENCLAW_GATEWAY_TOKEN;
