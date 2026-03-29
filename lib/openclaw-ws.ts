@@ -83,7 +83,7 @@ type HelloOk = {
 
 type GatewayMessage = RpcResponse | GatewayEvent | ({ type: 'hello-ok' } & HelloOk);
 
-type GatewayRpcResult<T> = { success: true; result: T } | { success: false; error: string };
+type GatewayRpcResult<T> = { success: true; result: T } | { success: false; error: string; errorDetails?: Record<string, unknown> };
 
 type ConnectPlan = {
   role: string;
@@ -260,7 +260,7 @@ export async function connectAndCallGatewayRpc<T>(
       });
       deps.clearStoredDeviceToken(identity.deviceId, ROLE);
     }
-    return { success: false, error: retry.error };
+    return { success: false, error: retry.error, errorDetails: retryDetails };
   }
 
   if (code === 'AUTH_DEVICE_TOKEN_MISMATCH') {
@@ -271,7 +271,7 @@ export async function connectAndCallGatewayRpc<T>(
     deps.clearStoredDeviceToken(identity.deviceId, ROLE);
   }
 
-  return { success: false, error: firstAttempt.error };
+  return { success: false, error: firstAttempt.error, errorDetails: firstAttemptDetails };
 }
 
 type AttemptFailure = {

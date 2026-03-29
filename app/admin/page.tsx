@@ -11,15 +11,27 @@ interface Stats {
   pendingDeploys: number;
 }
 
+interface GatewayStatus {
+  status: 'connected' | 'pairing_required' | 'auth_error' | 'unreachable' | 'disabled';
+  label: string;
+  color: 'green' | 'yellow' | 'red' | 'gray';
+  detail: string;
+  guidance: string | null;
+  usingWebSocket: boolean;
+  deviceId: string | null;
+}
+
 export default function AdminOverview() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [gateway, setGateway] = useState<GatewayStatus | null>(null);
 
   useEffect(() => {
     Promise.all([
       fetch('/api/repos').then(r => r.json()),
       fetch('/api/events').then(r => r.json()),
       fetch('/api/stats').then(r => r.json()),
-    ]).then(([repos, events, dashStats]) => {
+      fetch('/api/system-status').then(r => r.json()),
+    ]).then(([repos, events, dashStats, systemStatus]) => {
       setStats({
         totalRepos: repos.length,
         enabledRepos: repos.filter((r: any) => r.pr_review_enabled).length,
@@ -27,6 +39,7 @@ export default function AdminOverview() {
         openPRs: dashStats.openPRs,
         pendingDeploys: dashStats.pendingDeploys,
       });
+      setGateway(systemStatus.gateway || null);
     });
   }, []);
 
@@ -96,6 +109,32 @@ export default function AdminOverview() {
                 <span className="w-2 h-2 rounded-full bg-current"></span>
                 Healthy
               </span>
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <span className="text-[var(--text-secondary)]">OpenClaw Gateway</span>
+              <div className="text-right">
+                <span className={`inline-flex items-center gap-2 ${gateway?.color === 'green' ? 'text-[var(--green)]' : gateway?.color === 'yellow' ? 'text-[var(--yellow)]' : gateway?.color === 'gray' ? 'text-[var(--text-secondary)]' : 'text-[var(--red)]'}`}>
+                  <span className="w-2 h-2 rounded-full bg-current"></span>
+                  {gateway?.label ?? '...'}
+                </span>
+                <div className="mt-1 text-xs text-[var(--text-secondary)] max-w-sm">
+                  {gateway?.detail ?? 'Checking gateway status...'}
+                </div>
+                {gateway?.deviceId && (
+                  <div className="mt-1 font-mono text-xs text-[var(--text-secondary)]">
+                    Device: {gateway.deviceId}
+                  </div>
+                )}
+                {gateway?.guidance && (
+                  <div className="mt-2 text-xs text-[var(--text-secondary)] max-w-sm whitespace-normal">
+                    {gateway.guidance}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--text-secondary)]">Transport</span>
+              <span className="text-sm">{gateway ? (gateway.usingWebSocket ? 'WebSocket' : 'HTTP') : '...'}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[var(--text-secondary)]">Version</span>
