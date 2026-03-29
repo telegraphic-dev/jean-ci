@@ -1,8 +1,10 @@
 import { SYSTEM_PROMPT } from './db';
 import {
+  buildGatewayAuthGuidance,
   classifyGatewayException,
   classifyGatewayHttpFailure,
   OpenClawGatewayFailure,
+  parseGatewayAuthRecoveryHint,
   runWithExponentialRetry,
 } from './openclaw-gateway';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
@@ -87,7 +89,7 @@ async function callOpenClawResponses(
 
     if (!response.ok) {
       const responseBody = await readResponseBodySnippet(response);
-      const failure = classifyGatewayHttpFailure(response.status, responseBody || 'No response body');
+      const failure = enrichGatewayHttpFailure(response.status, responseBody || 'No response body');
       logExternalCallFailure({
         service: 'openclaw_gateway',
         operation: 'openclaw.responses.create',
@@ -161,7 +163,7 @@ async function callOpenClawChat(
 
     if (!response.ok) {
       const responseBody = await readResponseBodySnippet(response);
-      const failure = classifyGatewayHttpFailure(response.status, responseBody || 'No response body');
+      const failure = enrichGatewayHttpFailure(response.status, responseBody || 'No response body');
       logExternalCallFailure({
         service: 'openclaw_gateway',
         operation: 'openclaw.chat_completions.create',
@@ -202,6 +204,20 @@ async function callOpenClawChat(
     });
     return { success: false, failure };
   }
+}
+
+function enrichGatewayHttpFailure(status: number, responseBody: string): OpenClawGatewayFailure {
+  const failure = classifyGatewayHttpFailure(status, responseBody);
+  const guidance = buildGatewayAuthGuidance(parseGatewayAuthRecoveryHint(responseBody));
+
+  if (!guidance) {
+    return failure;
+  }
+
+  return {
+    ...failure,
+    error: `${failure.error} ${guidance}`,
+  };
 }
 
 /**
