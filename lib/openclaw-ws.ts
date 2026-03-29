@@ -22,6 +22,8 @@ const CONNECT_CHALLENGE_TIMEOUT_MS = 3_000;
 const ROLE = 'operator';
 const SCOPES = ['operator.read', 'operator.write'] as const;
 const DEVICE_TOKEN_STORE_VERSION = 1;
+const GATEWAY_CLIENT_ID = 'gateway-client';
+const GATEWAY_CLIENT_MODE = 'backend';
 
 type DeviceIdentity = {
   deviceId: string;
@@ -380,8 +382,8 @@ async function runGatewayRpcAttempt<T>(
           const signedAt = deps.now();
           const payload = buildDeviceSignaturePayload({
             deviceId: plan.deviceIdentity.deviceId,
-            clientId: 'jean-ci',
-            clientMode: 'backend',
+            clientId: GATEWAY_CLIENT_ID,
+            clientMode: GATEWAY_CLIENT_MODE,
             role: plan.role,
             scopes: plan.scopes,
             signedAtMs: signedAt,
@@ -412,10 +414,10 @@ async function runGatewayRpcAttempt<T>(
               minProtocol: PROTOCOL_VERSION,
               maxProtocol: PROTOCOL_VERSION,
               client: {
-                id: 'jean-ci',
+                id: GATEWAY_CLIENT_ID,
                 version: process.env.npm_package_version || '1.0.0',
                 platform: 'node',
-                mode: 'backend',
+                mode: GATEWAY_CLIENT_MODE,
               },
               role: plan.role,
               scopes: plan.scopes,
