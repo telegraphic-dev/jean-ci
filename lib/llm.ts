@@ -8,6 +8,12 @@ import {
   runWithExponentialRetry,
 } from './openclaw-gateway';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
+import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws';
+
+export const __internal = {
+  isWebSocketEnabled,
+  callGatewayRpc,
+};
 
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
@@ -31,9 +37,11 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
 
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
   const execution = await runWithExponentialRetry(async (attempt) => {
-    const result = USE_RESPONSES_API
-      ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts)
-      : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts);
+    const result = __internal.isWebSocketEnabled()
+      ? await callOpenClawResponsesViaWebSocket(userMessage)
+      : USE_RESPONSES_API
+        ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts)
+        : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts);
 
     if (!result.success) {
       console.error(`OpenClaw gateway attempt ${attempt}/${maxAttempts} failed (${result.failure.errorType}): ${result.failure.error}`);
@@ -55,6 +63,43 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
     errorType: execution.failure.errorType,
     error: `OpenClaw request failed after ${execution.attempts} attempt(s). Last error: ${execution.failure.error}`,
   };
+}
+
+/**
+ * OpenResponses API over WebSocket RPC.
+ * Uses the same responses.create flow as /v1/responses, but through gateway RPC.
+ */
+async function callOpenClawResponsesViaWebSocket(
+  userMessage: string,
+): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
+  try {
+    const result = await __internal.callGatewayRpc<{ output?: any[] }>('responses.create', {
+      model: process.env.OPENCLAW_RESPONSES_MODEL || 'openclaw',
+      input: [
+        { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
+        { type: 'message', role: 'user', content: userMessage },
+      ],
+    });
+
+    if (!result.success) {
+      return {
+        success: false,
+        failure: classifyGatewayException(new Error(result.error)),
+      };
+    }
+
+    const textContent = extractTextFromOutput(result.result.output || []);
+    if (!textContent) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No text response from agent' },
+      };
+    }
+
+    return { success: true, response: textContent };
+  } catch (error) {
+    return { success: false, failure: classifyGatewayException(error) };
+  }
 }
 
 /**
