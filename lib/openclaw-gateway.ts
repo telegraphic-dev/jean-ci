@@ -33,11 +33,13 @@ export function classifyGatewayHttpFailure(status: number, body: string): OpenCl
 export function classifyGatewayException(error: unknown): OpenClawGatewayFailure {
   const message = error instanceof Error ? error.message : String(error);
   const gatewayLikePatterns = /(timeout|timed out|econnreset|enotfound|eai_again|fetch failed|network|socket)/i;
-  const isGatewayIssue = gatewayLikePatterns.test(message);
+  const authLikePatterns = /(pairing required|auth_token_mismatch|auth_device_token_mismatch|token mismatch|device token mismatch)/i;
+  const isGatewayIssue = gatewayLikePatterns.test(message) || authLikePatterns.test(message);
+  const retryable = gatewayLikePatterns.test(message);
 
   return {
     errorType: isGatewayIssue ? 'gateway' : 'unknown',
-    retryable: isGatewayIssue,
+    retryable,
     error: message,
   };
 }
