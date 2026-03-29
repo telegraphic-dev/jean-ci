@@ -8,11 +8,29 @@ import {
   runWithExponentialRetry,
 } from './openclaw-gateway';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
-import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws';
+
+type GatewayRpcResult<T> =
+  | { success: true; result: T }
+  | { success: false; error: string };
+
+type OpenClawWsModule = {
+  isWebSocketEnabled: () => boolean;
+  callGatewayRpc: <T>(method: string, params?: Record<string, unknown>) => Promise<GatewayRpcResult<T>>;
+};
+
+async function loadOpenClawWs(): Promise<OpenClawWsModule> {
+  return import('./openclaw-ws');
+}
 
 export const __internal = {
-  isWebSocketEnabled,
-  callGatewayRpc,
+  async isWebSocketEnabled(): Promise<boolean> {
+    const ws = await loadOpenClawWs();
+    return ws.isWebSocketEnabled();
+  },
+  async callGatewayRpc<T>(method: string, params: Record<string, unknown> = {}): Promise<GatewayRpcResult<T>> {
+    const ws = await loadOpenClawWs();
+    return ws.callGatewayRpc<T>(method, params);
+  },
 };
 
 // Use OpenResponses API for full agent capabilities (including browser tools)
@@ -37,7 +55,8 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
 
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
   const execution = await runWithExponentialRetry(async (attempt) => {
-    const result = __internal.isWebSocketEnabled()
+    const useWebSocket = await __internal.isWebSocketEnabled();
+    const result = useWebSocket
       ? await callOpenClawResponsesViaWebSocket(userMessage)
       : USE_RESPONSES_API
         ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts)
