@@ -7,6 +7,8 @@ import {
   parseGatewayAuthRecoveryHint,
   runWithExponentialRetry,
 } from './openclaw-gateway';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 type GatewayRpcResult<T> =
@@ -19,6 +21,12 @@ type OpenClawWsModule = {
 };
 
 async function loadOpenClawWs(): Promise<OpenClawWsModule> {
+  const standaloneModulePath = path.join(process.cwd(), 'lib', 'openclaw-ws.ts');
+
+  if (process.env.NODE_ENV === 'production' && process.env.__NEXT_PRIVATE_STANDALONE_CONFIG) {
+    return import(pathToFileURL(standaloneModulePath).href);
+  }
+
   return import('./openclaw-ws');
 }
 
