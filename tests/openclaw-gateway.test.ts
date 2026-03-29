@@ -30,6 +30,14 @@ test('classifyGatewayException detects network/timeouts as retryable gateway err
   assert.equal(failure.retryable, true);
 });
 
+test('classifyGatewayException treats pairing/auth failures as gateway errors but not retryable', () => {
+  const failure = classifyGatewayException(new Error('Connect failed: pairing required {"errorDetails":{"code":"PAIRING_REQUIRED"}}'));
+
+  assert.equal(failure.errorType, 'gateway');
+  assert.equal(failure.retryable, false);
+  assert.match(failure.error, /pairing required/i);
+});
+
 test('parseGatewayAuthRecoveryHint extracts structured auth details', () => {
   const hint = parseGatewayAuthRecoveryHint(JSON.stringify({
     error: {

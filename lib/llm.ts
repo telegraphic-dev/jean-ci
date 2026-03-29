@@ -82,9 +82,10 @@ async function callOpenClawResponsesViaWebSocket(
     });
 
     if (!result.success) {
+      const detailBlob = result.errorDetails ? JSON.stringify({ errorDetails: result.errorDetails }) : '';
       return {
         success: false,
-        failure: classifyGatewayException(new Error(result.error)),
+        failure: classifyGatewayException(new Error(detailBlob ? `${result.error} ${detailBlob}` : result.error)),
       };
     }
 
