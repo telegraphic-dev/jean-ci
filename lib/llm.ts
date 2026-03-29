@@ -7,52 +7,12 @@ import {
   parseGatewayAuthRecoveryHint,
   runWithExponentialRetry,
 } from './openclaw-gateway';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
-
-type GatewayRpcResult<T> =
-  | { success: true; result: T }
-  | { success: false; error: string };
-
-type OpenClawWsModule = {
-  isWebSocketEnabled: () => boolean;
-  callGatewayRpc: <T>(method: string, params?: Record<string, unknown>) => Promise<GatewayRpcResult<T>>;
-};
-
-async function loadOpenClawWs(): Promise<OpenClawWsModule> {
-  if (process.env.NODE_ENV === 'production' && process.env.__NEXT_PRIVATE_STANDALONE_CONFIG) {
-    const currentFilePath = fileURLToPath(import.meta.url);
-    const currentDir = path.dirname(currentFilePath);
-    const standaloneCandidates = [
-      path.resolve(process.cwd(), 'lib', 'openclaw-ws.ts'),
-      path.resolve(process.cwd(), '.next', 'standalone', 'lib', 'openclaw-ws.ts'),
-      path.resolve(currentDir, 'openclaw-ws.ts'),
-      path.resolve(currentDir, '..', 'lib', 'openclaw-ws.ts'),
-    ];
-
-    const standaloneModulePath = standaloneCandidates.find((candidate) => fs.existsSync(candidate));
-
-    if (!standaloneModulePath) {
-      throw new Error(`Unable to locate standalone openclaw-ws module. Tried: ${standaloneCandidates.join(', ')}`);
-    }
-
-    return import(pathToFileURL(standaloneModulePath).href);
-  }
-
-  return import('./openclaw-ws');
-}
+import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws';
 
 export const __internal = {
-  async isWebSocketEnabled(): Promise<boolean> {
-    const ws = await loadOpenClawWs();
-    return ws.isWebSocketEnabled();
-  },
-  async callGatewayRpc<T>(method: string, params: Record<string, unknown> = {}): Promise<GatewayRpcResult<T>> {
-    const ws = await loadOpenClawWs();
-    return ws.callGatewayRpc<T>(method, params);
-  },
+  isWebSocketEnabled,
+  callGatewayRpc,
 };
 
 // Use OpenResponses API for full agent capabilities (including browser tools)
@@ -77,8 +37,7 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
 
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
   const execution = await runWithExponentialRetry(async (attempt) => {
-    const useWebSocket = await __internal.isWebSocketEnabled();
-    const result = useWebSocket
+    const result = __internal.isWebSocketEnabled()
       ? await callOpenClawResponsesViaWebSocket(userMessage)
       : USE_RESPONSES_API
         ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts)
