@@ -163,6 +163,29 @@ export async function listSessions(options: {
   return callGatewayRpc<unknown[]>('sessions.list', options);
 }
 
+export function getOpenClawDeviceAuthDebugInfo() {
+  const identityPath = getDeviceIdentityPath();
+  const tokenStorePath = getDeviceTokenStorePath();
+  const identityExists = fs.existsSync(identityPath);
+  const identity = loadOrCreateDeviceIdentity(identityPath);
+  const storedToken = readStoredDeviceToken(identity.deviceId, ROLE, readDeviceTokenStore);
+
+  return {
+    websocketEnabled: isWebSocketEnabled(),
+    gatewayUrl: process.env.OPENCLAW_GATEWAY_URL || null,
+    identityPath,
+    identityExists,
+    tokenStorePath,
+    tokenStoreExists: fs.existsSync(tokenStorePath),
+    deviceId: identity.deviceId,
+    role: ROLE,
+    scopes: [...SCOPES],
+    hasSharedToken: !!process.env.OPENCLAW_GATEWAY_TOKEN?.trim(),
+    hasStoredDeviceToken: !!storedToken?.token,
+    storedDeviceTokenUpdatedAtMs: storedToken?.updatedAtMs ?? null,
+  };
+}
+
 type RuntimeDeps = {
   createWebSocket: (url: string) => WebSocketLike;
   loadIdentity: () => DeviceIdentity;
