@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildGatewayAuthGuidance,
   classifyGatewayException,
   classifyGatewayHttpFailure,
   getRetryDelayMs,
+  parseGatewayAuthRecoveryHint,
   runWithExponentialRetry,
 } from '../lib/openclaw-gateway.ts';
 
@@ -26,6 +28,44 @@ test('classifyGatewayException detects network/timeouts as retryable gateway err
 
   assert.equal(failure.errorType, 'gateway');
   assert.equal(failure.retryable, true);
+});
+
+test('parseGatewayAuthRecoveryHint extracts structured auth details', () => {
+  const hint = parseGatewayAuthRecoveryHint(JSON.stringify({
+    error: {
+      details: {
+        code: 'AUTH_TOKEN_MISMATCH',
+        canRetryWithDeviceToken: true,
+        recommendedNextStep: 'retry_with_device_token',
+      },
+    },
+  }));
+
+  assert.deepEqual(hint, {
+    code: 'AUTH_TOKEN_MISMATCH',
+    canRetryWithDeviceToken: true,
+    recommendedNextStep: 'retry_with_device_token',
+  });
+});
+
+test('buildGatewayAuthGuidance renders retry guidance for token mismatch', () => {
+  const guidance = buildGatewayAuthGuidance({
+    code: 'AUTH_TOKEN_MISMATCH',
+    canRetryWithDeviceToken: true,
+    recommendedNextStep: 'retry_with_device_token',
+  });
+
+  assert.match(guidance || '', /retrying once with the cached device token/i);
+});
+
+test('buildGatewayAuthGuidance renders pairing guidance', () => {
+  const guidance = buildGatewayAuthGuidance({
+    code: 'PAIRING_REQUIRED',
+    recommendedNextStep: 'review_auth_configuration',
+  });
+
+  assert.match(guidance || '', /approve the jean-ci device/i);
+  assert.match(guidance || '', /review jean-ci gateway auth configuration/i);
 });
 
 test('getRetryDelayMs uses exponential growth', () => {

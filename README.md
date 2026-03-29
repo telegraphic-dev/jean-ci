@@ -133,6 +133,9 @@ NEXT_PUBLIC_BASE_URL=https://jean-ci.example.com
 # OpenClaw Gateway
 OPENCLAW_GATEWAY_URL=https://openclaw.example.com
 OPENCLAW_GATEWAY_TOKEN=your_gateway_token
+# Optional but recommended: use a dedicated jean-ci operator/device token,
+# not a personal token. If the gateway returns pairing/token-drift auth details,
+# jean-ci now surfaces actionable recovery guidance in logs/errors.
 
 # Optional Coolify integration
 COOLIFY_URL=https://coolify.example.com
@@ -350,8 +353,32 @@ Key points:
 The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
 - URL: `OPENCLAW_GATEWAY_URL=https://openclaw.example.com`
 - Auth: Bearer token via `OPENCLAW_GATEWAY_TOKEN`
+- Recommendation: mint a dedicated jean-ci token/device identity instead of reusing a human operator token
 
 If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
+
+### Gateway auth recovery
+
+Current `main` uses HTTP calls to `/v1/chat/completions` or `/v1/responses`.
+That means true device pairing still happens on the gateway/device-auth side, not directly over HTTP.
+
+What jean-ci does now:
+- keeps the existing HTTP integration intact
+- parses structured gateway auth recovery details when they are returned
+- surfaces actionable guidance for cases like:
+  - `AUTH_TOKEN_MISMATCH`
+  - `AUTH_DEVICE_TOKEN_MISMATCH`
+  - `PAIRING_REQUIRED`
+
+Recommended operational flow:
+1. Give jean-ci its own stable identity/token instead of a personal token
+2. Approve or rotate that device/token on the gateway when needed
+3. Keep `OPENCLAW_GATEWAY_TOKEN` pointed at the dedicated jean-ci credential
+
+Useful commands:
+- `openclaw devices list`
+- `openclaw devices approve <requestId>`
+- `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write`
 
 ## Using doubleagent for local GitHub testing
 
