@@ -2,85 +2,91 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyGatewayException } from '../lib/openclaw-gateway.ts';
 
-function extractTextFromOutput(output: any[]): string {
-  const textParts: string[] = [];
-
-  for (const item of output) {
-    if (item.type === 'message' && item.content) {
-      if (typeof item.content === 'string') {
-        textParts.push(item.content);
-      } else if (Array.isArray(item.content)) {
-        for (const part of item.content) {
-          if (part.type === 'output_text' || part.type === 'text') {
-            textParts.push(part.text || '');
-          }
-        }
-      }
-    }
-  }
-
-  return textParts.join('\n').trim();
-}
-
 async function callOpenClawResponsesViaWebSocketForTest(
   userMessage: string,
-  callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: { output?: any[] } } | { success: false; error: string }>,
+  callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: any } | { success: false; error: string }>,
 ): Promise<{ success: true; response: string } | { success: false; failure: ReturnType<typeof classifyGatewayException> }> {
+  const sessionKey = 'main:jean-ci-review';
+
   try {
-    const result = await callGatewayRpc('responses.create', {
-      model: 'openclaw',
-      input: [
-        { type: 'message', role: 'developer', content: 'system prompt' },
-        { type: 'message', role: 'user', content: userMessage },
-      ],
+    const createResult = await callGatewayRpc('sessions.create', {
+      key: sessionKey,
+      label: 'Jean CI Review',
     });
 
-    if (!result.success) {
+    if (!createResult.success) {
       return {
         success: false,
-        failure: classifyGatewayException(new Error(result.error)),
+        failure: classifyGatewayException(new Error(createResult.error)),
       };
     }
 
-    const textContent = extractTextFromOutput(result.result.output || []);
-    if (!textContent) {
+    const sendResult = await callGatewayRpc('sessions.send', {
+      key: sessionKey,
+      message: `system prompt\n\n${userMessage}`,
+      idempotencyKey: 'jean-ci-test',
+    });
+
+    if (!sendResult.success) {
       return {
         success: false,
-        failure: { errorType: 'unknown', retryable: false, error: 'No text response from agent' },
+        failure: classifyGatewayException(new Error(sendResult.error)),
       };
     }
 
-    return { success: true, response: textContent };
+    const transcriptResult = await callGatewayRpc('sessions.get', {
+      key: sessionKey,
+      limit: 20,
+    });
+
+    if (!transcriptResult.success) {
+      return {
+        success: false,
+        failure: classifyGatewayException(new Error(transcriptResult.error)),
+      };
+    }
+
+    const lastAssistant = transcriptResult.result?.messages?.findLast?.((message: any) => message?.role === 'assistant');
+    const responseText = typeof lastAssistant?.content === 'string' ? lastAssistant.content : null;
+    if (!responseText) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No assistant response found in session transcript' },
+      };
+    }
+
+    return { success: true, response: responseText };
   } catch (error) {
     return { success: false, failure: classifyGatewayException(error) };
   }
 }
 
-test('websocket LLM path sends responses.create and extracts text output', async () => {
+test('websocket LLM path uses only session RPC methods and returns transcript text', async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
 
   const result = await callOpenClawResponsesViaWebSocketForTest('Review this PR', async (method, params) => {
     calls.push({ method, params });
-    return {
-      success: true,
-      result: {
-        output: [
-          {
-            type: 'message',
-            content: [{ type: 'output_text', text: '**VERDICT: PASS**\n\nLooks good.' }],
-          },
-        ],
-      },
-    };
+    if (method === 'sessions.create') {
+      return { success: true, result: { key: 'main:jean-ci-review' } };
+    }
+    if (method === 'sessions.send') {
+      return { success: true, result: { runId: 'run-1', status: 'accepted', messageSeq: 1 } };
+    }
+    if (method === 'sessions.get') {
+      return { success: true, result: { messages: [{ role: 'assistant', content: 'Review complete' }] } };
+    }
+    throw new Error(`unexpected method: ${method}`);
   });
 
   assert.equal(result.success, true);
   if (result.success) {
-    assert.match(result.response, /VERDICT: PASS/);
+    assert.equal(result.response, 'Review complete');
   }
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.method, 'responses.create');
-  assert.equal((calls[0]?.params.input as Array<unknown>).length, 2);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'sessions.get']);
+  assert.deepEqual(calls[0]?.params, { key: 'main:jean-ci-review', label: 'Jean CI Review' });
+  assert.deepEqual(calls[1]?.params, { key: 'main:jean-ci-review', message: 'system prompt\n\nReview this PR', idempotencyKey: 'jean-ci-test' });
+  assert.deepEqual(calls[2]?.params, { key: 'main:jean-ci-review', limit: 20 });
 });
 
 test('websocket LLM path classifies RPC transport failures as gateway errors', async () => {

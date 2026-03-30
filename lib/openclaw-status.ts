@@ -28,7 +28,7 @@ export async function getGatewayDashboardStatus(deps: {
   now?: () => number;
 } = {}): Promise<GatewayDashboardStatus> {
   const usingWebSocket = (deps.isWebSocketEnabled || isWebSocketEnabled)();
-  const debugInfo = (deps.getDebugInfo || getOpenClawDeviceAuthDebugInfo)();
+  const debugInfo = await (deps.getDebugInfo || getOpenClawDeviceAuthDebugInfo)();
   const debug = {
     gatewayUrl: debugInfo.gatewayUrl,
     identityPath: debugInfo.identityPath,
