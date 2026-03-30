@@ -66,35 +66,66 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
 }
 
 /**
- * Chat send over WebSocket RPC.
- * Uses a real exported gateway RPC method instead of the non-existent responses.create method.
+ * Session-based WebSocket RPC flow.
+ * Uses only exported session methods: sessions.create -> sessions.send -> sessions.get.
  */
 async function callOpenClawResponsesViaWebSocket(
   userMessage: string,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
-  try {
-    const result = await __internal.callGatewayRpc<{ ok?: boolean }>('chat.send', {
-      text: `${SYSTEM_PROMPT}
+  const sessionKey = 'main:jean-ci-review';
 
-${userMessage}`,
+  try {
+    const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
+      key: sessionKey,
+      label: 'Jean CI Review',
     });
 
-    if (!result.success) {
-      const detailBlob = result.errorDetails ? JSON.stringify({ errorDetails: result.errorDetails }) : '';
+    if (!createResult.success) {
+      const detailBlob = createResult.errorDetails ? JSON.stringify({ errorDetails: createResult.errorDetails }) : '';
       return {
         success: false,
-        failure: classifyGatewayException(new Error(detailBlob ? `${result.error} ${detailBlob}` : result.error)),
+        failure: classifyGatewayException(new Error(detailBlob ? `${createResult.error} ${detailBlob}` : createResult.error)),
       };
     }
 
-    if (!result.result || (typeof result.result === 'object' && 'ok' in result.result && result.result.ok === false)) {
+    const sendResult = await __internal.callGatewayRpc<{ runId?: string; status?: string; messageSeq?: number }>('sessions.send', {
+      key: sessionKey,
+      message: `${SYSTEM_PROMPT}
+
+${userMessage}`,
+      idempotencyKey: `jean-ci-${Date.now()}`,
+    });
+
+    if (!sendResult.success) {
+      const detailBlob = sendResult.errorDetails ? JSON.stringify({ errorDetails: sendResult.errorDetails }) : '';
       return {
         success: false,
-        failure: { errorType: 'unknown', retryable: false, error: 'chat.send did not accept the message' },
+        failure: classifyGatewayException(new Error(detailBlob ? `${sendResult.error} ${detailBlob}` : sendResult.error)),
       };
     }
 
-    return { success: true, response: 'chat.send accepted the message.' };
+    const transcriptResult = await __internal.callGatewayRpc<{ messages?: Array<{ role?: string; content?: string | Array<{ text?: string }>; message?: { content?: Array<{ text?: string }> } }> }>('sessions.get', {
+      key: sessionKey,
+      limit: 20,
+    });
+
+    if (!transcriptResult.success) {
+      const detailBlob = transcriptResult.errorDetails ? JSON.stringify({ errorDetails: transcriptResult.errorDetails }) : '';
+      return {
+        success: false,
+        failure: classifyGatewayException(new Error(detailBlob ? `${transcriptResult.error} ${detailBlob}` : transcriptResult.error)),
+      };
+    }
+
+    const responseText = extractAssistantTextFromSessionMessages(transcriptResult.result?.messages || []);
+    if (!responseText) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'No assistant response found in session transcript' },
+      };
+    }
+
+    return { success: true, response: responseText };
   } catch (error) {
     return { success: false, failure: classifyGatewayException(error) };
   }
@@ -261,6 +292,40 @@ function enrichGatewayHttpFailure(status: number, responseBody: string): OpenCla
     ...failure,
     error: `${failure.error} ${guidance}`,
   };
+}
+
+function extractAssistantTextFromSessionMessages(
+  messages: Array<{ role?: string; content?: string | Array<{ text?: string }>; message?: { content?: Array<{ text?: string }> } }>,
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== 'assistant') continue;
+
+    if (typeof message.content === 'string' && message.content.trim()) {
+      return message.content.trim();
+    }
+
+    if (Array.isArray(message.content)) {
+      const text = message.content
+        .map((part) => part?.text)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .join('\n')
+        .trim();
+      if (text) return text;
+    }
+
+    const nested = message.message?.content;
+    if (Array.isArray(nested)) {
+      const text = nested
+        .map((part) => part?.text)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .join('\n')
+        .trim();
+      if (text) return text;
+    }
+  }
+
+  return null;
 }
 
 /**
