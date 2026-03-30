@@ -70,26 +70,45 @@ test('runGatewayPlaygroundProbe runs sessions.list probe', async () => {
   assert.deepEqual(result.result, { items: [{ id: 1 }] });
 });
 
-test('runGatewayPlaygroundProbe runs chat.send probe', async () => {
+test('runGatewayPlaygroundProbe runs chat session flow for chat.send probe', async () => {
+  const calls: Array<{ method: string; params: any; authOverrides: any }> = [];
+
   const result = await runGatewayPlaygroundProbe(
-    { mode: 'chat_send', prompt: 'Say OK' },
+    { mode: 'chat_send', prompt: 'Say OK', sessionKey: 'main:gateway-playground' },
     {
       callGatewayRpc: async (method, params, authOverrides) => {
-        assert.equal(method, 'chat.send');
-        assert.equal((params as any).text, 'Say OK');
-        assert.deepEqual(authOverrides, { role: 'operator', scopes: ['operator.write'] });
-        return { success: true as const, result: { ok: true } };
+        calls.push({ method, params, authOverrides });
+        if (method === 'sessions.create') {
+          return { success: true as const, result: { key: 'main:gateway-playground' } };
+        }
+        if (method === 'chat.send') {
+          return { success: true as const, result: { runId: 'run-1', status: 'accepted' } };
+        }
+        if (method === 'chat.history') {
+          return { success: true as const, result: { items: [{ role: 'assistant', content: 'OK' }] } };
+        }
+        throw new Error(`unexpected method: ${method}`);
       },
       now: (() => {
         let t = 100;
         return () => (t += 9);
       })(),
+      randomId: () => 'idem-1',
     },
   );
+
+  assert.equal(calls[0]?.method, 'sessions.create');
+  assert.deepEqual(calls[0]?.params, { key: 'main:gateway-playground', label: 'Gateway Playground' });
+  assert.equal(calls[1]?.method, 'chat.send');
+  assert.deepEqual(calls[1]?.params, { sessionKey: 'main:gateway-playground', message: 'Say OK', idempotencyKey: 'idem-1' });
+  assert.equal(calls[2]?.method, 'chat.history');
+  assert.deepEqual(calls[2]?.params, { sessionKey: 'main:gateway-playground', limit: 10 });
+  assert.deepEqual(calls[1]?.authOverrides, { role: 'operator', scopes: ['operator.write'] });
 
   assert.equal(result.ok, true);
   assert.equal(result.mode, 'chat_send');
   assert.equal(result.latencyMs, 9);
   assert.deepEqual(result.recommendedScopes, ['operator.write']);
-  assert.deepEqual(result.result, { ok: true });
+  assert.equal(result.sessionKey, 'main:gateway-playground');
+  assert.deepEqual(result.result, { items: [{ role: 'assistant', content: 'OK' }] });
 });
