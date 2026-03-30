@@ -359,8 +359,8 @@ If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL`
 
 ### Gateway auth recovery
 
-Current `main` uses HTTP calls to `/v1/chat/completions` or `/v1/responses`.
-That means true device pairing still happens on the gateway/device-auth side, not directly over HTTP.
+Current jean-ci uses HTTP calls to `/v1/chat/completions` or `/v1/responses`, and websocket RPC for exported gateway methods like `chat.send` / `sessions.list`.
+True device pairing still happens on the gateway/device-auth side.
 
 What jean-ci does now:
 - keeps the existing HTTP integration intact
@@ -434,7 +434,8 @@ Set the environment variable to use the full agent codepath:
 OPENCLAW_USE_RESPONSES=true
 ```
 
-This switches from `/v1/chat/completions` (LLM only) to `/v1/responses` (full agent with tools).
+This switches the HTTP path from `/v1/chat/completions` (LLM only) to `/v1/responses` (full agent with tools).
+It does not imply a websocket RPC method named `responses.create`.
 
 **Requires:** The Gateway must have responses endpoint enabled:
 ```json

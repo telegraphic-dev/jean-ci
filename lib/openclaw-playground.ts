@@ -133,10 +133,10 @@ export const GATEWAY_PLAYGROUND_OPERATIONS = {
     method: 'sessions.list',
     notes: 'Read-only session listing probe.',
   },
-  responses_create: {
-    label: 'responses.create',
-    method: 'responses.create',
-    notes: 'Gateway model invocation probe. This method is not yet in the exported OpenClaw method-scope table, so it falls back to operator.admin.',
+  chat_send: {
+    label: 'chat.send',
+    method: 'chat.send',
+    notes: 'Writable gateway chat probe using an actual exported RPC method.',
   },
 } as const;
 
@@ -271,14 +271,7 @@ export async function runGatewayPlaygroundProbe(
   const params = input.mode === 'sessions_list'
     ? { limit: 3 }
     : {
-        model: process.env.OPENCLAW_RESPONSES_MODEL || 'openclaw',
-        input: [
-          {
-            type: 'message',
-            role: 'user',
-            content: ((input.prompt || 'Reply with exactly OK.').trim() || 'Reply with exactly OK.'),
-          },
-        ],
+        text: ((input.prompt || 'Reply with exactly OK.').trim() || 'Reply with exactly OK.'),
       };
 
   const result = await gatewayRpc(operation.method, params, {

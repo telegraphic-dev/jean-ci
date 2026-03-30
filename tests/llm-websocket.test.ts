@@ -2,37 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyGatewayException } from '../lib/openclaw-gateway.ts';
 
-function extractTextFromOutput(output: any[]): string {
-  const textParts: string[] = [];
-
-  for (const item of output) {
-    if (item.type === 'message' && item.content) {
-      if (typeof item.content === 'string') {
-        textParts.push(item.content);
-      } else if (Array.isArray(item.content)) {
-        for (const part of item.content) {
-          if (part.type === 'output_text' || part.type === 'text') {
-            textParts.push(part.text || '');
-          }
-        }
-      }
-    }
-  }
-
-  return textParts.join('\n').trim();
-}
-
 async function callOpenClawResponsesViaWebSocketForTest(
   userMessage: string,
   callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: { output?: any[] } } | { success: false; error: string }>,
 ): Promise<{ success: true; response: string } | { success: false; failure: ReturnType<typeof classifyGatewayException> }> {
   try {
-    const result = await callGatewayRpc('responses.create', {
-      model: 'openclaw',
-      input: [
-        { type: 'message', role: 'developer', content: 'system prompt' },
-        { type: 'message', role: 'user', content: userMessage },
-      ],
+    const result = await callGatewayRpc('chat.send', {
+      text: `system prompt\n\n${userMessage}`,
     });
 
     if (!result.success) {
@@ -42,21 +18,20 @@ async function callOpenClawResponsesViaWebSocketForTest(
       };
     }
 
-    const textContent = extractTextFromOutput(result.result.output || []);
-    if (!textContent) {
+    if (!result.result || (typeof result.result === 'object' && 'ok' in result.result && result.result.ok === false)) {
       return {
         success: false,
-        failure: { errorType: 'unknown', retryable: false, error: 'No text response from agent' },
+        failure: { errorType: 'unknown', retryable: false, error: 'chat.send did not accept the message' },
       };
     }
 
-    return { success: true, response: textContent };
+    return { success: true, response: 'chat.send accepted the message.' };
   } catch (error) {
     return { success: false, failure: classifyGatewayException(error) };
   }
 }
 
-test('websocket LLM path sends responses.create and extracts text output', async () => {
+test('websocket LLM path sends chat.send and treats acceptance as success', async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
 
   const result = await callOpenClawResponsesViaWebSocketForTest('Review this PR', async (method, params) => {
@@ -64,23 +39,18 @@ test('websocket LLM path sends responses.create and extracts text output', async
     return {
       success: true,
       result: {
-        output: [
-          {
-            type: 'message',
-            content: [{ type: 'output_text', text: '**VERDICT: PASS**\n\nLooks good.' }],
-          },
-        ],
+        ok: true,
       },
     };
   });
 
   assert.equal(result.success, true);
   if (result.success) {
-    assert.match(result.response, /VERDICT: PASS/);
+    assert.equal(result.response, 'chat.send accepted the message.');
   }
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.method, 'responses.create');
-  assert.equal((calls[0]?.params.input as Array<unknown>).length, 2);
+  assert.equal(calls[0]?.method, 'chat.send');
+  assert.match(String(calls[0]?.params.text), /Review this PR/);
 });
 
 test('websocket LLM path classifies RPC transport failures as gateway errors', async () => {

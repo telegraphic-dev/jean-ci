@@ -25,9 +25,9 @@ test('resolveRequiredOperatorScopeForMethod follows direct and fallback mappings
     requiredScope: 'operator.admin',
     source: 'openclaw-admin-prefix-fallback',
   });
-  assert.deepEqual(resolveRequiredOperatorScopeForMethod('responses.create'), {
-    requiredScope: 'operator.admin',
-    source: 'openclaw-admin-prefix-fallback',
+  assert.deepEqual(resolveRequiredOperatorScopeForMethod('chat.send'), {
+    requiredScope: 'operator.write',
+    source: 'openclaw-method-scopes',
   });
 });
 
@@ -35,14 +35,14 @@ test('listGatewayPlaygroundOperations exposes recommended privileges', () => {
   const operations = listGatewayPlaygroundOperations();
   assert.equal(operations.length, 2);
   assert.deepEqual(operations.find((operation) => operation.mode === 'sessions_list')?.requiredScopes, ['operator.read']);
-  assert.deepEqual(operations.find((operation) => operation.mode === 'responses_create')?.requiredScopes, ['operator.admin']);
+  assert.deepEqual(operations.find((operation) => operation.mode === 'chat_send')?.requiredScopes, ['operator.write']);
 });
 
 test('resolveGatewayPlaygroundPrivileges falls back to operation defaults', () => {
-  const resolved = resolveGatewayPlaygroundPrivileges({ mode: 'responses_create' });
+  const resolved = resolveGatewayPlaygroundPrivileges({ mode: 'chat_send' });
   assert.equal(resolved.role, 'operator');
-  assert.deepEqual(resolved.scopes, ['operator.admin']);
-  assert.deepEqual(resolved.recommendedScopes, ['operator.admin']);
+  assert.deepEqual(resolved.scopes, ['operator.write']);
+  assert.deepEqual(resolved.recommendedScopes, ['operator.write']);
 });
 
 test('runGatewayPlaygroundProbe runs sessions.list probe', async () => {
@@ -70,16 +70,15 @@ test('runGatewayPlaygroundProbe runs sessions.list probe', async () => {
   assert.deepEqual(result.result, { items: [{ id: 1 }] });
 });
 
-test('runGatewayPlaygroundProbe runs responses.create probe', async () => {
+test('runGatewayPlaygroundProbe runs chat.send probe', async () => {
   const result = await runGatewayPlaygroundProbe(
-    { mode: 'responses_create', prompt: 'Say OK' },
+    { mode: 'chat_send', prompt: 'Say OK' },
     {
       callGatewayRpc: async (method, params, authOverrides) => {
-        assert.equal(method, 'responses.create');
-        assert.equal((params as any).model, process.env.OPENCLAW_RESPONSES_MODEL || 'openclaw');
-        assert.equal((params as any).input[0].content, 'Say OK');
-        assert.deepEqual(authOverrides, { role: 'operator', scopes: ['operator.admin'] });
-        return { success: true as const, result: { output_text: 'OK' } };
+        assert.equal(method, 'chat.send');
+        assert.equal((params as any).text, 'Say OK');
+        assert.deepEqual(authOverrides, { role: 'operator', scopes: ['operator.write'] });
+        return { success: true as const, result: { ok: true } };
       },
       now: (() => {
         let t = 100;
@@ -89,8 +88,8 @@ test('runGatewayPlaygroundProbe runs responses.create probe', async () => {
   );
 
   assert.equal(result.ok, true);
-  assert.equal(result.mode, 'responses_create');
+  assert.equal(result.mode, 'chat_send');
   assert.equal(result.latencyMs, 9);
-  assert.deepEqual(result.recommendedScopes, ['operator.admin']);
-  assert.deepEqual(result.result, { output_text: 'OK' });
+  assert.deepEqual(result.recommendedScopes, ['operator.write']);
+  assert.deepEqual(result.result, { ok: true });
 });

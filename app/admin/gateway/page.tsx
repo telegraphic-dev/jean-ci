@@ -7,7 +7,7 @@ type ChatMessage = {
   content: string;
 };
 
-type ProbeMode = 'sessions_list' | 'responses_create';
+type ProbeMode = 'sessions_list' | 'chat_send';
 
 type ProbeResult = {
   ok: boolean;
@@ -53,9 +53,9 @@ export default function GatewayPlaygroundPage() {
   const [result, setResult] = useState<ProbeResult | null>(null);
   const [operations, setOperations] = useState<PlaygroundOperation[]>([]);
   const [methodPrivileges, setMethodPrivileges] = useState<MethodPrivilege[]>([]);
-  const [selectedMode, setSelectedMode] = useState<ProbeMode>('responses_create');
+  const [selectedMode, setSelectedMode] = useState<ProbeMode>('chat_send');
   const [selectedRole, setSelectedRole] = useState('operator');
-  const [selectedScopes, setSelectedScopes] = useState<string[]>(['operator.admin']);
+  const [selectedScopes, setSelectedScopes] = useState<string[]>(['operator.write']);
 
   useEffect(() => {
     void loadOperations();
@@ -120,16 +120,16 @@ export default function GatewayPlaygroundPage() {
       const response = await fetch('/api/system-status/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'responses_create', prompt: message, role: selectedRole, scopes: selectedScopes }),
+        body: JSON.stringify({ mode: 'chat_send', prompt: message, role: selectedRole, scopes: selectedScopes }),
       });
       const payload = await response.json() as ProbeResult;
       setResult(payload);
 
-      const assistantText = extractAssistantText(payload.result) || payload.error || 'No assistant text returned.';
+      const assistantText = payload.ok ? 'chat.send accepted the message.' : payload.error || 'No response returned.';
       setChat([...nextChat, { role: 'assistant', content: assistantText }]);
     } catch (error) {
       const text = error instanceof Error ? error.message : 'Unknown error';
-      setResult({ ok: false, mode: 'responses_create', latencyMs: 0, error: text, selectedRole, selectedScopes, recommendedRole: selectedRole, recommendedScopes: selectedScopes });
+      setResult({ ok: false, mode: 'chat_send', latencyMs: 0, error: text, selectedRole, selectedScopes, recommendedRole: selectedRole, recommendedScopes: selectedScopes });
       setChat([...nextChat, { role: 'assistant', content: `Error: ${text}` }]);
     } finally {
       setChatLoading(false);
@@ -277,14 +277,14 @@ export default function GatewayPlaygroundPage() {
         <div className="flex items-center justify-between gap-4 mb-4">
           <h2 className="text-lg font-semibold">Simple chat</h2>
           <span className="text-sm text-[var(--text-secondary)]">
-            {chatLoading ? 'Waiting for reply…' : 'Uses responses.create with selected privileges'}
+            {chatLoading ? 'Waiting for reply…' : 'Uses chat.send with selected privileges'}
           </span>
         </div>
 
         <div className="space-y-3 rounded-lg bg-[var(--bg-secondary)] p-4 min-h-[320px] max-h-[480px] overflow-y-auto">
           {chat.length === 0 ? (
             <div className="text-sm text-[var(--text-secondary)]">
-              Send a short message to verify the currently selected role/scopes can actually execute <span className="font-mono">responses.create</span>.
+              Send a short message to verify the currently selected role/scopes can actually execute <span className="font-mono">chat.send</span>.
             </div>
           ) : chat.map((message, index) => (
             <div
@@ -324,27 +324,4 @@ export default function GatewayPlaygroundPage() {
       </div>
     </div>
   );
-}
-
-function extractAssistantText(result: unknown): string | null {
-  if (!result || typeof result !== 'object') return null;
-
-  const outputText = (result as { output_text?: unknown }).output_text;
-  if (typeof outputText === 'string' && outputText.trim()) {
-    return outputText.trim();
-  }
-
-  const output = (result as { output?: any[] }).output;
-  if (!Array.isArray(output)) return null;
-
-  for (const item of output) {
-    if (!item || typeof item !== 'object' || !Array.isArray(item.content)) continue;
-    for (const content of item.content) {
-      if (content?.type === 'output_text' && typeof content.text === 'string' && content.text.trim()) {
-        return content.text.trim();
-      }
-    }
-  }
-
-  return null;
 }

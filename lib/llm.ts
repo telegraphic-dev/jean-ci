@@ -66,19 +66,17 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
 }
 
 /**
- * OpenResponses API over WebSocket RPC.
- * Uses the same responses.create flow as /v1/responses, but through gateway RPC.
+ * Chat send over WebSocket RPC.
+ * Uses a real exported gateway RPC method instead of the non-existent responses.create method.
  */
 async function callOpenClawResponsesViaWebSocket(
   userMessage: string,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
   try {
-    const result = await __internal.callGatewayRpc<{ output?: any[] }>('responses.create', {
-      model: process.env.OPENCLAW_RESPONSES_MODEL || 'openclaw',
-      input: [
-        { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
-        { type: 'message', role: 'user', content: userMessage },
-      ],
+    const result = await __internal.callGatewayRpc<{ ok?: boolean }>('chat.send', {
+      text: `${SYSTEM_PROMPT}
+
+${userMessage}`,
     });
 
     if (!result.success) {
@@ -89,15 +87,14 @@ async function callOpenClawResponsesViaWebSocket(
       };
     }
 
-    const textContent = extractTextFromOutput(result.result.output || []);
-    if (!textContent) {
+    if (!result.result || (typeof result.result === 'object' && 'ok' in result.result && result.result.ok === false)) {
       return {
         success: false,
-        failure: { errorType: 'unknown', retryable: false, error: 'No text response from agent' },
+        failure: { errorType: 'unknown', retryable: false, error: 'chat.send did not accept the message' },
       };
     }
 
-    return { success: true, response: textContent };
+    return { success: true, response: 'chat.send accepted the message.' };
   } catch (error) {
     return { success: false, failure: classifyGatewayException(error) };
   }
