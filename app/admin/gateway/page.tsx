@@ -1,36 +1,93 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
 };
 
+type ProbeMode = 'sessions_list' | 'responses_create';
+
 type ProbeResult = {
   ok: boolean;
-  mode: 'sessions_list' | 'responses_create';
+  mode: ProbeMode;
   latencyMs: number;
   result?: unknown;
   error?: string;
   errorDetails?: Record<string, unknown>;
+  selectedRole: string;
+  selectedScopes: string[];
+  recommendedRole: string;
+  recommendedScopes: string[];
 };
+
+type PlaygroundOperation = {
+  mode: ProbeMode;
+  label: string;
+  method: string;
+  notes: string;
+  sources: string[];
+  defaultRole: string;
+  defaultScopes: string[];
+  requiredScopes: string[];
+};
+
+type MethodPrivilege = {
+  method: string;
+  requiredScope: string;
+  leastPrivilegeRole: 'operator';
+  leastPrivilegeScopes: string[];
+  source: 'openclaw-method-scopes' | 'openclaw-admin-prefix-fallback';
+};
+
+const AVAILABLE_SCOPES = ['operator.read', 'operator.write', 'operator.admin'] as const;
+const AVAILABLE_ROLES = ['operator'] as const;
 
 export default function GatewayPlaygroundPage() {
   const [prompt, setPrompt] = useState('Reply with exactly OK.');
   const [chatInput, setChatInput] = useState('Say hello and confirm websocket chat works.');
   const [chat, setChat] = useState<ChatMessage[]>([]);
-  const [loadingMode, setLoadingMode] = useState<ProbeResult['mode'] | null>(null);
+  const [loadingMode, setLoadingMode] = useState<ProbeMode | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [result, setResult] = useState<ProbeResult | null>(null);
+  const [operations, setOperations] = useState<PlaygroundOperation[]>([]);
+  const [methodPrivileges, setMethodPrivileges] = useState<MethodPrivilege[]>([]);
+  const [selectedMode, setSelectedMode] = useState<ProbeMode>('responses_create');
+  const [selectedRole, setSelectedRole] = useState('operator');
+  const [selectedScopes, setSelectedScopes] = useState<string[]>(['operator.admin']);
 
-  async function runProbe(mode: ProbeResult['mode']) {
+  useEffect(() => {
+    void loadOperations();
+  }, []);
+
+  const activeOperation = useMemo(
+    () => operations.find((operation) => operation.mode === selectedMode) ?? null,
+    [operations, selectedMode],
+  );
+
+  useEffect(() => {
+    if (!activeOperation) return;
+    setSelectedRole(activeOperation.defaultRole);
+    setSelectedScopes(activeOperation.defaultScopes);
+  }, [activeOperation]);
+
+  async function loadOperations() {
+    const response = await fetch('/api/system-status/probe');
+    const payload = await response.json();
+    const nextOperations = Array.isArray(payload.operations) ? payload.operations as PlaygroundOperation[] : [];
+    const nextMethods = Array.isArray(payload.methods) ? payload.methods as MethodPrivilege[] : [];
+    setOperations(nextOperations);
+    setMethodPrivileges(nextMethods);
+  }
+
+  async function runProbe(mode: ProbeMode) {
     setLoadingMode(mode);
     try {
       const response = await fetch('/api/system-status/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, prompt }),
+        body: JSON.stringify({ mode, prompt, role: selectedRole, scopes: selectedScopes }),
       });
       const payload = await response.json();
       setResult(payload);
@@ -40,6 +97,10 @@ export default function GatewayPlaygroundPage() {
         mode,
         latencyMs: 0,
         error: error instanceof Error ? error.message : 'Unknown error',
+        selectedRole,
+        selectedScopes,
+        recommendedRole: selectedRole,
+        recommendedScopes: selectedScopes,
       });
     } finally {
       setLoadingMode(null);
@@ -59,7 +120,7 @@ export default function GatewayPlaygroundPage() {
       const response = await fetch('/api/system-status/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'responses_create', prompt: message }),
+        body: JSON.stringify({ mode: 'responses_create', prompt: message, role: selectedRole, scopes: selectedScopes }),
       });
       const payload = await response.json() as ProbeResult;
       setResult(payload);
@@ -68,103 +129,111 @@ export default function GatewayPlaygroundPage() {
       setChat([...nextChat, { role: 'assistant', content: assistantText }]);
     } catch (error) {
       const text = error instanceof Error ? error.message : 'Unknown error';
-      setResult({ ok: false, mode: 'responses_create', latencyMs: 0, error: text });
+      setResult({ ok: false, mode: 'responses_create', latencyMs: 0, error: text, selectedRole, selectedScopes, recommendedRole: selectedRole, recommendedScopes: selectedScopes });
       setChat([...nextChat, { role: 'assistant', content: `Error: ${text}` }]);
     } finally {
       setChatLoading(false);
     }
   }
 
+  function toggleScope(scope: string) {
+    setSelectedScopes((current) => current.includes(scope) ? current.filter((value) => value !== scope) : [...current, scope]);
+  }
+
+  function applyRecommendedPrivileges() {
+    if (!activeOperation) return;
+    setSelectedRole(activeOperation.defaultRole);
+    setSelectedScopes(activeOperation.defaultScopes);
+  }
+
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Gateway Playground</h1>
         <p className="mt-2 text-[var(--text-secondary)]">
-          Test the OpenClaw websocket path directly from jean-ci. Start with <span className="font-mono">sessions.list</span>,
-          then run a tiny <span className="font-mono">responses.create</span> probe.
+          Pick a gateway operation, see the recommended privileges, then pair/test with exactly those privileges.
         </p>
       </div>
 
-      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-2">Probe prompt</label>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            rows={4}
-            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm"
-          />
-          <p className="mt-2 text-xs text-[var(--text-secondary)]">
-            Keep it tiny. The goal is transport/auth validation, not a full chat UI.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={() => runProbe('sessions_list')}
-            disabled={loadingMode !== null}
-            className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[var(--on-accent)] disabled:opacity-50"
-          >
-            {loadingMode === 'sessions_list' ? 'Running sessions.list…' : 'Run sessions.list'}
-          </button>
-          <button
-            onClick={() => runProbe('responses_create')}
-            disabled={loadingMode !== null}
-            className="rounded-lg border border-[var(--border)] px-4 py-2 disabled:opacity-50"
-          >
-            {loadingMode === 'responses_create' ? 'Running responses.create…' : 'Run responses.create'}
-          </button>
-        </div>
-      </div>
-
       <div className="grid gap-6 lg:grid-cols-[1.1fr,0.9fr]">
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6">
-          <div className="flex items-center justify-between gap-4 mb-4">
-            <h2 className="text-lg font-semibold">Simple chat</h2>
-            <span className="text-sm text-[var(--text-secondary)]">
-              {chatLoading ? 'Waiting for reply…' : 'Uses responses.create'}
-            </span>
-          </div>
-
-          <div className="space-y-3 rounded-lg bg-[var(--bg-secondary)] p-4 min-h-[320px] max-h-[480px] overflow-y-auto">
-            {chat.length === 0 ? (
-              <div className="text-sm text-[var(--text-secondary)]">
-                Send a short message to prove the websocket path can carry a real assistant reply.
-              </div>
-            ) : chat.map((message, index) => (
-              <div
-                key={index}
-                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap ${message.role === 'user' ? 'ml-auto bg-[var(--accent)] text-[var(--on-accent)]' : 'bg-[var(--bg-card)] border border-[var(--border)]'}`}
-              >
-                {message.content}
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-4 flex flex-col gap-3">
-            <textarea
-              value={chatInput}
-              onChange={(event) => setChatInput(event.target.value)}
-              rows={3}
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-2">Operation</label>
+            <select
+              value={selectedMode}
+              onChange={(event) => setSelectedMode(event.target.value as ProbeMode)}
               className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm"
-              placeholder="Ask something small like: say hello and mention the current transport"
-            />
-            <div className="flex gap-3">
-              <button
-                onClick={() => void sendChatMessage()}
-                disabled={chatLoading}
-                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[var(--on-accent)] disabled:opacity-50"
+            >
+              {operations.map((operation) => (
+                <option key={operation.mode} value={operation.mode}>{operation.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="rounded-lg bg-[var(--bg-secondary)] p-4 text-sm space-y-2">
+            <div><span className="font-medium">Method:</span> <span className="font-mono">{activeOperation?.method ?? '...'}</span></div>
+            <div><span className="font-medium">Recommended role:</span> <span className="font-mono">{activeOperation?.defaultRole ?? '...'}</span></div>
+            <div><span className="font-medium">Recommended scopes:</span> <span className="font-mono">{activeOperation?.defaultScopes.join(', ') || '...'}</span></div>
+            <div className="text-[var(--text-secondary)]">{activeOperation?.notes}</div>
+            {activeOperation?.sources?.length ? (
+              <ul className="list-disc pl-5 text-xs text-[var(--text-secondary)] space-y-1">
+                {activeOperation.sources.map((source) => <li key={source}>{source}</li>)}
+              </ul>
+            ) : null}
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium mb-2">Role</label>
+              <select
+                value={selectedRole}
+                onChange={(event) => setSelectedRole(event.target.value)}
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm"
               >
-                {chatLoading ? 'Sending…' : 'Send message'}
-              </button>
-              <button
-                onClick={() => setChat([])}
-                disabled={chatLoading || chat.length === 0}
-                className="rounded-lg border border-[var(--border)] px-4 py-2 disabled:opacity-50"
-              >
-                Clear chat
-              </button>
+                {AVAILABLE_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
+              </select>
             </div>
+            <div>
+              <label className="block text-sm font-medium mb-2">Scopes</label>
+              <div className="flex flex-wrap gap-2">
+                {AVAILABLE_SCOPES.map((scope) => (
+                  <button
+                    key={scope}
+                    type="button"
+                    onClick={() => toggleScope(scope)}
+                    className={`rounded-full border px-3 py-1 text-xs ${selectedScopes.includes(scope) ? 'bg-[var(--accent)] text-[var(--on-accent)] border-[var(--accent)]' : 'border-[var(--border)]'}`}
+                  >
+                    {scope}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={applyRecommendedPrivileges}
+              className="rounded-lg border border-[var(--border)] px-4 py-2 text-sm"
+            >
+              Use recommended privileges
+            </button>
+            <button
+              onClick={() => runProbe(selectedMode)}
+              disabled={loadingMode !== null}
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[var(--on-accent)] disabled:opacity-50"
+            >
+              {loadingMode === selectedMode ? `Running ${activeOperation?.label ?? 'probe'}…` : `Run ${activeOperation?.label ?? 'probe'}`}
+            </button>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Probe prompt</label>
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              rows={4}
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm"
+            />
           </div>
         </div>
 
@@ -179,6 +248,78 @@ export default function GatewayPlaygroundPage() {
           <pre className="overflow-x-auto rounded-lg bg-[var(--bg-secondary)] p-4 text-xs leading-6 text-[var(--text-primary)] min-h-[320px]">
             {JSON.stringify(result, null, 2) || 'Run a probe to see output.'}
           </pre>
+        </div>
+      </div>
+
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6">
+        <div className="flex items-center justify-between gap-4 mb-4">
+          <h2 className="text-lg font-semibold">Method → privilege map</h2>
+          <span className="text-sm text-[var(--text-secondary)]">{methodPrivileges.length} entries from OpenClaw scope rules</span>
+        </div>
+        <div className="rounded-lg bg-[var(--bg-secondary)] p-4 max-h-[320px] overflow-y-auto text-xs leading-6">
+          {methodPrivileges.length === 0 ? (
+            <div className="text-[var(--text-secondary)]">Loading…</div>
+          ) : (
+            <ul className="space-y-1">
+              {methodPrivileges.map((entry) => (
+                <li key={entry.method} className="flex flex-wrap gap-x-3">
+                  <span className="font-mono">{entry.method}</span>
+                  <span className="text-[var(--text-secondary)]">→ {entry.requiredScope}</span>
+                  <span className="text-[var(--text-secondary)]">({entry.source === 'openclaw-method-scopes' ? 'direct' : 'fallback'})</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6">
+        <div className="flex items-center justify-between gap-4 mb-4">
+          <h2 className="text-lg font-semibold">Simple chat</h2>
+          <span className="text-sm text-[var(--text-secondary)]">
+            {chatLoading ? 'Waiting for reply…' : 'Uses responses.create with selected privileges'}
+          </span>
+        </div>
+
+        <div className="space-y-3 rounded-lg bg-[var(--bg-secondary)] p-4 min-h-[320px] max-h-[480px] overflow-y-auto">
+          {chat.length === 0 ? (
+            <div className="text-sm text-[var(--text-secondary)]">
+              Send a short message to verify the currently selected role/scopes can actually execute <span className="font-mono">responses.create</span>.
+            </div>
+          ) : chat.map((message, index) => (
+            <div
+              key={index}
+              className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap ${message.role === 'user' ? 'ml-auto bg-[var(--accent)] text-[var(--on-accent)]' : 'bg-[var(--bg-card)] border border-[var(--border)]'}`}
+            >
+              {message.content}
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 flex flex-col gap-3">
+          <textarea
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            rows={3}
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm"
+            placeholder="Ask something small like: say hello and mention the current transport"
+          />
+          <div className="flex gap-3">
+            <button
+              onClick={() => void sendChatMessage()}
+              disabled={chatLoading}
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[var(--on-accent)] disabled:opacity-50"
+            >
+              {chatLoading ? 'Sending…' : 'Send message'}
+            </button>
+            <button
+              onClick={() => setChat([])}
+              disabled={chatLoading || chat.length === 0}
+              className="rounded-lg border border-[var(--border)] px-4 py-2 disabled:opacity-50"
+            >
+              Clear chat
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -109,6 +109,7 @@ export function getWebSocketUrl(): string | null {
 export async function callGatewayRpc<T>(
   method: string,
   params: Record<string, unknown> = {},
+  authOverrides: { role?: string; scopes?: string[] } = {},
 ): Promise<GatewayRpcResult<T>> {
   return connectAndCallGatewayRpc<T>(method, params, {
     createWebSocket: (url: string) => {
@@ -126,7 +127,7 @@ export async function callGatewayRpc<T>(
     connectTimeoutMs: CONNECT_TIMEOUT_MS,
     challengeTimeoutMs: CONNECT_CHALLENGE_TIMEOUT_MS,
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
-  });
+  }, authOverrides);
 }
 
 export async function deleteSession(
@@ -213,6 +214,7 @@ export async function connectAndCallGatewayRpc<T>(
   method: string,
   params: Record<string, unknown>,
   deps: RuntimeDeps,
+  authOverrides: { role?: string; scopes?: string[] } = {},
 ): Promise<GatewayRpcResult<T>> {
   const wsUrl = getWebSocketUrl();
   const sharedToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
@@ -221,12 +223,14 @@ export async function connectAndCallGatewayRpc<T>(
     return { success: false, error: 'WebSocket URL or token not configured' };
   }
 
+  const selectedRole = authOverrides.role?.trim() || ROLE;
+  const selectedScopes = [...new Set((authOverrides.scopes || [...SCOPES]).map((scope) => scope.trim()).filter(Boolean))];
   const identity = await deps.loadIdentity();
-  const storedToken = (await readStoredDeviceToken(identity.deviceId, ROLE, deps.readDeviceTokenStore))?.token;
+  const storedToken = (await readStoredDeviceToken(identity.deviceId, selectedRole, deps.readDeviceTokenStore))?.token;
 
   const firstPlan: ConnectPlan = {
-    role: ROLE,
-    scopes: [...SCOPES],
+    role: selectedRole,
+    scopes: selectedScopes.length > 0 ? selectedScopes : [...SCOPES],
     token: sharedToken,
     deviceToken: undefined,
     storedDeviceToken: storedToken,
