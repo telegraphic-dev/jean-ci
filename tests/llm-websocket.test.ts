@@ -34,9 +34,43 @@ async function callOpenClawResponsesViaWebSocketForTest(
       };
     }
 
+    const runId = typeof sendResult.result?.runId === 'string' ? sendResult.result.runId : null;
+    if (!runId) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'sessions.send did not return a runId' },
+      };
+    }
+
+    const waitResult = await callGatewayRpc('agent.wait', {
+      runId,
+      timeoutMs: 30_000,
+    });
+
+    if (!waitResult.success) {
+      return {
+        success: false,
+        failure: classifyGatewayException(new Error(waitResult.error)),
+      };
+    }
+
+    if (waitResult.result?.status === 'timeout') {
+      return {
+        success: false,
+        failure: { errorType: 'gateway', retryable: true, error: 'Timed out waiting for OpenClaw agent run to finish' },
+      };
+    }
+
+    if (waitResult.result?.status === 'error') {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: waitResult.result.error || 'OpenClaw agent run failed' },
+      };
+    }
+
     const transcriptResult = await callGatewayRpc('sessions.get', {
       key: sessionKey,
-      limit: 20,
+      limit: 50,
     });
 
     if (!transcriptResult.success) {
@@ -61,7 +95,7 @@ async function callOpenClawResponsesViaWebSocketForTest(
   }
 }
 
-test('websocket LLM path uses only session RPC methods and returns transcript text', async () => {
+test('websocket LLM path waits for the run and then returns transcript text', async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
 
   const result = await callOpenClawResponsesViaWebSocketForTest('Review this PR', async (method, params) => {
@@ -71,6 +105,9 @@ test('websocket LLM path uses only session RPC methods and returns transcript te
     }
     if (method === 'sessions.send') {
       return { success: true, result: { runId: 'run-1', status: 'accepted', messageSeq: 1 } };
+    }
+    if (method === 'agent.wait') {
+      return { success: true, result: { runId: 'run-1', status: 'ok' } };
     }
     if (method === 'sessions.get') {
       return { success: true, result: { messages: [{ role: 'assistant', content: 'Review complete' }] } };
@@ -82,11 +119,12 @@ test('websocket LLM path uses only session RPC methods and returns transcript te
   if (result.success) {
     assert.equal(result.response, 'Review complete');
   }
-  assert.equal(calls.length, 3);
-  assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'sessions.get']);
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.get']);
   assert.deepEqual(calls[0]?.params, { key: 'main:jean-ci-review', label: 'Jean CI Review' });
   assert.deepEqual(calls[1]?.params, { key: 'main:jean-ci-review', message: 'system prompt\n\nReview this PR', idempotencyKey: 'jean-ci-test' });
-  assert.deepEqual(calls[2]?.params, { key: 'main:jean-ci-review', limit: 20 });
+  assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: 30000 });
+  assert.deepEqual(calls[3]?.params, { key: 'main:jean-ci-review', limit: 50 });
 });
 
 test('websocket LLM path classifies RPC transport failures as gateway errors', async () => {
