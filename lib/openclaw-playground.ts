@@ -134,9 +134,9 @@ export const GATEWAY_PLAYGROUND_OPERATIONS = {
     notes: 'Read-only session listing probe.',
   },
   chat_send: {
-    label: 'chat.send',
-    method: 'chat.send',
-    notes: 'Writable gateway chat probe using an actual exported RPC method.',
+    label: 'sessions.send',
+    method: 'sessions.send',
+    notes: 'Writable session probe using only session RPC methods.',
   },
 } as const;
 
@@ -147,6 +147,7 @@ export type GatewayPlaygroundProbeRequest = {
   prompt?: string;
   role?: string;
   scopes?: string[];
+  sessionKey?: string;
 };
 
 export type GatewayPlaygroundProbeResponse = {
@@ -160,6 +161,7 @@ export type GatewayPlaygroundProbeResponse = {
   selectedScopes: string[];
   recommendedRole: string;
   recommendedScopes: string[];
+  sessionKey?: string;
 };
 
 export type GatewayPlaygroundOperationDescriptor = {
@@ -260,35 +262,104 @@ export async function runGatewayPlaygroundProbe(
   deps: {
     callGatewayRpc?: typeof callGatewayRpc;
     now?: () => number;
+    randomId?: () => string;
   } = {},
 ): Promise<GatewayPlaygroundProbeResponse> {
   const gatewayRpc = deps.callGatewayRpc || callGatewayRpc;
   const now = deps.now || Date.now;
+  const randomId = deps.randomId || (() => `gateway-playground-${Math.random().toString(36).slice(2, 10)}`);
   const startedAt = now();
   const operation = GATEWAY_PLAYGROUND_OPERATIONS[input.mode];
   const privileges = resolveGatewayPlaygroundPrivileges(input);
 
-  const params = input.mode === 'sessions_list'
-    ? { limit: 3 }
-    : {
-        text: ((input.prompt || 'Reply with exactly OK.').trim() || 'Reply with exactly OK.'),
-      };
+  if (input.mode === 'sessions_list') {
+    const result = await gatewayRpc(operation.method, { limit: 3 }, {
+      role: privileges.role,
+      scopes: privileges.scopes,
+    });
 
-  const result = await gatewayRpc(operation.method, params, {
+    return {
+      ok: result.success,
+      mode: input.mode,
+      latencyMs: Math.max(0, now() - startedAt),
+      selectedRole: privileges.role,
+      selectedScopes: privileges.scopes,
+      recommendedRole: privileges.recommendedRole,
+      recommendedScopes: privileges.recommendedScopes,
+      ...(result.success
+        ? { result: result.result }
+        : { error: result.error, errorDetails: result.errorDetails }),
+    };
+  }
+
+  const sessionKey = (input.sessionKey || '').trim() || 'main:gateway-playground';
+
+  const createResult = await gatewayRpc('sessions.create', {
+    key: sessionKey,
+    label: 'Gateway Playground',
+  }, {
+    role: privileges.role,
+    scopes: privileges.scopes,
+  });
+
+  if (!createResult.success) {
+    return {
+      ok: false,
+      mode: input.mode,
+      latencyMs: Math.max(0, now() - startedAt),
+      selectedRole: privileges.role,
+      selectedScopes: privileges.scopes,
+      recommendedRole: privileges.recommendedRole,
+      recommendedScopes: privileges.recommendedScopes,
+      sessionKey,
+      error: createResult.error,
+      errorDetails: createResult.errorDetails,
+    };
+  }
+
+  const sendResult = await gatewayRpc('sessions.send', {
+    key: sessionKey,
+    message: ((input.prompt || 'Reply with exactly OK.').trim() || 'Reply with exactly OK.'),
+    idempotencyKey: randomId(),
+  }, {
+    role: privileges.role,
+    scopes: privileges.scopes,
+  });
+
+  if (!sendResult.success) {
+    return {
+      ok: false,
+      mode: input.mode,
+      latencyMs: Math.max(0, now() - startedAt),
+      selectedRole: privileges.role,
+      selectedScopes: privileges.scopes,
+      recommendedRole: privileges.recommendedRole,
+      recommendedScopes: privileges.recommendedScopes,
+      sessionKey,
+      error: sendResult.error,
+      errorDetails: sendResult.errorDetails,
+    };
+  }
+
+  const transcriptResult = await gatewayRpc('sessions.get', {
+    key: sessionKey,
+    limit: 10,
+  }, {
     role: privileges.role,
     scopes: privileges.scopes,
   });
 
   return {
-    ok: result.success,
+    ok: transcriptResult.success,
     mode: input.mode,
     latencyMs: Math.max(0, now() - startedAt),
     selectedRole: privileges.role,
     selectedScopes: privileges.scopes,
     recommendedRole: privileges.recommendedRole,
     recommendedScopes: privileges.recommendedScopes,
-    ...(result.success
-      ? { result: result.result }
-      : { error: result.error, errorDetails: result.errorDetails }),
+    sessionKey,
+    ...(transcriptResult.success
+      ? { result: transcriptResult.result }
+      : { error: transcriptResult.error, errorDetails: transcriptResult.errorDetails }),
   };
 }
