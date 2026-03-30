@@ -104,9 +104,48 @@ ${userMessage}`,
       };
     }
 
+    const runId = typeof sendResult.result?.runId === 'string' ? sendResult.result.runId : null;
+    if (!runId) {
+      return {
+        success: false,
+        failure: { errorType: 'unknown', retryable: false, error: 'sessions.send did not return a runId' },
+      };
+    }
+
+    const waitResult = await __internal.callGatewayRpc<{ runId?: string; status?: string; error?: string }>('agent.wait', {
+      runId,
+      timeoutMs: 30_000,
+    });
+
+    if (!waitResult.success) {
+      const detailBlob = waitResult.errorDetails ? JSON.stringify({ errorDetails: waitResult.errorDetails }) : '';
+      return {
+        success: false,
+        failure: classifyGatewayException(new Error(detailBlob ? `${waitResult.error} ${detailBlob}` : waitResult.error)),
+      };
+    }
+
+    if (waitResult.result?.status === 'timeout') {
+      return {
+        success: false,
+        failure: { errorType: 'gateway', retryable: true, error: 'Timed out waiting for OpenClaw agent run to finish' },
+      };
+    }
+
+    if (waitResult.result?.status === 'error') {
+      return {
+        success: false,
+        failure: {
+          errorType: 'unknown',
+          retryable: false,
+          error: waitResult.result.error || 'OpenClaw agent run failed',
+        },
+      };
+    }
+
     const transcriptResult = await __internal.callGatewayRpc<{ messages?: Array<{ role?: string; content?: string | Array<{ text?: string }>; message?: { content?: Array<{ text?: string }> } }> }>('sessions.get', {
       key: sessionKey,
-      limit: 20,
+      limit: 50,
     });
 
     if (!transcriptResult.success) {
