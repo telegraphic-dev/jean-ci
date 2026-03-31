@@ -35,16 +35,37 @@ function buildReviewSessionKey(userMessage: string): string {
   return `main:jean-ci:${metadata.owner}:${metadata.repo}:${metadata.prNumber}:${metadata.promptName}`;
 }
 
+function buildReviewSessionLabel(sessionKey: string): string {
+  return `Jean CI Review · ${sessionKey}`.slice(0, 160);
+}
+
+function isOperatorAdminMissingScopeError(result: { error?: string; errorDetails?: unknown } | unknown): boolean {
+  const errorText = typeof (result as { error?: string } | undefined)?.error === 'string'
+    ? (result as { error?: string }).error
+    : '';
+  const detailsText = (() => {
+    try {
+      return JSON.stringify((result as { errorDetails?: unknown } | undefined)?.errorDetails ?? '');
+    } catch {
+      return '';
+    }
+  })();
+
+  const haystack = `${errorText} ${detailsText}`.toLowerCase();
+  return haystack.includes('missing scope') && haystack.includes('operator.admin');
+}
+
 async function callOpenClawResponsesViaWebSocketForTest(
   userMessage: string,
-  callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: any } | { success: false; error: string }>,
+  callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: any } | { success: false; error: string; errorDetails?: unknown }>,
+  logger: Pick<typeof console, 'warn'> = console,
 ): Promise<{ success: true; response: string } | { success: false; failure: ReturnType<typeof classifyGatewayException> }> {
   const sessionKey = buildReviewSessionKey(userMessage);
 
   try {
     const createResult = await callGatewayRpc('sessions.create', {
       key: sessionKey,
-      label: 'Jean CI Review',
+      label: buildReviewSessionLabel(sessionKey),
     });
 
     if (!createResult.success) {
@@ -127,9 +148,24 @@ async function callOpenClawResponsesViaWebSocketForTest(
     return { success: false, failure: classifyGatewayException(error) };
   } finally {
     try {
-      await callGatewayRpc('sessions.delete', {
+      const deleteResult = await callGatewayRpc('sessions.delete', {
         key: sessionKey,
       });
+
+      if (!deleteResult.success) {
+        if (isOperatorAdminMissingScopeError(deleteResult)) {
+          logger.warn('Skipped OpenClaw review session deletion because caller lacks operator.admin', {
+            sessionKey,
+            error: deleteResult.error,
+          });
+        } else {
+          logger.warn('Failed to delete OpenClaw review session', {
+            sessionKey,
+            error: deleteResult.error,
+            errorDetails: deleteResult.errorDetails,
+          });
+        }
+      }
     } catch {
       // cleanup is best-effort only
     }
@@ -166,7 +202,7 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
     assert.equal(result.response, 'Review complete');
   }
   assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.get', 'sessions.delete']);
-  assert.deepEqual(calls[0]?.params, { key: expectedKey, label: 'Jean CI Review' });
+  assert.deepEqual(calls[0]?.params, { key: expectedKey, label: `Jean CI Review · ${expectedKey}` });
   assert.deepEqual(calls[1]?.params, { key: expectedKey, message: `system prompt\n\n${userMessage}`, idempotencyKey: 'jean-ci-test' });
   assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: 30000 });
   assert.deepEqual(calls[3]?.params, { key: expectedKey, limit: 50 });
@@ -202,6 +238,46 @@ test('websocket LLM path still deletes the session when waiting fails', async ()
   }
   assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.delete']);
   assert.deepEqual(calls.at(-1)?.params, { key: expectedKey });
+});
+
+test('websocket LLM path tolerates missing operator.admin during best-effort delete', async () => {
+  const warnings: Array<{ message?: string; meta?: unknown }> = [];
+  const logger = {
+    warn(message: string, meta?: unknown) {
+      warnings.push({ message, meta });
+    },
+  };
+
+  const result = await callOpenClawResponsesViaWebSocketForTest(
+    'Repository: telegraphic-dev/jean-ci\nPR Number: 115\n\nReview this PR',
+    async (method) => {
+      if (method === 'sessions.create') {
+        return { success: true, result: { key: 'main:jean-ci:telegraphic-dev:jean-ci:115:review' } };
+      }
+      if (method === 'sessions.send') {
+        return { success: true, result: { runId: 'run-3', status: 'accepted', messageSeq: 1 } };
+      }
+      if (method === 'agent.wait') {
+        return { success: true, result: { runId: 'run-3', status: 'ok' } };
+      }
+      if (method === 'sessions.get') {
+        return { success: true, result: { messages: [{ role: 'assistant', content: 'Review complete' }] } };
+      }
+      if (method === 'sessions.delete') {
+        return {
+          success: false,
+          error: 'INVALID_REQUEST: missing scope: operator.admin',
+          errorDetails: { code: 'INVALID_REQUEST', requiredScope: 'operator.admin' },
+        };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    },
+    logger,
+  );
+
+  assert.equal(result.success, true);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0]?.message, 'Skipped OpenClaw review session deletion because caller lacks operator.admin');
 });
 
 test('websocket LLM path classifies RPC transport failures as gateway errors', async () => {
