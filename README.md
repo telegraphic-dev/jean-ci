@@ -559,3 +559,5 @@ Smoke test results appear as GitHub Checks on the deployed commit:
 - `jean-ci / smoke-test: e2e-login` ❌
 
 Click through to see detailed output and failure reasons
+
+<!-- verification: session label uniqueness + cleanup auth regression smoke test -->
