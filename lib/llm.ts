@@ -48,6 +48,26 @@ function buildReviewSessionKey(userMessage: string): string {
   return `main:jean-ci:${metadata.owner}:${metadata.repo}:${metadata.prNumber}:${metadata.promptName}`;
 }
 
+function buildReviewSessionLabel(sessionKey: string): string {
+  return `Jean CI Review · ${sessionKey}`.slice(0, 160);
+}
+
+function isOperatorAdminMissingScopeError(result: { error?: string; errorDetails?: unknown } | unknown): boolean {
+  const errorText = typeof (result as { error?: string } | undefined)?.error === 'string'
+    ? (result as { error?: string }).error
+    : '';
+  const detailsText = (() => {
+    try {
+      return JSON.stringify((result as { errorDetails?: unknown } | undefined)?.errorDetails ?? '');
+    } catch {
+      return '';
+    }
+  })();
+
+  const haystack = `${errorText} ${detailsText}`.toLowerCase();
+  return haystack.includes('missing scope') && haystack.includes('operator.admin');
+}
+
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
 const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
@@ -110,7 +130,7 @@ async function callOpenClawResponsesViaWebSocket(
   try {
     const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
       key: sessionKey,
-      label: 'Jean CI Review',
+      label: buildReviewSessionLabel(sessionKey),
     });
 
     if (!createResult.success) {
@@ -202,9 +222,24 @@ ${userMessage}`,
     return { success: false, failure: classifyGatewayException(error) };
   } finally {
     try {
-      await __internal.callGatewayRpc('sessions.delete', {
+      const deleteResult = await __internal.callGatewayRpc('sessions.delete', {
         key: sessionKey,
       });
+
+      if (!deleteResult.success) {
+        if (isOperatorAdminMissingScopeError(deleteResult)) {
+          console.warn('Skipped OpenClaw review session deletion because caller lacks operator.admin', {
+            sessionKey,
+            error: deleteResult.error,
+          });
+        } else {
+          console.warn('Failed to delete OpenClaw review session', {
+            sessionKey,
+            error: deleteResult.error,
+            errorDetails: deleteResult.errorDetails,
+          });
+        }
+      }
     } catch (cleanupError) {
       console.warn('Failed to delete OpenClaw review session', {
         sessionKey,
@@ -213,7 +248,6 @@ ${userMessage}`,
     }
   }
 }
-
 /**
  * OpenResponses API (/v1/responses)
  * Full agent codepath with tool access (browser, exec, etc.)
