@@ -15,6 +15,39 @@ export const __internal = {
   callGatewayRpc,
 };
 
+function normalizeSessionKeySegment(value: string | null | undefined, fallback: string): string {
+  const normalized = (value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+
+  return normalized || fallback;
+}
+
+function extractReviewContextMetadata(userMessage: string): {
+  owner: string;
+  repo: string;
+  prNumber: string;
+  promptName: string;
+} {
+  const ownerMatch = /(?:^|\n)Repository:\s*([^/\s]+)\/([^\s]+)/i.exec(userMessage);
+  const prMatch = /(?:^|\n)PR\s*(?:Number)?:\s*#?(\d+)/i.exec(userMessage);
+  const promptMatch = /(?:^|\n)Prompt\s*(?:File|Name)?:\s*(.+)$/im.exec(userMessage);
+
+  return {
+    owner: normalizeSessionKeySegment(ownerMatch?.[1], 'unknown-org'),
+    repo: normalizeSessionKeySegment(ownerMatch?.[2], 'unknown-repo'),
+    prNumber: normalizeSessionKeySegment(prMatch?.[1], 'unknown-pr'),
+    promptName: normalizeSessionKeySegment(promptMatch?.[1], 'review'),
+  };
+}
+
+function buildReviewSessionKey(userMessage: string): string {
+  const metadata = extractReviewContextMetadata(userMessage);
+  return `main:jean-ci:${metadata.owner}:${metadata.repo}:${metadata.prNumber}:${metadata.promptName}`;
+}
+
 // Use OpenResponses API for full agent capabilities (including browser tools)
 // Falls back to chat/completions if OPENCLAW_USE_RESPONSES is not set
 const USE_RESPONSES_API = process.env.OPENCLAW_USE_RESPONSES === 'true';
@@ -72,7 +105,7 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
 async function callOpenClawResponsesViaWebSocket(
   userMessage: string,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
-  const sessionKey = 'main:jean-ci-review';
+  const sessionKey = buildReviewSessionKey(userMessage);
 
   try {
     const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
@@ -167,6 +200,17 @@ ${userMessage}`,
     return { success: true, response: responseText };
   } catch (error) {
     return { success: false, failure: classifyGatewayException(error) };
+  } finally {
+    try {
+      await __internal.callGatewayRpc('sessions.delete', {
+        key: sessionKey,
+      });
+    } catch (cleanupError) {
+      console.warn('Failed to delete OpenClaw review session', {
+        sessionKey,
+        error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      });
+    }
   }
 }
 
