@@ -25,27 +25,15 @@ function normalizeSessionKeySegment(value: string | null | undefined, fallback: 
   return normalized || fallback;
 }
 
-function extractReviewContextMetadata(userMessage: string): {
-  owner: string;
-  repo: string;
-  prNumber: string;
-  promptName: string;
-} {
-  const ownerMatch = /(?:^|\n)Repository:\s*([^/\s]+)\/([^\s]+)/i.exec(userMessage);
-  const prMatch = /(?:^|\n)PR\s*(?:Number)?:\s*#?(\d+)/i.exec(userMessage);
-  const promptMatch = /(?:^|\n)Prompt\s*(?:File|Name)?:\s*(.+)$/im.exec(userMessage);
-
-  return {
-    owner: normalizeSessionKeySegment(ownerMatch?.[1], 'unknown-org'),
-    repo: normalizeSessionKeySegment(ownerMatch?.[2], 'unknown-repo'),
-    prNumber: normalizeSessionKeySegment(prMatch?.[1], 'unknown-pr'),
-    promptName: normalizeSessionKeySegment(promptMatch?.[1], 'review'),
-  };
+export interface ReviewSessionMetadata {
+  owner?: string;
+  repo?: string;
+  prNumber?: string | number;
+  promptName?: string;
 }
 
-function buildReviewSessionKey(userMessage: string): string {
-  const metadata = extractReviewContextMetadata(userMessage);
-  return `main:jean-ci:${metadata.owner}:${metadata.repo}:${metadata.prNumber}:${metadata.promptName}`;
+function buildReviewSessionKey(metadata: ReviewSessionMetadata = {}): string {
+  return `main:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}`;
 }
 
 function buildReviewSessionLabel(sessionKey: string): string {
@@ -77,7 +65,7 @@ type OpenClawResult =
   | { success: true; response: string; error?: undefined }
   | { success: false; error: string; errorType: 'gateway' | 'unknown'; response?: undefined };
 
-export async function callOpenClaw(userPrompt: string, context = ''): Promise<OpenClawResult> {
+export async function callOpenClaw(userPrompt: string, context = '', metadata: ReviewSessionMetadata = {}): Promise<OpenClawResult> {
   const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
   const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
   const maxAttempts = getMaxAttempts();
@@ -91,7 +79,7 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
   const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
   const execution = await runWithExponentialRetry(async (attempt) => {
     const result = __internal.isWebSocketEnabled()
-      ? await callOpenClawResponsesViaWebSocket(userMessage)
+      ? await callOpenClawResponsesViaWebSocket(userMessage, metadata)
       : USE_RESPONSES_API
         ? await callOpenClawResponses(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts)
         : await callOpenClawChat(userMessage, gatewayUrl, gatewayToken, attempt, maxAttempts);
@@ -124,8 +112,9 @@ export async function callOpenClaw(userPrompt: string, context = ''): Promise<Op
  */
 async function callOpenClawResponsesViaWebSocket(
   userMessage: string,
+  metadata: ReviewSessionMetadata = {},
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
-  const sessionKey = buildReviewSessionKey(userMessage);
+  const sessionKey = buildReviewSessionKey(metadata);
 
   try {
     const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
