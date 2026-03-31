@@ -38,7 +38,10 @@ function truncateDiff(diff: string, limit: number): string {
     `\n\n... [truncated: ${remainingKB}KB remaining, ${diff.split('\ndiff --git').length - truncated.substring(0, cutPoint).split('\ndiff --git').length} files not shown]`;
 }
 
-function buildReviewContext(prInfo: { title: string; body?: string | null }, diff: string): string {
+function buildReviewContext(
+  prInfo: { title: string; body?: string | null },
+  diff: string,
+): string {
   return [
     `# Pull Request: ${prInfo.title}`,
     '',
@@ -171,7 +174,12 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         }
       }
 
-      const result = await callOpenClaw(check.prompt, reviewContext);
+      const result = await callOpenClaw(check.prompt, reviewContext, {
+        owner,
+        repo,
+        prNumber,
+        promptName: check.isGlobal ? 'review' : check.name,
+      });
       if (!result.success) {
         const failure = buildExecutionFailureOutcome(result.errorType, result.error);
         await completeCheck(octokit, owner, repo, checkRun.id, dbId, {

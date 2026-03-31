@@ -12,27 +12,13 @@ function normalizeSessionKeySegment(value: string | null | undefined, fallback: 
   return normalized || fallback;
 }
 
-function extractReviewContextMetadata(userMessage: string): {
-  owner: string;
-  repo: string;
-  prNumber: string;
-  promptName: string;
-} {
-  const ownerMatch = /(?:^|\n)Repository:\s*([^/\s]+)\/([^\s]+)/i.exec(userMessage);
-  const prMatch = /(?:^|\n)PR\s*(?:Number)?:\s*#?(\d+)/i.exec(userMessage);
-  const promptMatch = /(?:^|\n)Prompt\s*(?:File|Name)?:\s*(.+)$/im.exec(userMessage);
-
-  return {
-    owner: normalizeSessionKeySegment(ownerMatch?.[1], 'unknown-org'),
-    repo: normalizeSessionKeySegment(ownerMatch?.[2], 'unknown-repo'),
-    prNumber: normalizeSessionKeySegment(prMatch?.[1], 'unknown-pr'),
-    promptName: normalizeSessionKeySegment(promptMatch?.[1], 'review'),
-  };
-}
-
-function buildReviewSessionKey(userMessage: string): string {
-  const metadata = extractReviewContextMetadata(userMessage);
-  return `main:jean-ci:${metadata.owner}:${metadata.repo}:${metadata.prNumber}:${metadata.promptName}`;
+function buildReviewSessionKey(metadata: {
+  owner?: string;
+  repo?: string;
+  prNumber?: string | number;
+  promptName?: string;
+} = {}): string {
+  return `main:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}`;
 }
 
 function buildReviewSessionLabel(sessionKey: string): string {
@@ -57,10 +43,11 @@ function isOperatorAdminMissingScopeError(result: { error?: string; errorDetails
 
 async function callOpenClawResponsesViaWebSocketForTest(
   userMessage: string,
+  metadata: { owner?: string; repo?: string; prNumber?: string | number; promptName?: string } | undefined,
   callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: any } | { success: false; error: string; errorDetails?: unknown }>,
   logger: Pick<typeof console, 'warn'> = console,
 ): Promise<{ success: true; response: string } | { success: false; failure: ReturnType<typeof classifyGatewayException> }> {
-  const sessionKey = buildReviewSessionKey(userMessage);
+  const sessionKey = buildReviewSessionKey(metadata);
 
   try {
     const createResult = await callGatewayRpc('sessions.create', {
@@ -174,10 +161,11 @@ async function callOpenClawResponsesViaWebSocketForTest(
 
 test('websocket LLM path waits for the run, returns transcript text, and deletes the session', async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-  const userMessage = 'Repository: telegraphic-dev/jean-ci\nPR Number: 113\nPrompt File: e2e review.md\n\nReview this PR';
+  const userMessage = 'Review this PR';
+  const metadata = { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 113, promptName: 'e2e review.md' };
   const expectedKey = 'main:jean-ci:telegraphic-dev:jean-ci:113:e2e-review-md';
 
-  const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, async (method, params) => {
+  const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, metadata, async (method, params) => {
     calls.push({ method, params });
     if (method === 'sessions.create') {
       return { success: true, result: { key: expectedKey } };
@@ -211,10 +199,11 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
 
 test('websocket LLM path still deletes the session when waiting fails', async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-  const userMessage = 'Repository: telegraphic-dev/jean-ci\nPR Number: 114\n\nReview this PR';
+  const userMessage = 'Review this PR';
+  const metadata = { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 114, promptName: 'review' };
   const expectedKey = 'main:jean-ci:telegraphic-dev:jean-ci:114:review';
 
-  const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, async (method, params) => {
+  const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, metadata, async (method, params) => {
     calls.push({ method, params });
     if (method === 'sessions.create') {
       return { success: true, result: { key: expectedKey } };
@@ -249,7 +238,8 @@ test('websocket LLM path tolerates missing operator.admin during best-effort del
   };
 
   const result = await callOpenClawResponsesViaWebSocketForTest(
-    'Repository: telegraphic-dev/jean-ci\nPR Number: 115\n\nReview this PR',
+    'Review this PR',
+    { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 115, promptName: 'review' },
     async (method) => {
       if (method === 'sessions.create') {
         return { success: true, result: { key: 'main:jean-ci:telegraphic-dev:jean-ci:115:review' } };
@@ -281,7 +271,7 @@ test('websocket LLM path tolerates missing operator.admin during best-effort del
 });
 
 test('websocket LLM path classifies RPC transport failures as gateway errors', async () => {
-  const result = await callOpenClawResponsesViaWebSocketForTest('Review this PR', async () => ({
+  const result = await callOpenClawResponsesViaWebSocketForTest('Review this PR', undefined, async () => ({
     success: false,
     error: 'Connection timeout after 10000ms',
   }));
