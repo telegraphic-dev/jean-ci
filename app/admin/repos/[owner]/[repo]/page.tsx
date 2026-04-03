@@ -198,8 +198,10 @@ function getStatusBadge(status: string, conclusion?: string | null) {
 }
 
 export default function RepoDetailPage() {
-  const params = useParams();
-  const fullName = `${params.owner}/${params.repo}`;
+  const params = useParams<{ owner: string; repo: string }>();
+  const owner = params.owner;
+  const repoName = params.repo;
+  const fullName = `${owner}/${repoName}`;
   const [repo, setRepo] = useState<Repo | null>(null);
   const [counts, setCounts] = useState<Counts>({ checks: 0, deployments: 0, events: 0 });
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
@@ -207,6 +209,9 @@ export default function RepoDetailPage() {
   const [events, setEvents] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [sessions, setSessions] = useState<FeatureSession[]>([]);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [creatingSession, setCreatingSession] = useState(false);
+  const [newSessionTitle, setNewSessionTitle] = useState('');
+  const [newSessionBranch, setNewSessionBranch] = useState('');
   const [tasks, setTasks] = useState<{ summary: TaskSummary[]; stats: TaskStats | null }>({ summary: [], stats: null });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('sessions');
@@ -346,53 +351,112 @@ export default function RepoDetailPage() {
 
       {/* Feature Sessions Tab */}
       {activeTab === 'sessions' && (
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          {sessionsError ? (
-            <div className="p-6 text-red-400">
-              {sessionsError}
-            </div>
-          ) : sessions.length === 0 ? (
-            <div className="p-6 text-[var(--text-muted)]">
-              No feature sessions tracked for this repository yet. This PR adds the repo-side storage and tree surface first.
-            </div>
-          ) : (
-            <div className="divide-y divide-[var(--border)]">
-              {sessions.map(session => (
-                <div key={session.session_key} className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                  <div>
-                    <div className="font-medium">{session.title}</div>
-                    <div className="mt-1 text-xs text-[var(--text-muted)] font-mono break-all">{session.session_key}</div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                      <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
-                      {session.branch_name && (
-                        <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)] font-mono">{session.branch_name}</span>
-                      )}
-                      {session.pr_number && (
-                        <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">PR #{session.pr_number}</span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-start md:items-end gap-2 text-sm">
-                    <div className="text-[var(--text-muted)]">
-                      {session.last_activity_at ? formatRelativeTime(session.last_activity_at) : 'no activity yet'}
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {session.session_url && (
-                        <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                          Open session
-                        </a>
-                      )}
-                      {session.pr_url && (
-                        <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                          Open PR
-                        </a>
-                      )}
-                    </div>
-                  </div>
+        <div className="space-y-4">
+          {repo?.feature_sessions_enabled && (
+            <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-4">
+              <div className="flex flex-col lg:flex-row gap-3 lg:items-end">
+                <div className="flex-1">
+                  <label className="block text-sm text-[var(--text-secondary)] mb-1">Session title</label>
+                  <input
+                    value={newSessionTitle}
+                    onChange={(e) => setNewSessionTitle(e.target.value)}
+                    placeholder="Implement repo-bound feature sessions"
+                    className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
+                  />
                 </div>
-              ))}
+                <div className="flex-1">
+                  <label className="block text-sm text-[var(--text-secondary)] mb-1">Suggested branch (optional)</label>
+                  <input
+                    value={newSessionBranch}
+                    onChange={(e) => setNewSessionBranch(e.target.value)}
+                    placeholder="feat/repo-feature-sessions"
+                    className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
+                  />
+                </div>
+                <button
+                  disabled={creatingSession || !newSessionTitle.trim()}
+                  onClick={async () => {
+                    setCreatingSession(true);
+                    setSessionsError(null);
+                    try {
+                      const response = await fetch(`/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/sessions/create`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ title: newSessionTitle, branchName: newSessionBranch }),
+                      });
+
+                      const contentType = response.headers.get('content-type') || '';
+                      const payload = contentType.includes('application/json')
+                        ? await response.json().catch(() => null)
+                        : null;
+
+                      if (!response.ok) {
+                        setSessionsError(payload?.error || 'Failed to create feature session.');
+                      } else {
+                        setNewSessionTitle('');
+                        setNewSessionBranch('');
+                        await fetchData(checks.page, pipelines.page, events.page);
+                      }
+                    } finally {
+                      setCreatingSession(false);
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                >
+                  {creatingSession ? 'Creating…' : 'Create Feature Session'}
+                </button>
+              </div>
             </div>
           )}
+
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+            {sessionsError ? (
+              <div className="p-6 text-red-400">
+                {sessionsError}
+              </div>
+            ) : sessions.length === 0 ? (
+              <div className="p-6 text-[var(--text-muted)]">
+                No feature sessions tracked for this repository yet.
+              </div>
+            ) : (
+              <div className="divide-y divide-[var(--border)]">
+                {sessions.map(session => (
+                  <div key={session.session_key} className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                      <div className="font-medium">{session.title}</div>
+                      <div className="mt-1 text-xs text-[var(--text-muted)] font-mono break-all">{session.session_key}</div>
+                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                        <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
+                        {session.branch_name && (
+                          <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)] font-mono">{session.branch_name}</span>
+                        )}
+                        {session.pr_number && (
+                          <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">PR #{session.pr_number}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-start md:items-end gap-2 text-sm">
+                      <div className="text-[var(--text-muted)]">
+                        {session.last_activity_at ? formatRelativeTime(session.last_activity_at) : 'no activity yet'}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {session.session_url && (
+                          <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+                            Open session
+                          </a>
+                        )}
+                        {session.pr_url && (
+                          <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+                            Open PR
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

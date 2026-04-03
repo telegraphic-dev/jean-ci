@@ -1,4 +1,17 @@
-import { callGatewayRpc } from './openclaw-ws.ts';
+import { randomUUID } from 'node:crypto';
+import { callGatewayRpc, deleteSession } from './openclaw-ws.ts';
+import { upsertRepoFeatureSession } from './db.ts';
+import { buildRepoSessionSeedPrompt } from './repo-feature-session-prompt.ts';
+
+export interface RepoFeatureSessionDeps {
+  callGatewayRpc: typeof callGatewayRpc;
+  upsertRepoFeatureSession: typeof upsertRepoFeatureSession;
+}
+
+const defaultRepoFeatureSessionDeps: RepoFeatureSessionDeps = {
+  callGatewayRpc,
+  upsertRepoFeatureSession,
+};
 
 export interface FeatureSessionSummary {
   key: string;
@@ -13,6 +26,12 @@ export interface FeatureSessionSummary {
 }
 
 type GatewaySessionLike = Record<string, unknown>;
+
+export interface CreateFeatureSessionInput {
+  repoFullName: string;
+  title: string;
+  branchName?: string | null;
+}
 
 export async function listGatewayFeatureSessions(limit = 200): Promise<FeatureSessionSummary[]> {
   const result = await callGatewayRpc<unknown>('sessions.list', { limit });
@@ -119,6 +138,115 @@ function getNestedValue(source: GatewaySessionLike, path: string[]): unknown {
     current = current[segment];
   }
   return current;
+}
+
+export async function createRepoFeatureSession(
+  input: CreateFeatureSessionInput,
+  deps: RepoFeatureSessionDeps = defaultRepoFeatureSessionDeps
+): Promise<FeatureSessionSummary> {
+  const repoFullName = input.repoFullName.trim();
+  const title = input.title.trim();
+  const branchName = input.branchName?.trim() || null;
+
+  if (!repoFullName || !repoFullName.includes('/')) {
+    throw new Error('repoFullName must be in owner/repo format');
+  }
+  if (!title) {
+    throw new Error('title is required');
+  }
+
+  const requestedSessionKey = buildFeatureSessionKey(repoFullName);
+  const label = `${repoFullName} · ${title}`;
+
+  const createResult = await deps.callGatewayRpc<{ key?: string; url?: string; deepLink?: string; sessionUrl?: string }>('sessions.create', {
+    key: requestedSessionKey,
+    label,
+  });
+  if (!createResult.success) {
+    throw new Error(createResult.error);
+  }
+
+  const sessionKey = resolveCreatedSessionKey(createResult.result, requestedSessionKey);
+  const sessionUrl = pickSessionUrl(createResult.result);
+
+  try {
+    const seedPrompt = [
+      buildRepoSessionSeedPrompt(repoFullName),
+      '',
+      `Session title: ${title}`,
+      branchName ? `Suggested branch: ${branchName}` : null,
+      `Session key: ${sessionKey}`,
+    ].filter(Boolean).join('\n');
+
+    const sendResult = await deps.callGatewayRpc('sessions.send', {
+      key: sessionKey,
+      message: seedPrompt,
+      idempotencyKey: `repo-feature-session-${randomUUID()}`,
+    });
+    if (!sendResult.success) {
+      throw new Error(sendResult.error);
+    }
+
+    const now = new Date();
+    await deps.upsertRepoFeatureSession({
+      session_key: sessionKey,
+      repo_full_name: repoFullName,
+      title,
+      branch_name: branchName,
+      status: 'active',
+      session_url: sessionUrl,
+      last_activity_at: now,
+    });
+
+    return {
+      key: sessionKey,
+      label,
+      repoFullName,
+      branchName,
+      status: 'active',
+      lastActivityAt: now.toISOString(),
+      sessionUrl,
+      prNumber: null,
+      prUrl: null,
+    };
+  } catch (error) {
+    await cleanupFailedFeatureSessionCreate(sessionKey, deps);
+    throw error;
+  }
+}
+
+async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoFeatureSessionDeps): Promise<void> {
+  const deleteResult = deps.callGatewayRpc === callGatewayRpc
+    ? await deleteSession(sessionKey, { deleteTranscript: true, emitLifecycleHooks: false })
+    : await deps.callGatewayRpc('sessions.delete', {
+        key: sessionKey,
+        deleteTranscript: true,
+        emitLifecycleHooks: false,
+      });
+
+  if (!deleteResult.success) {
+    console.warn('[repo-feature-sessions] Failed to clean up orphaned feature session after create failure', {
+      sessionKey,
+      error: deleteResult.error,
+      errorDetails: deleteResult.errorDetails,
+    });
+  }
+}
+
+function buildFeatureSessionKey(repoFullName: string): string {
+  const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return `main:jean-ci:${repoSlug}:feature:${randomUUID()}`;
+}
+
+function resolveCreatedSessionKey(payload: unknown, fallbackKey: string): string {
+  if (!isRecord(payload)) return fallbackKey;
+  const key = pickString(payload, ['key', 'sessionKey', 'id']);
+  return key || fallbackKey;
+}
+
+function pickSessionUrl(payload: unknown): string | null {
+  if (!isRecord(payload)) return null;
+  return pickNestedString(payload, [['url'], ['deepLink'], ['sessionUrl']]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

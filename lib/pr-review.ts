@@ -179,6 +179,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         repo,
         prNumber,
         promptName: check.isGlobal ? 'review' : check.name,
+        headSha,
       });
       if (!result.success) {
         const failure = buildExecutionFailureOutcome(result.errorType, result.error);
