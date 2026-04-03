@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRepoSessionSeedPrompt } from '../lib/repo-feature-sessions.ts';
+import { buildRepoSessionSeedPrompt } from '../lib/repo-feature-session-prompt.ts';
 
 test('buildRepoSessionSeedPrompt binds the session to a repository and PR backlink rules', () => {
   const prompt = buildRepoSessionSeedPrompt('telegraphic-dev/jean-ci');

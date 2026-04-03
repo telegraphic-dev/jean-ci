@@ -30,7 +30,16 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   
   const { owner, repo } = await params;
   const fullName = `${owner}/${repo}`;
-  const { pr_review_enabled, feature_sessions_enabled } = await req.json();
+  const body = await req.json();
+  const { pr_review_enabled, feature_sessions_enabled } = body ?? {};
+
+  if (pr_review_enabled !== undefined && typeof pr_review_enabled !== 'boolean') {
+    return NextResponse.json({ error: 'pr_review_enabled must be a boolean' }, { status: 400 });
+  }
+
+  if (feature_sessions_enabled !== undefined && typeof feature_sessions_enabled !== 'boolean') {
+    return NextResponse.json({ error: 'feature_sessions_enabled must be a boolean' }, { status: 400 });
+  }
   
   if (pr_review_enabled !== undefined) {
     await setRepoReviewEnabled(fullName, pr_review_enabled);

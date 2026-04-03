@@ -126,6 +126,13 @@ export function buildPublicOpenApiSpec() {
           responses: { '200': okResponse, '401': unauthorizedResponse },
         },
       },
+      [`/${PUBLIC_API_VERSION}/repos/{owner}/{repo}/sessions`]: {
+        get: {
+          summary: 'List tracked feature sessions for a repository',
+          parameters: [ownerParam, repoParam],
+          responses: { '200': okResponse, '401': unauthorizedResponse, '404': { description: 'Repository not found' } },
+        },
+      },
     },
   } as const;
 }

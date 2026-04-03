@@ -205,22 +205,32 @@ export default function RepoDetailPage() {
   const [activeTab, setActiveTab] = useState<Tab>('sessions');
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
 
+  const fetchJsonOrNull = async (url: string) => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    }
+  };
+
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
     const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
-      fetch(`/api/repos/${fullName}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/counts`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/checks?page=${checksPage}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/events?page=${eventsPage}`).then(r => r.json()),
-      fetch(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/sessions`).then(r => r.json()),
+      fetchJsonOrNull(`/api/repos/${fullName}`),
+      fetchJsonOrNull(`/api/repos/${fullName}/counts`),
+      fetchJsonOrNull(`/api/repos/${fullName}/checks?page=${checksPage}`),
+      fetchJsonOrNull(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
+      fetchJsonOrNull(`/api/repos/${fullName}/events?page=${eventsPage}`),
+      fetchJsonOrNull(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
+      fetchJsonOrNull(`/api/repos/${fullName}/sessions`),
     ]);
-    setRepo(repoData.error ? null : repoData);
-    setCounts(countsData.error ? { checks: 0, deployments: 0, events: 0 } : countsData);
-    setChecks(checksData.items ? checksData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setPipelines(pipelinesData.items ? pipelinesData : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
-    setEvents(eventsData.items ? eventsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setTasks({ summary: tasksData.summary || [], stats: tasksData.stats || null });
+    setRepo(repoData && !repoData.error ? repoData : null);
+    setCounts(countsData && !countsData.error ? countsData : { checks: 0, deployments: 0, events: 0 });
+    setChecks(checksData?.items ? checksData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setPipelines(pipelinesData?.items ? pipelinesData : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+    setEvents(eventsData?.items ? eventsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setTasks({ summary: tasksData?.summary || [], stats: tasksData?.stats || null });
     setSessions(Array.isArray(sessionsData) ? sessionsData : []);
     setLoading(false);
   }, [fullName]);
