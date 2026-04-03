@@ -12,6 +12,10 @@ interface CheckRun {
   status: string;
   conclusion?: string;
   title?: string;
+  manually_overridden?: boolean;
+  override_reason?: string;
+  overridden_by?: string;
+  overridden_at?: string;
   created_at: string;
   completed_at?: string;
 }
@@ -75,6 +79,7 @@ export default function ReviewsPage() {
   const [prs, setPRs] = useState<PaginatedResult<OpenPR>>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [reviews, setReviews] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [loading, setLoading] = useState(true);
+  const [overrideLoadingId, setOverrideLoadingId] = useState<number | null>(null);
 
   const fetchPRs = async (page: number) => {
     const result = await fetch(`/api/prs?page=${page}`).then(r => r.json());
@@ -89,6 +94,31 @@ export default function ReviewsPage() {
   useEffect(() => {
     Promise.all([fetchPRs(1), fetchReviews(1)]).then(() => setLoading(false));
   }, []);
+
+  const overrideToPass = async (check: CheckRun) => {
+    const reason = window.prompt(`Why are you overriding ${check.repo}#${check.pr_number} / ${check.check_name} to PASS?`);
+    if (!reason || !reason.trim()) return;
+
+    setOverrideLoadingId(check.id);
+    try {
+      const res = await fetch(`/api/checks/${check.id}/override`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Override failed');
+      }
+
+      await fetchReviews(reviews.page);
+    } catch (error: any) {
+      window.alert(error.message || 'Override failed');
+    } finally {
+      setOverrideLoadingId(null);
+    }
+  };
 
   const getCheckStatusIcon = (status: 'pending' | 'success' | 'failure') => {
     switch (status) {
@@ -208,12 +238,13 @@ export default function ReviewsPage() {
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
                 <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Details</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Actions</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {reviews.items.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No PR reviews yet.</td>
+                  <td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No PR reviews yet.</td>
                 </tr>
               ) : (
                 reviews.items.map(c => (
@@ -240,7 +271,12 @@ export default function ReviewsPage() {
                       {getStatusBadge(c.status, c.conclusion)}
                     </td>
                     <td className="py-3 px-4 text-[var(--text-secondary)] max-w-xs truncate">
-                      {c.title || '-'}
+                      <div>{c.title || '-'}</div>
+                      {c.manually_overridden && (
+                        <div className="mt-1 text-xs text-amber-600">
+                          Manually overridden by {c.overridden_by || 'admin'}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-4">
                       <Link href={`/checks/${c.id}`} className="text-[var(--accent)] hover:underline">
@@ -255,6 +291,21 @@ export default function ReviewsPage() {
                         >
                           (GitHub)
                         </a>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      {c.status === 'completed' && c.conclusion === 'failure' && !c.manually_overridden ? (
+                        <button
+                          onClick={() => overrideToPass(c)}
+                          disabled={overrideLoadingId === c.id}
+                          className="px-3 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {overrideLoadingId === c.id ? 'Overriding…' : 'Override to PASS'}
+                        </button>
+                      ) : c.manually_overridden ? (
+                        <span className="text-xs text-amber-600">Overridden</span>
+                      ) : (
+                        <span className="text-xs text-[var(--text-muted)]">—</span>
                       )}
                     </td>
                   </tr>

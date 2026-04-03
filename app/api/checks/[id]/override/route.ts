@@ -1,0 +1,91 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/auth';
+import { getCheckRun, getRepo, overrideCheckRunToPass } from '@/lib/db';
+import { createPRReview, getInstallationOctokit, updateCheck } from '@/lib/github';
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const auth = await requireAuth();
+  if (!auth.authorized) {
+    return NextResponse.json({ error: auth.error }, { status: 401 });
+  }
+
+  const { id } = await params;
+  const checkId = parseInt(id, 10);
+  if (!Number.isFinite(checkId)) {
+    return NextResponse.json({ error: 'Invalid check id' }, { status: 400 });
+  }
+
+  const body = await req.json().catch(() => ({}));
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (!reason) {
+    return NextResponse.json({ error: 'Reason is required' }, { status: 400 });
+  }
+
+  const checkRun = await getCheckRun(checkId);
+  if (!checkRun) {
+    return NextResponse.json({ error: 'Check run not found' }, { status: 404 });
+  }
+
+  if (checkRun.manually_overridden) {
+    return NextResponse.json({ error: 'Check run was already overridden' }, { status: 409 });
+  }
+
+  if (checkRun.status !== 'completed' || checkRun.conclusion !== 'failure') {
+    return NextResponse.json({ error: 'Only failed completed checks can be overridden' }, { status: 400 });
+  }
+
+  const repoConfig = await getRepo(checkRun.repo);
+  if (!repoConfig) {
+    return NextResponse.json({ error: 'Repository config not found' }, { status: 404 });
+  }
+
+  const [owner, repo] = checkRun.repo.split('/');
+  if (!owner || !repo) {
+    return NextResponse.json({ error: 'Invalid repository name' }, { status: 500 });
+  }
+
+  const actor = auth.user?.login || `github:${auth.user?.id || 'admin'}`;
+  const updated = await overrideCheckRunToPass(checkId, reason, actor);
+  if (!updated) {
+    return NextResponse.json({ error: 'Failed to update check run' }, { status: 500 });
+  }
+
+  try {
+    const octokit = await getInstallationOctokit(repoConfig.installation_id);
+
+    if (updated.github_check_id) {
+      await updateCheck(octokit, owner, repo, updated.github_check_id, {
+        status: 'completed',
+        conclusion: 'success',
+        completed_at: new Date().toISOString(),
+        output: {
+          title: '✅ Manually overridden to pass',
+          summary: `Manual override applied by ${actor}.\n\nReason: ${reason}`,
+        },
+      });
+    }
+
+    if (updated.check_name === 'Code Review') {
+      await createPRReview(
+        octokit,
+        owner,
+        repo,
+        updated.pr_number,
+        'APPROVE',
+        `## Manual override\n\nThis jean-ci review was manually overridden to pass by @${actor}.\n\nReason: ${reason}`,
+      );
+    }
+  } catch (error: any) {
+    console.error('Failed to sync manual override to GitHub:', error.message);
+    return NextResponse.json({
+      error: 'Override saved locally, but GitHub sync failed',
+      details: error.message,
+      checkRun: updated,
+    }, { status: 502 });
+  }
+
+  return NextResponse.json({ ok: true, checkRun: updated });
+}
