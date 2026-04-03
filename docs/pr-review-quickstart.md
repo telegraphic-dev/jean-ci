@@ -29,6 +29,8 @@ As soon as PR review is enabled for a repo, jean-ci always runs the built-in `je
 
 Files in `.jean-ci/pr-checks/*.md` are optional additive checks for repo-specific rules. They do not replace, hide, or disable the built-in review.
 
+If jean-ci reuses an existing evaluation session while running a prompt, it must clear/reset that session before evaluating the new prompt.
+
 ## 3. Add a starter prompt for an extra repo-specific check
 
 Create `.jean-ci/pr-checks/security.md` in the target repository:
