@@ -50,6 +50,8 @@ test('createRepoFeatureSession cleans up gateway session when seeding fails', as
     rpcCalls.map(call => call.method),
     ['sessions.create', 'sessions.send', 'sessions.delete']
   );
+  assert.equal((rpcCalls[1]?.payload as { key?: string })?.key, 'created-key');
+  assert.equal((rpcCalls[2]?.payload as { key?: string })?.key, 'created-key');
   assert.equal(upsertCalls, 0);
 });
 
@@ -72,8 +74,9 @@ test('createRepoFeatureSession cleans up gateway session when persistence fails'
 
       throw new Error(`unexpected rpc method: ${method}`);
     },
-    upsertRepoFeatureSession: async () => {
+    upsertRepoFeatureSession: async (record) => {
       upsertCalls += 1;
+      assert.equal(record.session_key, 'created-key');
       throw new Error('db failed');
     },
   };
@@ -91,5 +94,40 @@ test('createRepoFeatureSession cleans up gateway session when persistence fails'
     rpcCalls.map(call => call.method),
     ['sessions.create', 'sessions.send', 'sessions.delete']
   );
+  assert.equal((rpcCalls[1]?.payload as { key?: string })?.key, 'created-key');
+  assert.equal((rpcCalls[2]?.payload as { key?: string })?.key, 'created-key');
   assert.equal(upsertCalls, 1);
+});
+
+test('createRepoFeatureSession returns and persists the canonical key from sessions.create', async () => {
+  const rpcCalls: Array<{ method: string; payload: unknown }> = [];
+  let persistedSessionKey: string | null = null;
+  const deps: RepoFeatureSessionDeps = {
+    callGatewayRpc: async (method: string, payload?: unknown) => {
+      rpcCalls.push({ method, payload });
+
+      if (method === 'sessions.create') {
+        return { success: true, result: { key: 'created-key', url: 'https://example.test/session/1' } };
+      }
+      if (method === 'sessions.send') {
+        return { success: true, result: { ok: true } };
+      }
+
+      throw new Error(`unexpected rpc method: ${method}`);
+    },
+    upsertRepoFeatureSession: async (record) => {
+      persistedSessionKey = record.session_key;
+    },
+  };
+
+  const result = await createRepoFeatureSession({
+    repoFullName: 'telegraphic-dev/jean-ci',
+    title: 'New feature session',
+    branchName: 'feat/example',
+  }, deps);
+
+  assert.equal(result.key, 'created-key');
+  assert.equal(persistedSessionKey, 'created-key');
+  assert.equal((rpcCalls[1]?.payload as { key?: string })?.key, 'created-key');
+  assert.match(String((rpcCalls[1]?.payload as { message?: string })?.message ?? ''), /Session key: created-key/);
 });

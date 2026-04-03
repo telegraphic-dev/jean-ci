@@ -155,17 +155,18 @@ export async function createRepoFeatureSession(
     throw new Error('title is required');
   }
 
-  const sessionKey = buildFeatureSessionKey(repoFullName);
+  const requestedSessionKey = buildFeatureSessionKey(repoFullName);
   const label = `${repoFullName} · ${title}`;
 
   const createResult = await deps.callGatewayRpc<{ key?: string; url?: string; deepLink?: string; sessionUrl?: string }>('sessions.create', {
-    key: sessionKey,
+    key: requestedSessionKey,
     label,
   });
   if (!createResult.success) {
     throw new Error(createResult.error);
   }
 
+  const sessionKey = resolveCreatedSessionKey(createResult.result, requestedSessionKey);
   const sessionUrl = pickSessionUrl(createResult.result);
 
   try {
@@ -227,6 +228,12 @@ async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoF
 function buildFeatureSessionKey(repoFullName: string): string {
   const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
   return `main:jean-ci:${repoSlug}:feature:${randomUUID()}`;
+}
+
+function resolveCreatedSessionKey(payload: unknown, fallbackKey: string): string {
+  if (!isRecord(payload)) return fallbackKey;
+  const key = pickString(payload, ['key', 'sessionKey', 'id']);
+  return key || fallbackKey;
 }
 
 function pickSessionUrl(payload: unknown): string | null {
