@@ -1,5 +1,6 @@
 import { buildGatewayAuthGuidance, classifyGatewayException, type GatewayAuthRecoveryHint } from './openclaw-gateway.ts';
 import { callGatewayRpc, getOpenClawDeviceAuthDebugInfo, isWebSocketEnabled } from './openclaw-ws.ts';
+import { getGatewayTokenAdminState } from './openclaw-token-admin.ts';
 
 export type GatewayDashboardStatus = {
   status: 'connected' | 'pairing_required' | 'auth_error' | 'unreachable' | 'disabled';
@@ -19,16 +20,27 @@ export type GatewayDashboardStatus = {
     hasSharedToken: boolean;
     hasStoredDeviceToken: boolean;
   };
+  tokenAdmin: {
+    deviceId: string | null;
+    requestedRole: string;
+    requestedScopes: string[];
+    storedRole: string | null;
+    storedScopes: string[];
+    hasStoredToken: boolean;
+    storedTokenUpdatedAtMs: number | null;
+  };
 };
 
 export async function getGatewayDashboardStatus(deps: {
   isWebSocketEnabled?: () => boolean;
   callGatewayRpc?: typeof callGatewayRpc;
   getDebugInfo?: typeof getOpenClawDeviceAuthDebugInfo;
+  getTokenAdminState?: typeof getGatewayTokenAdminState;
   now?: () => number;
 } = {}): Promise<GatewayDashboardStatus> {
   const usingWebSocket = (deps.isWebSocketEnabled || isWebSocketEnabled)();
   const debugInfo = await (deps.getDebugInfo || getOpenClawDeviceAuthDebugInfo)();
+  const tokenAdmin = await (deps.getTokenAdminState || getGatewayTokenAdminState)();
   const debug = {
     gatewayUrl: debugInfo.gatewayUrl,
     identityPath: debugInfo.identityPath,
@@ -50,6 +62,7 @@ export async function getGatewayDashboardStatus(deps: {
       deviceId: debugInfo.deviceId ?? null,
       latencyMs: null,
       debug,
+      tokenAdmin,
     };
   }
 
@@ -69,6 +82,7 @@ export async function getGatewayDashboardStatus(deps: {
       deviceId: debugInfo.deviceId ?? null,
       latencyMs,
       debug,
+      tokenAdmin,
     };
   }
 
@@ -84,6 +98,7 @@ export async function getGatewayDashboardStatus(deps: {
       deviceId: hint.deviceId ?? debugInfo.deviceId ?? null,
       latencyMs,
       debug,
+      tokenAdmin,
     };
   }
 
@@ -98,6 +113,7 @@ export async function getGatewayDashboardStatus(deps: {
       deviceId: hint.deviceId ?? debugInfo.deviceId ?? null,
       latencyMs,
       debug,
+      tokenAdmin,
     };
   }
 
@@ -112,6 +128,7 @@ export async function getGatewayDashboardStatus(deps: {
     deviceId: debugInfo.deviceId ?? null,
     latencyMs,
     debug,
+    tokenAdmin,
   };
 }
 

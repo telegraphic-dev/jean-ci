@@ -29,11 +29,21 @@ interface GatewayStatus {
     hasSharedToken: boolean;
     hasStoredDeviceToken: boolean;
   };
+  tokenAdmin: {
+    deviceId: string | null;
+    requestedRole: string;
+    requestedScopes: string[];
+    storedRole: string | null;
+    storedScopes: string[];
+    hasStoredToken: boolean;
+    storedTokenUpdatedAtMs: number | null;
+  };
 }
 
 export default function AdminOverview() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [gateway, setGateway] = useState<GatewayStatus | null>(null);
+  const [tokenActionBusy, setTokenActionBusy] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -52,6 +62,22 @@ export default function AdminOverview() {
       setGateway(systemStatus.gateway || null);
     });
   }, []);
+
+  async function revokeStoredGatewayToken() {
+    setTokenActionBusy(true);
+    try {
+      const response = await fetch('/api/system-status/token', { method: 'DELETE' });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to revoke stored token');
+      }
+      setGateway((current) => current ? { ...current, tokenAdmin: payload.tokenAdmin, debug: { ...current.debug, hasStoredDeviceToken: payload.tokenAdmin.hasStoredToken, tokenStoreExists: payload.tokenAdmin.hasStoredToken || current.debug.tokenStoreExists } } : current);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Failed to revoke stored token');
+    } finally {
+      setTokenActionBusy(false);
+    }
+  }
 
   return (
     <div>
@@ -150,6 +176,33 @@ export default function AdminOverview() {
             <div className="flex items-center justify-between">
               <span className="text-[var(--text-secondary)]">Probe latency</span>
               <span className="font-mono text-sm">{gateway?.latencyMs != null ? `${gateway.latencyMs} ms` : '—'}</span>
+            </div>
+            <div className="rounded-lg border border-[var(--border)] p-3 space-y-3">
+              <div>
+                <div className="text-sm font-medium">Gateway token</div>
+                <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                  Requested scopes: <span className="font-mono text-[var(--text-primary)]">{gateway?.tokenAdmin.requestedScopes.join(', ') || '—'}</span>
+                </div>
+                <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                  Stored scopes: <span className="font-mono text-[var(--text-primary)]">{gateway?.tokenAdmin.storedScopes.join(', ') || 'none stored yet'}</span>
+                </div>
+                <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                  To request a fresh higher-privilege token, revoke the cached device token here and then trigger a new gateway action. The next successful auth handshake will ask the gateway for <span className="font-mono text-[var(--text-primary)]">operator.read, operator.write, operator.admin</span>.
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => void revokeStoredGatewayToken()}
+                  disabled={tokenActionBusy || !gateway?.tokenAdmin.hasStoredToken}
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  {tokenActionBusy ? 'Revoking…' : 'Revoke stored token'}
+                </button>
+                <Link href="/admin/gateway" className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm">
+                  Open gateway playground
+                </Link>
+              </div>
             </div>
             <details className="rounded-lg border border-[var(--border)] p-3">
               <summary className="cursor-pointer select-none text-sm font-medium">Gateway debug</summary>
