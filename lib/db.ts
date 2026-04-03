@@ -776,64 +776,6 @@ export async function overrideCheckRunToPass(id: number, reason: string, overrid
   return result.rows[0] || null;
 }
 
-export async function overrideCheckRunToPassTransaction<T>(
-  id: number,
-  reason: string,
-  overriddenBy: string,
-  work: (checkRun: CheckRun) => Promise<T>
-): Promise<{ checkRun: CheckRun; result: T }> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    const selectResult = await client.query(
-      `SELECT * FROM jean_ci_check_runs WHERE id = $1 FOR UPDATE`,
-      [id]
-    );
-    const checkRun = selectResult.rows[0] as CheckRun | undefined;
-
-    if (!checkRun) {
-      throw new Error('Check run not found');
-    }
-    if (checkRun.manually_overridden) {
-      throw new Error('Check run was already overridden');
-    }
-    if (checkRun.status !== 'completed' || checkRun.conclusion !== 'failure') {
-      throw new Error('Only failed completed checks can be overridden');
-    }
-
-    const result = await work(checkRun);
-
-    const updateResult = await client.query(
-      `UPDATE jean_ci_check_runs
-       SET status = 'completed',
-           conclusion = 'success',
-           title = '✅ Manually overridden to pass',
-           summary = CONCAT(
-             COALESCE(summary, ''),
-             CASE WHEN COALESCE(summary, '') = '' THEN '' ELSE E'\n\n---\n\n' END,
-             'Manual override applied by ', $3, '.\n\nReason: ', $2
-           ),
-           manually_overridden = TRUE,
-           override_reason = $2,
-           overridden_by = $3,
-           overridden_at = CURRENT_TIMESTAMP,
-           completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
-       WHERE id = $1
-       RETURNING *`,
-      [id, reason.trim(), overriddenBy]
-    );
-
-    await client.query('COMMIT');
-    return { checkRun: updateResult.rows[0], result };
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 export interface PublicCheckRun {
   id: number;
   github_check_id?: number;
