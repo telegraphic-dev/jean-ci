@@ -225,24 +225,36 @@ export default function RepoDetailPage() {
   };
 
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
-    const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
-      fetchJson<Repo>(`/api/repos/${fullName}`),
-      fetchJson<Counts>(`/api/repos/${fullName}/counts`),
-      fetchJson<PaginatedResult<CheckRun>>(`/api/repos/${fullName}/checks?page=${checksPage}`),
-      fetchJson<PaginatedResult<Pipeline>>(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
-      fetchJson<PaginatedResult<WebhookEvent>>(`/api/repos/${fullName}/events?page=${eventsPage}`),
-      fetchJson<{ summary: TaskSummary[]; stats: TaskStats | null }>(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
-      fetchJson<FeatureSession[]>(`/api/repos/${fullName}/sessions`),
-    ]);
-    setRepo(repoData.ok && repoData.data ? repoData.data : null);
-    setCounts(countsData.ok && countsData.data ? countsData.data : { checks: 0, deployments: 0, events: 0 });
-    setChecks(checksData.ok && checksData.data?.items ? checksData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setPipelines(pipelinesData.ok && pipelinesData.data?.items ? pipelinesData.data : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
-    setEvents(eventsData.ok && eventsData.data?.items ? eventsData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setTasks({ summary: tasksData.ok && tasksData.data?.summary ? tasksData.data.summary : [], stats: tasksData.ok ? (tasksData.data?.stats || null) : null });
-    setSessions(sessionsData.ok && Array.isArray(sessionsData.data) ? sessionsData.data : []);
-    setSessionsError(sessionsData.ok ? null : 'Failed to load feature sessions.');
-    setLoading(false);
+    try {
+      const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
+        fetchJson<Repo>(`/api/repos/${fullName}`),
+        fetchJson<Counts>(`/api/repos/${fullName}/counts`),
+        fetchJson<PaginatedResult<CheckRun>>(`/api/repos/${fullName}/checks?page=${checksPage}`),
+        fetchJson<PaginatedResult<Pipeline>>(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
+        fetchJson<PaginatedResult<WebhookEvent>>(`/api/repos/${fullName}/events?page=${eventsPage}`),
+        fetchJson<{ summary: TaskSummary[]; stats: TaskStats | null }>(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
+        fetchJson<FeatureSession[]>(`/api/repos/${fullName}/sessions`),
+      ]);
+      setRepo(repoData.ok && repoData.data ? repoData.data : null);
+      setCounts(countsData.ok && countsData.data ? countsData.data : { checks: 0, deployments: 0, events: 0 });
+      setChecks(checksData.ok && checksData.data?.items ? checksData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setPipelines(pipelinesData.ok && pipelinesData.data?.items ? pipelinesData.data : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+      setEvents(eventsData.ok && eventsData.data?.items ? eventsData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setTasks({ summary: tasksData.ok && tasksData.data?.summary ? tasksData.data.summary : [], stats: tasksData.ok ? (tasksData.data?.stats || null) : null });
+      setSessions(sessionsData.ok && Array.isArray(sessionsData.data) ? sessionsData.data : []);
+      setSessionsError(sessionsData.ok ? null : 'Failed to load feature sessions.');
+    } catch {
+      setRepo(null);
+      setCounts({ checks: 0, deployments: 0, events: 0 });
+      setChecks({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setPipelines({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+      setEvents({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setTasks({ summary: [], stats: null });
+      setSessions([]);
+      setSessionsError('Failed to load repository data.');
+    } finally {
+      setLoading(false);
+    }
   }, [fullName]);
 
   useEffect(() => {

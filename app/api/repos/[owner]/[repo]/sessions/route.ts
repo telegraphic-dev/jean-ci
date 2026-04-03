@@ -18,6 +18,10 @@ export async function GET(_req: Request, { params }: Params) {
     return NextResponse.json({ error: 'Repository not found' }, { status: 404 });
   }
 
+  if (!repoData.feature_sessions_enabled) {
+    return NextResponse.json({ error: 'Feature sessions are not enabled for this repository' }, { status: 404 });
+  }
+
   const sessions = await getRepoFeatureSessions(fullName);
   return NextResponse.json(sessions);
 }
