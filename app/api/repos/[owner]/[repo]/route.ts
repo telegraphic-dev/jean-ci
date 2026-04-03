@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getRepo, setRepoReviewEnabled } from '@/lib/db';
+import { getRepo, setRepoFeatureSessionsEnabled, setRepoReviewEnabled } from '@/lib/db';
 
 type Params = { params: Promise<{ owner: string; repo: string }> };
 
@@ -30,10 +30,14 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   
   const { owner, repo } = await params;
   const fullName = `${owner}/${repo}`;
-  const { pr_review_enabled } = await req.json();
+  const { pr_review_enabled, feature_sessions_enabled } = await req.json();
   
   if (pr_review_enabled !== undefined) {
     await setRepoReviewEnabled(fullName, pr_review_enabled);
+  }
+
+  if (feature_sessions_enabled !== undefined) {
+    await setRepoFeatureSessionsEnabled(fullName, feature_sessions_enabled);
   }
   
   return NextResponse.json({ success: true });

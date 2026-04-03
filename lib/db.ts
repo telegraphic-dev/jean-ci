@@ -78,9 +78,35 @@ export async function initDatabase() {
         full_name TEXT UNIQUE NOT NULL,
         installation_id INTEGER NOT NULL,
         pr_review_enabled BOOLEAN DEFAULT FALSE,
+        feature_sessions_enabled BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_repos' AND column_name='feature_sessions_enabled') THEN
+          ALTER TABLE jean_ci_repos ADD COLUMN feature_sessions_enabled BOOLEAN DEFAULT FALSE;
+        END IF;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS jean_ci_repo_feature_sessions (
+        id SERIAL PRIMARY KEY,
+        session_key TEXT UNIQUE NOT NULL,
+        repo_full_name TEXT NOT NULL REFERENCES jean_ci_repos(full_name) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        branch_name TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        session_url TEXT,
+        pr_number INTEGER,
+        pr_url TEXT,
+        last_activity_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_repo_feature_sessions_repo ON jean_ci_repo_feature_sessions(repo_full_name);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_repo_feature_sessions_status ON jean_ci_repo_feature_sessions(status);
 
       CREATE TABLE IF NOT EXISTS jean_ci_webhook_events (
         id SERIAL PRIMARY KEY,
@@ -293,6 +319,7 @@ export interface Repo {
   full_name: string;
   installation_id: number;
   pr_review_enabled: boolean;
+  feature_sessions_enabled: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -315,6 +342,13 @@ export async function upsertRepo(fullName: string, installationId: number, prRev
 export async function setRepoReviewEnabled(fullName: string, enabled: boolean) {
   await pool.query(`
     UPDATE jean_ci_repos SET pr_review_enabled = $1, updated_at = CURRENT_TIMESTAMP 
+    WHERE full_name = $2
+  `, [enabled, fullName]);
+}
+
+export async function setRepoFeatureSessionsEnabled(fullName: string, enabled: boolean) {
+  await pool.query(`
+    UPDATE jean_ci_repos SET feature_sessions_enabled = $1, updated_at = CURRENT_TIMESTAMP
     WHERE full_name = $2
   `, [enabled, fullName]);
 }
@@ -1133,12 +1167,14 @@ export async function getDeploymentPipelinesByRepo(repo: string, page = 1, limit
 
 export interface RepoWithActivity extends Repo {
   last_activity?: string;
+  active_feature_sessions: number;
 }
 
 export async function getReposWithActivity(): Promise<RepoWithActivity[]> {
   const result = await pool.query(`
     SELECT r.*, 
-      (SELECT MAX(e.created_at) FROM jean_ci_webhook_events e WHERE e.repo = r.full_name) as last_activity
+      (SELECT MAX(e.created_at) FROM jean_ci_webhook_events e WHERE e.repo = r.full_name) as last_activity,
+      (SELECT COUNT(*)::int FROM jean_ci_repo_feature_sessions s WHERE s.repo_full_name = r.full_name AND s.status NOT IN ('done', 'archived')) as active_feature_sessions
     FROM jean_ci_repos r
     ORDER BY r.full_name
   `);
@@ -1235,6 +1271,81 @@ export function buildCoolifyDeploymentUrl(appUuid: string, deploymentUuid: strin
 export async function getReposWithPRReviewEnabled(): Promise<{ full_name: string; installation_id: number }[]> {
   const result = await pool.query(
     `SELECT full_name, installation_id FROM jean_ci_repos WHERE pr_review_enabled = TRUE ORDER BY full_name`
+  );
+  return result.rows;
+}
+
+export interface RepoFeatureSession {
+  id: number;
+  session_key: string;
+  repo_full_name: string;
+  title: string;
+  branch_name?: string | null;
+  status: string;
+  session_url?: string | null;
+  pr_number?: number | null;
+  pr_url?: string | null;
+  last_activity_at?: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export async function upsertRepoFeatureSession(data: {
+  session_key: string;
+  repo_full_name: string;
+  title: string;
+  branch_name?: string | null;
+  status?: string;
+  session_url?: string | null;
+  pr_number?: number | null;
+  pr_url?: string | null;
+  last_activity_at?: Date | string | null;
+}): Promise<RepoFeatureSession> {
+  const result = await pool.query(
+    `INSERT INTO jean_ci_repo_feature_sessions
+      (session_key, repo_full_name, title, branch_name, status, session_url, pr_number, pr_url, last_activity_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+     ON CONFLICT (session_key) DO UPDATE SET
+       repo_full_name = EXCLUDED.repo_full_name,
+       title = EXCLUDED.title,
+       branch_name = EXCLUDED.branch_name,
+       status = EXCLUDED.status,
+       session_url = EXCLUDED.session_url,
+       pr_number = EXCLUDED.pr_number,
+       pr_url = EXCLUDED.pr_url,
+       last_activity_at = COALESCE(EXCLUDED.last_activity_at, jean_ci_repo_feature_sessions.last_activity_at),
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING *`,
+    [
+      data.session_key,
+      data.repo_full_name,
+      data.title,
+      data.branch_name || null,
+      data.status || 'active',
+      data.session_url || null,
+      data.pr_number ?? null,
+      data.pr_url || null,
+      data.last_activity_at || null,
+    ]
+  );
+
+  return result.rows[0];
+}
+
+export async function getRepoFeatureSessions(repoFullName: string): Promise<RepoFeatureSession[]> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_repo_feature_sessions
+     WHERE repo_full_name = $1
+     ORDER BY COALESCE(last_activity_at, updated_at, created_at) DESC`,
+    [repoFullName]
+  );
+  return result.rows;
+}
+
+export async function getAllRepoFeatureSessions(): Promise<RepoFeatureSession[]> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_repo_feature_sessions
+     ORDER BY repo_full_name, COALESCE(last_activity_at, updated_at, created_at) DESC`
   );
   return result.rows;
 }
