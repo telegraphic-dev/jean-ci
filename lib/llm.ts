@@ -30,10 +30,11 @@ export interface ReviewSessionMetadata {
   repo?: string;
   prNumber?: string | number;
   promptName?: string;
+  headSha?: string;
 }
 
 function buildReviewSessionKey(metadata: ReviewSessionMetadata = {}): string {
-  return `main:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}`;
+  return `main:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}:${normalizeSessionKeySegment(metadata.headSha, 'unknown-sha')}`;
 }
 
 function buildReviewSessionLabel(sessionKey: string): string {
