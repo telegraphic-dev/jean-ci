@@ -82,6 +82,12 @@ interface FeatureSession {
   updated_at: string;
 }
 
+interface FetchResult<T> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+}
+
 interface TaskSummary {
   task_name: string;
   app_uuid: string | null;
@@ -200,38 +206,42 @@ export default function RepoDetailPage() {
   const [pipelines, setPipelines] = useState<PaginatedResult<Pipeline>>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [events, setEvents] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [sessions, setSessions] = useState<FeatureSession[]>([]);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<{ summary: TaskSummary[]; stats: TaskStats | null }>({ summary: [], stats: null });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>('sessions');
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
 
-  const fetchJsonOrNull = async (url: string) => {
+  const fetchJson = async <T,>(url: string): Promise<FetchResult<T>> => {
     try {
       const response = await fetch(url);
-      if (!response.ok) return null;
-      return await response.json();
+      if (!response.ok) {
+        return { ok: false, status: response.status, data: null };
+      }
+      return { ok: true, status: response.status, data: await response.json() as T };
     } catch {
-      return null;
+      return { ok: false, status: 0, data: null };
     }
   };
 
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
     const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
-      fetchJsonOrNull(`/api/repos/${fullName}`),
-      fetchJsonOrNull(`/api/repos/${fullName}/counts`),
-      fetchJsonOrNull(`/api/repos/${fullName}/checks?page=${checksPage}`),
-      fetchJsonOrNull(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
-      fetchJsonOrNull(`/api/repos/${fullName}/events?page=${eventsPage}`),
-      fetchJsonOrNull(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
-      fetchJsonOrNull(`/api/repos/${fullName}/sessions`),
+      fetchJson<Repo>(`/api/repos/${fullName}`),
+      fetchJson<Counts>(`/api/repos/${fullName}/counts`),
+      fetchJson<PaginatedResult<CheckRun>>(`/api/repos/${fullName}/checks?page=${checksPage}`),
+      fetchJson<PaginatedResult<Pipeline>>(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
+      fetchJson<PaginatedResult<WebhookEvent>>(`/api/repos/${fullName}/events?page=${eventsPage}`),
+      fetchJson<{ summary: TaskSummary[]; stats: TaskStats | null }>(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
+      fetchJson<FeatureSession[]>(`/api/repos/${fullName}/sessions`),
     ]);
-    setRepo(repoData && !repoData.error ? repoData : null);
-    setCounts(countsData && !countsData.error ? countsData : { checks: 0, deployments: 0, events: 0 });
-    setChecks(checksData?.items ? checksData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setPipelines(pipelinesData?.items ? pipelinesData : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
-    setEvents(eventsData?.items ? eventsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setTasks({ summary: tasksData?.summary || [], stats: tasksData?.stats || null });
-    setSessions(Array.isArray(sessionsData) ? sessionsData : []);
+    setRepo(repoData.ok && repoData.data ? repoData.data : null);
+    setCounts(countsData.ok && countsData.data ? countsData.data : { checks: 0, deployments: 0, events: 0 });
+    setChecks(checksData.ok && checksData.data?.items ? checksData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setPipelines(pipelinesData.ok && pipelinesData.data?.items ? pipelinesData.data : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+    setEvents(eventsData.ok && eventsData.data?.items ? eventsData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    setTasks({ summary: tasksData.ok && tasksData.data?.summary ? tasksData.data.summary : [], stats: tasksData.ok ? (tasksData.data?.stats || null) : null });
+    setSessions(sessionsData.ok && Array.isArray(sessionsData.data) ? sessionsData.data : []);
+    setSessionsError(sessionsData.ok ? null : 'Failed to load feature sessions.');
     setLoading(false);
   }, [fullName]);
 
@@ -325,7 +335,11 @@ export default function RepoDetailPage() {
       {/* Feature Sessions Tab */}
       {activeTab === 'sessions' && (
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-          {sessions.length === 0 ? (
+          {sessionsError ? (
+            <div className="p-6 text-red-400">
+              {sessionsError}
+            </div>
+          ) : sessions.length === 0 ? (
             <div className="p-6 text-[var(--text-muted)]">
               No feature sessions tracked for this repository yet. This PR adds the repo-side storage and tree surface first.
             </div>

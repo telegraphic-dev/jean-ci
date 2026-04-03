@@ -30,6 +30,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   
   const { owner, repo } = await params;
   const fullName = `${owner}/${repo}`;
+  const existingRepo = await getRepo(fullName);
+
+  if (!existingRepo) {
+    return NextResponse.json({ error: 'Repository not found' }, { status: 404 });
+  }
+
   const body = await req.json();
   const { pr_review_enabled, feature_sessions_enabled } = body ?? {};
 
