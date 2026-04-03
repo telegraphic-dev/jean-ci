@@ -31,6 +31,14 @@ function formatRelativeTime(timestamp?: string | null): string {
   return `${Math.floor(diff / 604_800_000)}w ago`;
 }
 
+function buildRepoAdminHref(repoFullName: string): string {
+  const [owner, repo] = repoFullName.split('/');
+  if (!owner || !repo) {
+    return '/admin/repos';
+  }
+  return `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 export default function FeatureSessionsPage() {
   const [sessions, setSessions] = useState<FeatureSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -123,7 +131,7 @@ export default function FeatureSessionsPage() {
               ) : filtered.map(session => (
                 <tr key={session.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                   <td className="py-3 px-4">
-                    <Link href={`/admin/repos/${session.repo_full_name}`} className="text-[var(--accent)] hover:underline font-medium">
+                    <Link href={buildRepoAdminHref(session.repo_full_name)} className="text-[var(--accent)] hover:underline font-medium">
                       {session.repo_full_name}
                     </Link>
                   </td>
