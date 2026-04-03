@@ -118,6 +118,20 @@ async function callOpenClawResponsesViaWebSocket(
   const sessionKey = buildReviewSessionKey(metadata);
 
   try {
+    // Always clear a possibly reused deterministic review session before starting
+    // a fresh evaluation, so no prior transcript/state bleeds into the new run.
+    const preflightDeleteResult = await __internal.callGatewayRpc('sessions.delete', {
+      key: sessionKey,
+    });
+
+    if (!preflightDeleteResult.success && !isOperatorAdminMissingScopeError(preflightDeleteResult)) {
+      console.warn('Failed to clear existing OpenClaw review session before reuse', {
+        sessionKey,
+        error: preflightDeleteResult.error,
+        errorDetails: preflightDeleteResult.errorDetails,
+      });
+    }
+
     const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
       key: sessionKey,
       label: buildReviewSessionLabel(sessionKey),

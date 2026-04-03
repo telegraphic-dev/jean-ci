@@ -50,6 +50,18 @@ async function callOpenClawResponsesViaWebSocketForTest(
   const sessionKey = buildReviewSessionKey(metadata);
 
   try {
+    const preflightDeleteResult = await callGatewayRpc('sessions.delete', {
+      key: sessionKey,
+    });
+
+    if (!preflightDeleteResult.success && !isOperatorAdminMissingScopeError(preflightDeleteResult)) {
+      logger.warn('Failed to clear existing OpenClaw review session before reuse', {
+        sessionKey,
+        error: preflightDeleteResult.error,
+        errorDetails: preflightDeleteResult.errorDetails,
+      });
+    }
+
     const createResult = await callGatewayRpc('sessions.create', {
       key: sessionKey,
       label: buildReviewSessionLabel(sessionKey),
@@ -159,7 +171,7 @@ async function callOpenClawResponsesViaWebSocketForTest(
   }
 }
 
-test('websocket LLM path waits for the run, returns transcript text, and deletes the session', async () => {
+test('websocket LLM path clears a reused session, waits for the run, returns transcript text, and deletes the session', async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const userMessage = 'Review this PR';
   const metadata = { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 113, promptName: 'e2e review.md' };
@@ -167,6 +179,9 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
 
   const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, metadata, async (method, params) => {
     calls.push({ method, params });
+    if (method === 'sessions.delete' && calls.length === 1) {
+      return { success: true, result: { deleted: true } };
+    }
     if (method === 'sessions.create') {
       return { success: true, result: { key: expectedKey } };
     }
@@ -189,12 +204,13 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
   if (result.success) {
     assert.equal(result.response, 'Review complete');
   }
-  assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.get', 'sessions.delete']);
-  assert.deepEqual(calls[0]?.params, { key: expectedKey, label: `Jean CI Review · ${expectedKey}` });
-  assert.deepEqual(calls[1]?.params, { key: expectedKey, message: `system prompt\n\n${userMessage}`, idempotencyKey: 'jean-ci-test' });
-  assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: 30000 });
-  assert.deepEqual(calls[3]?.params, { key: expectedKey, limit: 50 });
-  assert.deepEqual(calls[4]?.params, { key: expectedKey });
+  assert.deepEqual(calls.map((call) => call.method), ['sessions.delete', 'sessions.create', 'sessions.send', 'agent.wait', 'sessions.get', 'sessions.delete']);
+  assert.deepEqual(calls[0]?.params, { key: expectedKey });
+  assert.deepEqual(calls[1]?.params, { key: expectedKey, label: `Jean CI Review · ${expectedKey}` });
+  assert.deepEqual(calls[2]?.params, { key: expectedKey, message: `system prompt\n\n${userMessage}`, idempotencyKey: 'jean-ci-test' });
+  assert.deepEqual(calls[3]?.params, { runId: 'run-1', timeoutMs: 30000 });
+  assert.deepEqual(calls[4]?.params, { key: expectedKey, limit: 50 });
+  assert.deepEqual(calls[5]?.params, { key: expectedKey });
 });
 
 test('websocket LLM path still deletes the session when waiting fails', async () => {
@@ -205,6 +221,9 @@ test('websocket LLM path still deletes the session when waiting fails', async ()
 
   const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, metadata, async (method, params) => {
     calls.push({ method, params });
+    if (method === 'sessions.delete' && calls.length === 1) {
+      return { success: true, result: { deleted: true } };
+    }
     if (method === 'sessions.create') {
       return { success: true, result: { key: expectedKey } };
     }
@@ -225,7 +244,7 @@ test('websocket LLM path still deletes the session when waiting fails', async ()
     assert.equal(result.failure.errorType, 'gateway');
     assert.equal(result.failure.retryable, true);
   }
-  assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.delete']);
+  assert.deepEqual(calls.map((call) => call.method), ['sessions.delete', 'sessions.create', 'sessions.send', 'agent.wait', 'sessions.delete']);
   assert.deepEqual(calls.at(-1)?.params, { key: expectedKey });
 });
 
@@ -237,10 +256,23 @@ test('websocket LLM path tolerates missing operator.admin during best-effort del
     },
   };
 
+  let deleteCount = 0;
+
   const result = await callOpenClawResponsesViaWebSocketForTest(
     'Review this PR',
     { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 115, promptName: 'review' },
     async (method) => {
+      if (method === 'sessions.delete') {
+        deleteCount += 1;
+        if (deleteCount === 1) {
+          return { success: true, result: { deleted: true } };
+        }
+        return {
+          success: false,
+          error: 'INVALID_REQUEST: missing scope: operator.admin',
+          errorDetails: { code: 'INVALID_REQUEST', requiredScope: 'operator.admin' },
+        };
+      }
       if (method === 'sessions.create') {
         return { success: true, result: { key: 'main:jean-ci:telegraphic-dev:jean-ci:115:review' } };
       }
@@ -252,13 +284,6 @@ test('websocket LLM path tolerates missing operator.admin during best-effort del
       }
       if (method === 'sessions.get') {
         return { success: true, result: { messages: [{ role: 'assistant', content: 'Review complete' }] } };
-      }
-      if (method === 'sessions.delete') {
-        return {
-          success: false,
-          error: 'INVALID_REQUEST: missing scope: operator.admin',
-          errorDetails: { code: 'INVALID_REQUEST', requiredScope: 'operator.admin' },
-        };
       }
       throw new Error(`unexpected method: ${method}`);
     },
