@@ -143,9 +143,29 @@ export async function initDatabase() {
         pr_title TEXT,
         pr_body TEXT,
         diff_preview TEXT,
+        manually_overridden BOOLEAN DEFAULT FALSE,
+        override_reason TEXT,
+        overridden_by TEXT,
+        overridden_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP
       );
+
+      DO $$ 
+      BEGIN 
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='manually_overridden') THEN
+          ALTER TABLE jean_ci_check_runs ADD COLUMN manually_overridden BOOLEAN DEFAULT FALSE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='override_reason') THEN
+          ALTER TABLE jean_ci_check_runs ADD COLUMN override_reason TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='overridden_by') THEN
+          ALTER TABLE jean_ci_check_runs ADD COLUMN overridden_by TEXT;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='overridden_at') THEN
+          ALTER TABLE jean_ci_check_runs ADD COLUMN overridden_at TIMESTAMP;
+        END IF;
+      END $$;
 
       CREATE TABLE IF NOT EXISTS jean_ci_pr_reviews (
         id SERIAL PRIMARY KEY,
@@ -374,6 +394,10 @@ export interface CheckRun {
   pr_title?: string;
   pr_body?: string;
   diff_preview?: string;
+  manually_overridden?: boolean;
+  override_reason?: string;
+  overridden_by?: string;
+  overridden_at?: Date;
   created_at: Date;
   completed_at?: Date;
 }
@@ -736,6 +760,35 @@ export async function getAllCheckRunsPaginated(page = 1, limit = 50): Promise<Pa
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
+export async function overrideCheckRunToPass(id: number, reason: string, overriddenBy: string): Promise<CheckRun | null> {
+  const sanitizedReason = reason.trim();
+  if (!sanitizedReason) {
+    throw new Error('Override reason is required');
+  }
+
+  const result = await pool.query(
+    `UPDATE jean_ci_check_runs
+     SET status = 'completed',
+         conclusion = 'success',
+         title = '✅ Manually overridden to pass',
+         summary = CONCAT(
+           COALESCE(summary, ''),
+           CASE WHEN COALESCE(summary, '') = '' THEN '' ELSE E'\n\n---\n\n' END,
+           'Manual override applied by ', $3, '.\n\nReason: ', $2
+         ),
+         manually_overridden = TRUE,
+         override_reason = $2,
+         overridden_by = $3,
+         overridden_at = CURRENT_TIMESTAMP,
+         completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+     WHERE id = $1
+     RETURNING *`,
+    [id, sanitizedReason, overriddenBy]
+  );
+
+  return result.rows[0] || null;
+}
+
 export interface PublicCheckRun {
   id: number;
   github_check_id?: number;
@@ -747,6 +800,10 @@ export interface PublicCheckRun {
   conclusion?: string;
   title?: string;
   summary?: string;
+  manually_overridden?: boolean;
+  override_reason?: string;
+  overridden_by?: string;
+  overridden_at?: Date;
   created_at: Date;
   completed_at?: Date;
 }

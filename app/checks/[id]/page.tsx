@@ -58,6 +58,14 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
             <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
               <span>📝</span> Review Result
             </h2>
+            {checkRun.manually_overridden && (
+              <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800">
+                <div className="font-semibold">Manual override applied</div>
+                <div className="mt-1">By: {checkRun.overridden_by || 'admin'}</div>
+                {checkRun.overridden_at && <div>At: {new Date(checkRun.overridden_at).toLocaleString()}</div>}
+                {checkRun.override_reason && <div className="mt-2">Reason: {checkRun.override_reason}</div>}
+              </div>
+            )}
             <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4 text-sm">
               <Markdown content={checkRun.summary || 'No summary available'} />
             </div>

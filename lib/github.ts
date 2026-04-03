@@ -110,6 +110,24 @@ export async function getPRInfo(octokit: any, owner: string, repo: string, prNum
   return data;
 }
 
+export async function createPRReview(
+  octokit: any,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT',
+  body: string,
+) {
+  const { data } = await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+    owner,
+    repo,
+    pull_number: prNumber,
+    event,
+    body,
+  });
+  return data;
+}
+
 export async function createCheck(octokit: any, owner: string, repo: string, name: string, headSha: string, status = 'queued') {
   const { data } = await octokit.request('POST /repos/{owner}/{repo}/check-runs', {
     owner, repo, name, head_sha: headSha, status,

@@ -1,5 +1,5 @@
 import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db';
-import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck } from './github';
+import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github';
 import { callOpenClaw } from './llm';
 import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output';
 import { APP_BASE_URL } from './config';
@@ -200,13 +200,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           const reviewEvent = conclusion === 'success' ? 'APPROVE' : 'REQUEST_CHANGES';
           const reviewBody = `## ${parsed.title}\n\n${parsed.normalized.substring(0, 65000)}\n\n---\n*[View full details](${BASE_URL}/checks/${dbId})*`;
 
-          await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
-            owner,
-            repo,
-            pull_number: prNumber,
-            event: reviewEvent,
-            body: reviewBody,
-          });
+          await createPRReview(octokit, owner, repo, prNumber, reviewEvent, reviewBody);
           console.log(`Created PR review: ${reviewEvent}`);
         } catch (e: any) {
           console.error('Failed to create PR review:', e.message);
