@@ -9,6 +9,7 @@ interface Repo {
   full_name: string;
   installation_id: number;
   pr_review_enabled: boolean;
+  feature_sessions_enabled: boolean;
 }
 
 interface CheckRun {
@@ -66,6 +67,27 @@ interface Counts {
   events: number;
 }
 
+interface FeatureSession {
+  id: number;
+  session_key: string;
+  repo_full_name: string;
+  title: string;
+  branch_name?: string | null;
+  status: string;
+  session_url?: string | null;
+  pr_number?: number | null;
+  pr_url?: string | null;
+  last_activity_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface FetchResult<T> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+}
+
 interface TaskSummary {
   task_name: string;
   app_uuid: string | null;
@@ -87,7 +109,7 @@ interface TaskStats {
   failures_24h: number;
 }
 
-type Tab = 'checks' | 'deployments' | 'tasks' | 'events';
+type Tab = 'sessions' | 'checks' | 'deployments' | 'tasks' | 'events';
 
 function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
@@ -183,27 +205,56 @@ export default function RepoDetailPage() {
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [pipelines, setPipelines] = useState<PaginatedResult<Pipeline>>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [events, setEvents] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+  const [sessions, setSessions] = useState<FeatureSession[]>([]);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<{ summary: TaskSummary[]; stats: TaskStats | null }>({ summary: [], stats: null });
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<Tab>('checks');
+  const [activeTab, setActiveTab] = useState<Tab>('sessions');
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
 
+  const fetchJson = async <T,>(url: string): Promise<FetchResult<T>> => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        return { ok: false, status: response.status, data: null };
+      }
+      return { ok: true, status: response.status, data: await response.json() as T };
+    } catch {
+      return { ok: false, status: 0, data: null };
+    }
+  };
+
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
-    const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData] = await Promise.all([
-      fetch(`/api/repos/${fullName}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/counts`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/checks?page=${checksPage}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`).then(r => r.json()),
-      fetch(`/api/repos/${fullName}/events?page=${eventsPage}`).then(r => r.json()),
-      fetch(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`).then(r => r.json()),
-    ]);
-    setRepo(repoData.error ? null : repoData);
-    setCounts(countsData.error ? { checks: 0, deployments: 0, events: 0 } : countsData);
-    setChecks(checksData.items ? checksData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setPipelines(pipelinesData.items ? pipelinesData : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
-    setEvents(eventsData.items ? eventsData : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-    setTasks({ summary: tasksData.summary || [], stats: tasksData.stats || null });
-    setLoading(false);
+    try {
+      const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
+        fetchJson<Repo>(`/api/repos/${fullName}`),
+        fetchJson<Counts>(`/api/repos/${fullName}/counts`),
+        fetchJson<PaginatedResult<CheckRun>>(`/api/repos/${fullName}/checks?page=${checksPage}`),
+        fetchJson<PaginatedResult<Pipeline>>(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
+        fetchJson<PaginatedResult<WebhookEvent>>(`/api/repos/${fullName}/events?page=${eventsPage}`),
+        fetchJson<{ summary: TaskSummary[]; stats: TaskStats | null }>(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
+        fetchJson<FeatureSession[]>(`/api/repos/${fullName}/sessions`),
+      ]);
+      setRepo(repoData.ok && repoData.data ? repoData.data : null);
+      setCounts(countsData.ok && countsData.data ? countsData.data : { checks: 0, deployments: 0, events: 0 });
+      setChecks(checksData.ok && checksData.data?.items ? checksData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setPipelines(pipelinesData.ok && pipelinesData.data?.items ? pipelinesData.data : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+      setEvents(eventsData.ok && eventsData.data?.items ? eventsData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setTasks({ summary: tasksData.ok && tasksData.data?.summary ? tasksData.data.summary : [], stats: tasksData.ok ? (tasksData.data?.stats || null) : null });
+      setSessions(sessionsData.ok && Array.isArray(sessionsData.data) ? sessionsData.data : []);
+      setSessionsError(sessionsData.ok ? null : 'Failed to load feature sessions.');
+    } catch {
+      setRepo(null);
+      setCounts({ checks: 0, deployments: 0, events: 0 });
+      setChecks({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setPipelines({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
+      setEvents({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+      setTasks({ summary: [], stats: null });
+      setSessions([]);
+      setSessionsError('Failed to load repository data.');
+    } finally {
+      setLoading(false);
+    }
   }, [fullName]);
 
   useEffect(() => {
@@ -241,6 +292,7 @@ export default function RepoDetailPage() {
   }
 
   const tabs: { id: Tab; label: string; count: number }[] = [
+    { id: 'sessions', label: 'Feature Sessions', count: sessions.length },
     { id: 'checks', label: 'PR Reviews', count: counts.checks },
     { id: 'deployments', label: 'Deployments', count: pipelines.total },
     { id: 'tasks', label: 'Scheduled Tasks', count: tasks.summary.length },
@@ -256,7 +308,7 @@ export default function RepoDetailPage() {
             <Link href="/admin/repos" className="hover:text-[var(--accent)]">Repositories</Link>
             <span>/</span>
           </div>
-          <h1 className="text-2xl font-bold flex items-center gap-3">
+          <h1 className="text-2xl font-bold flex items-center gap-3 flex-wrap">
             <a 
               href={`https://github.com/${fullName}`}
               target="_blank"
@@ -267,6 +319,9 @@ export default function RepoDetailPage() {
             </a>
             <span className={`text-sm px-2 py-0.5 rounded ${repo.pr_review_enabled ? 'bg-[var(--green)]/10 text-[var(--green)]' : 'bg-[var(--bg-secondary)] text-[var(--text-muted)]'}`}>
               {repo.pr_review_enabled ? '✅ Reviews enabled' : 'Reviews disabled'}
+            </span>
+            <span className={`text-sm px-2 py-0.5 rounded ${repo.feature_sessions_enabled ? 'bg-emerald-500/10 text-emerald-500' : 'bg-[var(--bg-secondary)] text-[var(--text-muted)]'}`}>
+              {repo.feature_sessions_enabled ? '🌳 Feature sessions enabled' : 'Feature sessions disabled'}
             </span>
           </h1>
         </div>
@@ -288,6 +343,58 @@ export default function RepoDetailPage() {
           </button>
         ))}
       </div>
+
+      {/* Feature Sessions Tab */}
+      {activeTab === 'sessions' && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+          {sessionsError ? (
+            <div className="p-6 text-red-400">
+              {sessionsError}
+            </div>
+          ) : sessions.length === 0 ? (
+            <div className="p-6 text-[var(--text-muted)]">
+              No feature sessions tracked for this repository yet. This PR adds the repo-side storage and tree surface first.
+            </div>
+          ) : (
+            <div className="divide-y divide-[var(--border)]">
+              {sessions.map(session => (
+                <div key={session.session_key} className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <div className="font-medium">{session.title}</div>
+                    <div className="mt-1 text-xs text-[var(--text-muted)] font-mono break-all">{session.session_key}</div>
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                      <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
+                      {session.branch_name && (
+                        <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)] font-mono">{session.branch_name}</span>
+                      )}
+                      {session.pr_number && (
+                        <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">PR #{session.pr_number}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-start md:items-end gap-2 text-sm">
+                    <div className="text-[var(--text-muted)]">
+                      {session.last_activity_at ? formatRelativeTime(session.last_activity_at) : 'no activity yet'}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {session.session_url && (
+                        <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+                          Open session
+                        </a>
+                      )}
+                      {session.pr_url && (
+                        <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
+                          Open PR
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* PR Reviews Tab */}
       {activeTab === 'checks' && (
