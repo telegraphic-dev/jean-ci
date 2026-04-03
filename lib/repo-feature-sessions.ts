@@ -3,6 +3,16 @@ import { callGatewayRpc } from './openclaw-ws.ts';
 import { upsertRepoFeatureSession } from './db.ts';
 import { buildRepoSessionSeedPrompt } from './repo-feature-session-prompt.ts';
 
+export interface RepoFeatureSessionDeps {
+  callGatewayRpc: typeof callGatewayRpc;
+  upsertRepoFeatureSession: typeof upsertRepoFeatureSession;
+}
+
+const defaultRepoFeatureSessionDeps: RepoFeatureSessionDeps = {
+  callGatewayRpc,
+  upsertRepoFeatureSession,
+};
+
 export interface FeatureSessionSummary {
   key: string;
   label: string;
@@ -130,7 +140,10 @@ function getNestedValue(source: GatewaySessionLike, path: string[]): unknown {
   return current;
 }
 
-export async function createRepoFeatureSession(input: CreateFeatureSessionInput): Promise<FeatureSessionSummary> {
+export async function createRepoFeatureSession(
+  input: CreateFeatureSessionInput,
+  deps: RepoFeatureSessionDeps = defaultRepoFeatureSessionDeps
+): Promise<FeatureSessionSummary> {
   const repoFullName = input.repoFullName.trim();
   const title = input.title.trim();
   const branchName = input.branchName?.trim() || null;
@@ -145,7 +158,7 @@ export async function createRepoFeatureSession(input: CreateFeatureSessionInput)
   const sessionKey = buildFeatureSessionKey(repoFullName);
   const label = `${repoFullName} · ${title}`;
 
-  const createResult = await callGatewayRpc<{ key?: string; url?: string; deepLink?: string; sessionUrl?: string }>('sessions.create', {
+  const createResult = await deps.callGatewayRpc<{ key?: string; url?: string; deepLink?: string; sessionUrl?: string }>('sessions.create', {
     key: sessionKey,
     label,
   });
@@ -155,44 +168,60 @@ export async function createRepoFeatureSession(input: CreateFeatureSessionInput)
 
   const sessionUrl = pickSessionUrl(createResult.result);
 
-  const seedPrompt = [
-    buildRepoSessionSeedPrompt(repoFullName),
-    '',
-    `Session title: ${title}`,
-    branchName ? `Suggested branch: ${branchName}` : null,
-    `Session key: ${sessionKey}`,
-  ].filter(Boolean).join('\n');
+  try {
+    const seedPrompt = [
+      buildRepoSessionSeedPrompt(repoFullName),
+      '',
+      `Session title: ${title}`,
+      branchName ? `Suggested branch: ${branchName}` : null,
+      `Session key: ${sessionKey}`,
+    ].filter(Boolean).join('\n');
 
-  const sendResult = await callGatewayRpc('sessions.send', {
-    key: sessionKey,
-    message: seedPrompt,
-    idempotencyKey: `repo-feature-session-${randomUUID()}`,
-  });
-  if (!sendResult.success) {
-    throw new Error(sendResult.error);
+    const sendResult = await deps.callGatewayRpc('sessions.send', {
+      key: sessionKey,
+      message: seedPrompt,
+      idempotencyKey: `repo-feature-session-${randomUUID()}`,
+    });
+    if (!sendResult.success) {
+      throw new Error(sendResult.error);
+    }
+
+    const now = new Date();
+    await deps.upsertRepoFeatureSession({
+      session_key: sessionKey,
+      repo_full_name: repoFullName,
+      title,
+      branch_name: branchName,
+      status: 'active',
+      session_url: sessionUrl,
+      last_activity_at: now,
+    });
+
+    return {
+      key: sessionKey,
+      label,
+      repoFullName,
+      branchName,
+      status: 'active',
+      lastActivityAt: now.toISOString(),
+      sessionUrl,
+      prNumber: null,
+      prUrl: null,
+    };
+  } catch (error) {
+    await cleanupFailedFeatureSessionCreate(sessionKey, deps);
+    throw error;
   }
+}
 
-  await upsertRepoFeatureSession({
-    session_key: sessionKey,
-    repo_full_name: repoFullName,
-    title,
-    branch_name: branchName,
-    status: 'active',
-    session_url: sessionUrl,
-    last_activity_at: new Date(),
-  });
-
-  return {
-    key: sessionKey,
-    label,
-    repoFullName,
-    branchName,
-    status: 'active',
-    lastActivityAt: new Date().toISOString(),
-    sessionUrl,
-    prNumber: null,
-    prUrl: null,
-  };
+async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoFeatureSessionDeps): Promise<void> {
+  const deleteResult = await deps.callGatewayRpc('sessions.delete', { key: sessionKey });
+  if (!deleteResult.success) {
+    console.warn('[repo-feature-sessions] Failed to clean up orphaned feature session after create failure', {
+      sessionKey,
+      error: deleteResult.error,
+    });
+  }
 }
 
 function buildFeatureSessionKey(repoFullName: string): string {
