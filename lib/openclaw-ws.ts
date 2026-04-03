@@ -65,24 +65,50 @@ export function getWebSocketUrl(): string | null {
 function buildStore(): DeviceStateStore {
   return {
     async loadIdentity(): Promise<DeviceIdentity | null> {
-      const identity = await getJsonState<DeviceIdentity>(DEVICE_IDENTITY_STATE_KEY);
-      if (!identity?.deviceId || !identity.publicKeyPem || !identity.privateKeyPem) {
+      try {
+        const identity = await getJsonState<DeviceIdentity>(DEVICE_IDENTITY_STATE_KEY);
+        if (!identity?.deviceId || !identity.publicKeyPem || !identity.privateKeyPem) {
+          return null;
+        }
+        return identity;
+      } catch (error) {
+        warnWs('failed to load gateway device identity from postgres; using empty state', {
+          error: error instanceof Error ? error.message : String(error),
+        });
         return null;
       }
-      return identity;
     },
     async saveIdentity(identity: DeviceIdentity): Promise<void> {
-      await setJsonState(DEVICE_IDENTITY_STATE_KEY, identity);
+      try {
+        await setJsonState(DEVICE_IDENTITY_STATE_KEY, identity);
+      } catch (error) {
+        warnWs('failed to persist gateway device identity to postgres', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     async loadTokenStore(deviceId: string): Promise<StoredDeviceTokenStore | null> {
-      const store = await getJsonState<StoredDeviceTokenStore>(DEVICE_TOKEN_STORE_STATE_KEY);
-      if (!store || store.version !== DEVICE_TOKEN_STORE_VERSION || store.deviceId !== deviceId || typeof store.tokens !== 'object' || store.tokens == null) {
+      try {
+        const store = await getJsonState<StoredDeviceTokenStore>(DEVICE_TOKEN_STORE_STATE_KEY);
+        if (!store || store.version !== DEVICE_TOKEN_STORE_VERSION || store.deviceId !== deviceId || typeof store.tokens !== 'object' || store.tokens == null) {
+          return null;
+        }
+        return store;
+      } catch (error) {
+        warnWs('failed to load gateway token store from postgres; using empty state', {
+          error: error instanceof Error ? error.message : String(error),
+        });
         return null;
       }
-      return store;
     },
     async saveTokenStore(store: StoredDeviceTokenStore): Promise<void> {
-      await setJsonState(DEVICE_TOKEN_STORE_STATE_KEY, store);
+      try {
+        await setJsonState(DEVICE_TOKEN_STORE_STATE_KEY, store);
+      } catch (error) {
+        warnWs('failed to persist gateway token store to postgres', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
     async clearStoredDeviceToken(deviceId: string, role: string): Promise<void> {
       const store = await this.loadTokenStore(deviceId);
