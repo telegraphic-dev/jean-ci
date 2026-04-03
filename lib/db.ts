@@ -151,22 +151,6 @@ export async function initDatabase() {
         completed_at TIMESTAMP
       );
 
-      DO $$ 
-      BEGIN 
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='manually_overridden') THEN
-          ALTER TABLE jean_ci_check_runs ADD COLUMN manually_overridden BOOLEAN DEFAULT FALSE;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='override_reason') THEN
-          ALTER TABLE jean_ci_check_runs ADD COLUMN override_reason TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='overridden_by') THEN
-          ALTER TABLE jean_ci_check_runs ADD COLUMN overridden_by TEXT;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='jean_ci_check_runs' AND column_name='overridden_at') THEN
-          ALTER TABLE jean_ci_check_runs ADD COLUMN overridden_at TIMESTAMP;
-        END IF;
-      END $$;
-
       CREATE TABLE IF NOT EXISTS jean_ci_pr_reviews (
         id SERIAL PRIMARY KEY,
         pr_number INTEGER NOT NULL,

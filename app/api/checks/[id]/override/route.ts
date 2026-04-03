@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
 import { getCheckRun, getRepo, overrideCheckRunToPassTransaction } from '@/lib/db';
-import { createPRReview, getInstallationOctokit, updateCheck } from '@/lib/github';
+import { canCreateOverrideApproval, createPRReview, getInstallationOctokit, getPRInfo, updateCheck } from '@/lib/github';
 
 export async function POST(
   req: NextRequest,
@@ -70,6 +70,12 @@ export async function POST(
         }
 
         if (lockedCheckRun.check_name === 'Code Review') {
+          const prInfo = await getPRInfo(octokit, owner, repo, lockedCheckRun.pr_number);
+          const reviewEligibility = canCreateOverrideApproval(lockedCheckRun, prInfo);
+          if (!reviewEligibility.ok) {
+            throw new Error(`Cannot create override approval: ${reviewEligibility.reason}`);
+          }
+
           await createPRReview(
             octokit,
             owner,

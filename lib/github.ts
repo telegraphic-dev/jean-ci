@@ -110,6 +110,38 @@ export async function getPRInfo(octokit: any, owner: string, repo: string, prNum
   return data;
 }
 
+export function canCreateOverrideApproval(checkRun: {
+  head_sha?: string | null;
+  pr_number: number;
+}, prInfo: {
+  state?: string;
+  draft?: boolean;
+  head?: { sha?: string | null };
+} | null | undefined): { ok: true } | { ok: false; reason: string } {
+  if (!prInfo) {
+    return { ok: false, reason: `PR #${checkRun.pr_number} was not found` };
+  }
+
+  if (prInfo.state !== 'open') {
+    return { ok: false, reason: `PR #${checkRun.pr_number} is not open` };
+  }
+
+  if (prInfo.draft) {
+    return { ok: false, reason: `PR #${checkRun.pr_number} is still a draft` };
+  }
+
+  const reviewHeadSha = (checkRun.head_sha || '').trim();
+  const currentPrHeadSha = (prInfo.head?.sha || '').trim();
+  if (reviewHeadSha && currentPrHeadSha && reviewHeadSha !== currentPrHeadSha) {
+    return {
+      ok: false,
+      reason: `PR #${checkRun.pr_number} head changed from ${reviewHeadSha} to ${currentPrHeadSha}`,
+    };
+  }
+
+  return { ok: true };
+}
+
 export async function createPRReview(
   octokit: any,
   owner: string,

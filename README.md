@@ -90,6 +90,12 @@ This starts:
 - `app` on `http://localhost:3000`
 - `postgres` as an internal Compose service (not published on the host by default)
 
+If you are upgrading an existing deployment, run the manual override migration before starting a build that expects the new columns:
+
+```bash
+psql "$DATABASE_URL" -f scripts/migrate-add-manual-review-override-columns.sql
+```
+
 Helpful commands:
 - `make bootstrap` — create `.env`, generate local secrets, and sync a URL-encoded `DATABASE_URL` from `POSTGRES_*` values
 - `make doctor` — check Docker/Compose and fail until required GitHub/OpenClaw values are replaced with real values
