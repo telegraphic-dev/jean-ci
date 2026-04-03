@@ -352,7 +352,7 @@ export default function RepoDetailPage() {
       {/* Feature Sessions Tab */}
       {activeTab === 'sessions' && (
         <div className="space-y-4">
-          {repo.feature_sessions_enabled && (
+          {repo?.feature_sessions_enabled && (
             <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-4">
               <div className="flex flex-col lg:flex-row gap-3 lg:items-end">
                 <div className="flex-1">
