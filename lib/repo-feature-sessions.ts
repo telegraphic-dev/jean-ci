@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { callGatewayRpc } from './openclaw-ws.ts';
+import { callGatewayRpc, deleteSession } from './openclaw-ws.ts';
 import { upsertRepoFeatureSession } from './db.ts';
 import { buildRepoSessionSeedPrompt } from './repo-feature-session-prompt.ts';
 
@@ -216,11 +216,19 @@ export async function createRepoFeatureSession(
 }
 
 async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoFeatureSessionDeps): Promise<void> {
-  const deleteResult = await deps.callGatewayRpc('sessions.delete', { key: sessionKey });
+  const deleteResult = deps.callGatewayRpc === callGatewayRpc
+    ? await deleteSession(sessionKey, { deleteTranscript: true, emitLifecycleHooks: false })
+    : await deps.callGatewayRpc('sessions.delete', {
+        key: sessionKey,
+        deleteTranscript: true,
+        emitLifecycleHooks: false,
+      });
+
   if (!deleteResult.success) {
     console.warn('[repo-feature-sessions] Failed to clean up orphaned feature session after create failure', {
       sessionKey,
       error: deleteResult.error,
+      errorDetails: deleteResult.errorDetails,
     });
   }
 }

@@ -384,7 +384,12 @@ export default function RepoDetailPage() {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ title: newSessionTitle, branchName: newSessionBranch }),
                       });
-                      const payload = await response.json().catch(() => null);
+
+                      const contentType = response.headers.get('content-type') || '';
+                      const payload = contentType.includes('application/json')
+                        ? await response.json().catch(() => null)
+                        : null;
+
                       if (!response.ok) {
                         setSessionsError(payload?.error || 'Failed to create feature session.');
                       } else {
