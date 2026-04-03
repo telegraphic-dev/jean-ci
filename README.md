@@ -378,7 +378,7 @@ Recommended operational flow:
 Useful commands:
 - `openclaw devices list`
 - `openclaw devices approve <requestId>`
-- `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write`
+- `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write --scope operator.admin`
 
 ### Pairing required: what to do
 
@@ -392,7 +392,12 @@ Recommended recovery flow:
 5. Re-run the failed jean-ci check/job
 
 If approval does not fix it, rotate the credential for that device:
-- `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write`
+- `openclaw devices rotate --device <deviceId> --role operator --scope operator.read --scope operator.write --scope operator.admin`
+
+Admin UI helpers:
+- Dashboard now shows the scopes jean-ci requests for its gateway device token.
+- You can revoke the cached stored device token from the admin dashboard.
+- After revocation, trigger any gateway action (for example from the gateway playground) and jean-ci will request a fresh token that includes `operator.admin`.
 
 Operational note:
 - jean-ci should use its own dedicated gateway identity/device, not a personal human operator token

@@ -125,9 +125,9 @@ test('connectAndCallGatewayRpc performs challenge-based device auth and stores r
   assert.equal(fake.sent[0].params.auth.token, 'shared-token');
   assert.equal(fake.sent[0].params.device.nonce, 'nonce-1');
   assert.equal(fake.sent[0].params.device.publicKey, 'pubkey-raw');
-  assert.match(fake.sent[0].params.device.signature, /^signed:v2\|device-1\|gateway-client\|backend\|operator\|operator.read,operator.write\|1234567890\|shared-token\|nonce-1$/);
+  assert.match(fake.sent[0].params.device.signature, /^signed:v2\|device-1\|gateway-client\|backend\|operator\|operator.read,operator.write,operator.admin\|1234567890\|shared-token\|nonce-1$/);
 
-  await fake.emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'device-token-1', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
+  await fake.emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'device-token-1', role: 'operator', scopes: ['operator.read', 'operator.write', 'operator.admin'] } }));
 
   assert.equal(fake.sent[1].method, 'sessions.list');
   assert.deepEqual(fake.sent[1].params, { limit: 1 });
@@ -166,7 +166,7 @@ test('connectAndCallGatewayRpc retries once with stored device token on AUTH_TOK
         operator: {
           token: 'stored-device-token',
           role: 'operator',
-          scopes: ['operator.read', 'operator.write'],
+          scopes: ['operator.read', 'operator.write', 'operator.admin'],
           updatedAtMs: 1,
         },
       },
@@ -208,7 +208,7 @@ test('connectAndCallGatewayRpc retries once with stored device token on AUTH_TOK
   assert.equal(fakes[1].sent[0].params.auth.token, 'shared-token');
   assert.equal(fakes[1].sent[0].params.auth.deviceToken, 'stored-device-token');
 
-  await fakes[1].emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'rotated-device-token', role: 'operator', scopes: ['operator.read', 'operator.write'] } }));
+  await fakes[1].emit('message', JSON.stringify({ type: 'hello-ok', auth: { deviceToken: 'rotated-device-token', role: 'operator', scopes: ['operator.read', 'operator.write', 'operator.admin'] } }));
   await fakes[1].emit('message', JSON.stringify({ type: 'res', id: 'req-1', ok: true, payload: { value: 42 } }));
 
   const result = await promise;
@@ -245,7 +245,7 @@ test('connectAndCallGatewayRpc clears stored device token on AUTH_DEVICE_TOKEN_M
         operator: {
           token: 'stored-device-token',
           role: 'operator',
-          scopes: ['operator.read', 'operator.write'],
+          scopes: ['operator.read', 'operator.write', 'operator.admin'],
           updatedAtMs: 1,
         },
       },

@@ -14,21 +14,33 @@ test('getGatewayDashboardStatus returns disabled when websocket is off', async (
   const prev = process.env.OPENCLAW_USE_WEBSOCKET;
   process.env.OPENCLAW_USE_WEBSOCKET = 'false';
 
+  const getDebugInfo = () => ({
+    websocketEnabled: false,
+    gatewayUrl: 'ws://gateway.example.com',
+    identityPath: '/data/device.json',
+    identityExists: false,
+    tokenStorePath: '/data/tokens.json',
+    tokenStoreExists: false,
+    deviceId: 'dev_disabled',
+    role: 'operator',
+    scopes: ['operator.read'],
+    hasSharedToken: true,
+    hasStoredDeviceToken: false,
+    storedDeviceTokenUpdatedAtMs: null,
+  });
+
   const status = await getGatewayDashboardStatus({
     isWebSocketEnabled: () => false,
-    getDebugInfo: () => ({
-      websocketEnabled: false,
-      gatewayUrl: 'ws://gateway.example.com',
-      identityPath: '/data/device.json',
-      identityExists: false,
-      tokenStorePath: '/data/tokens.json',
-      tokenStoreExists: false,
+    getDebugInfo,
+    getTokenAdminState: async () => ({
       deviceId: 'dev_disabled',
-      role: 'operator',
-      scopes: ['operator.read'],
-      hasSharedToken: true,
-      hasStoredDeviceToken: false,
-      storedDeviceTokenUpdatedAtMs: null,
+      requestedRole: 'operator',
+      requestedScopes: ['operator.read', 'operator.write', 'operator.admin'],
+      storedRole: null,
+      storedScopes: [],
+      hasStoredToken: false,
+      storedTokenUpdatedAtMs: null,
+      tokenStoreExists: false,
     }),
   });
   assert.equal(status.status, 'disabled');
@@ -55,10 +67,20 @@ test('getGatewayDashboardStatus returns connected on successful probe', async ()
       tokenStoreExists: true,
       deviceId: 'dev_connected',
       role: 'operator',
-      scopes: ['operator.read', 'operator.write'],
+      scopes: ['operator.read', 'operator.write', 'operator.admin'],
       hasSharedToken: true,
       hasStoredDeviceToken: true,
       storedDeviceTokenUpdatedAtMs: 123,
+    }),
+    getTokenAdminState: async () => ({
+      deviceId: 'dev_connected',
+      requestedRole: 'operator',
+      requestedScopes: ['operator.read', 'operator.write', 'operator.admin'],
+      storedRole: 'operator',
+      storedScopes: ['operator.read', 'operator.write', 'operator.admin'],
+      hasStoredToken: true,
+      storedTokenUpdatedAtMs: 123,
+      tokenStoreExists: true,
     }),
     now: (() => {
       let t = 100;
@@ -98,10 +120,20 @@ test('getGatewayDashboardStatus surfaces pairing required guidance and device id
       tokenStoreExists: false,
       deviceId: 'dev_debug',
       role: 'operator',
-      scopes: ['operator.read', 'operator.write'],
+      scopes: ['operator.read', 'operator.write', 'operator.admin'],
       hasSharedToken: true,
       hasStoredDeviceToken: false,
       storedDeviceTokenUpdatedAtMs: null,
+    }),
+    getTokenAdminState: async () => ({
+      deviceId: 'dev_debug',
+      requestedRole: 'operator',
+      requestedScopes: ['operator.read', 'operator.write', 'operator.admin'],
+      storedRole: null,
+      storedScopes: [],
+      hasStoredToken: false,
+      storedTokenUpdatedAtMs: null,
+      tokenStoreExists: false,
     }),
     now: (() => {
       let t = 200;
