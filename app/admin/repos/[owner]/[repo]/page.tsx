@@ -198,8 +198,10 @@ function getStatusBadge(status: string, conclusion?: string | null) {
 }
 
 export default function RepoDetailPage() {
-  const params = useParams();
-  const fullName = `${params.owner}/${params.repo}`;
+  const params = useParams<{ owner: string; repo: string }>();
+  const owner = params.owner;
+  const repoName = params.repo;
+  const fullName = `${owner}/${repoName}`;
   const [repo, setRepo] = useState<Repo | null>(null);
   const [counts, setCounts] = useState<Counts>({ checks: 0, deployments: 0, events: 0 });
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
@@ -377,7 +379,7 @@ export default function RepoDetailPage() {
                     setCreatingSession(true);
                     setSessionsError(null);
                     try {
-                      const response = await fetch(`/api/repos/${fullName}/sessions/create`, {
+                      const response = await fetch(`/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/sessions/create`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ title: newSessionTitle, branchName: newSessionBranch }),

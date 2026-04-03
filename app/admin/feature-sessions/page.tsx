@@ -34,13 +34,41 @@ function formatRelativeTime(timestamp?: string | null): string {
 export default function FeatureSessionsPage() {
   const [sessions, setSessions] = useState<FeatureSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
-    fetch('/api/feature-sessions')
-      .then(r => r.json())
-      .then(data => setSessions(Array.isArray(data) ? data : []))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    const loadSessions = async () => {
+      try {
+        const response = await fetch('/api/feature-sessions');
+        if (!response.ok) {
+          throw new Error(`request failed with status ${response.status}`);
+        }
+
+        const data: unknown = await response.json();
+        if (!cancelled) {
+          setSessions(Array.isArray(data) ? data as FeatureSession[] : []);
+          setError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setSessions([]);
+          setError('Failed to load feature sessions.');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadSessions();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -73,45 +101,49 @@ export default function FeatureSessionsPage() {
       </div>
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[760px]">
-          <thead>
-            <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Branch</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
-              <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Last Activity</th>
-              <th className="text-right py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Links</th>
-            </tr>
-          </thead>
-          <tbody className="text-sm">
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No feature sessions tracked yet.</td>
+        {error ? (
+          <div className="p-6 text-red-400">{error}</div>
+        ) : (
+          <table className="w-full min-w-[760px]">
+            <thead>
+              <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Title</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Branch</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Status</th>
+                <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Last Activity</th>
+                <th className="text-right py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Links</th>
               </tr>
-            ) : filtered.map(session => (
-              <tr key={session.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
-                <td className="py-3 px-4">
-                  <Link href={`/admin/repos/${session.repo_full_name}`} className="text-[var(--accent)] hover:underline font-medium">
-                    {session.repo_full_name}
-                  </Link>
-                </td>
-                <td className="py-3 px-4">{session.title}</td>
-                <td className="py-3 px-4 text-[var(--text-muted)]">{session.branch_name || '—'}</td>
-                <td className="py-3 px-4">
-                  <span className="px-2 py-0.5 rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
-                </td>
-                <td className="py-3 px-4 text-[var(--text-muted)]">{formatRelativeTime(session.last_activity_at || session.updated_at || session.created_at)}</td>
-                <td className="py-3 px-4">
-                  <div className="flex items-center justify-end gap-3">
-                    {session.session_url && <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">Session</a>}
-                    {session.pr_url && <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">PR</a>}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="text-sm">
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No feature sessions tracked yet.</td>
+                </tr>
+              ) : filtered.map(session => (
+                <tr key={session.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
+                  <td className="py-3 px-4">
+                    <Link href={`/admin/repos/${session.repo_full_name}`} className="text-[var(--accent)] hover:underline font-medium">
+                      {session.repo_full_name}
+                    </Link>
+                  </td>
+                  <td className="py-3 px-4">{session.title}</td>
+                  <td className="py-3 px-4 text-[var(--text-muted)]">{session.branch_name || '—'}</td>
+                  <td className="py-3 px-4">
+                    <span className="px-2 py-0.5 rounded bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
+                  </td>
+                  <td className="py-3 px-4 text-[var(--text-muted)]">{formatRelativeTime(session.last_activity_at || session.updated_at || session.created_at)}</td>
+                  <td className="py-3 px-4">
+                    <div className="flex items-center justify-end gap-3">
+                      {session.session_url && <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">Session</a>}
+                      {session.pr_url && <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">PR</a>}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
