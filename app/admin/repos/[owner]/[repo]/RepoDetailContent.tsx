@@ -299,6 +299,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   }, [fullName, repoApiBase]);
 
   useEffect(() => {
+    setLoading(true);
     fetchData(checksPage, deploymentsPage, eventsPage);
   }, [fetchData, checksPage, deploymentsPage, eventsPage]);
 

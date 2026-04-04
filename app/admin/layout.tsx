@@ -34,12 +34,30 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
 
   useEffect(() => {
-    fetch('/api/me').then(r => r.json()).then(data => {
-      setLoading(false);
-      if (data.authenticated) {
-        setUser(data.user);
-      }
-    });
+    let cancelled = false;
+
+    fetch('/api/me')
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        if (data.authenticated) {
+          setUser(data.user);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUser(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (loading) {
@@ -83,8 +101,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: '/admin/prompt', label: 'Prompt', icon: '📝' },
   ];
 
-  const userLogin = user?.login ?? 'Signed-out user';
-  const userAvatar = user?.avatar ?? '';
+  const userLogin = user.login;
+  const userAvatar = user.avatar;
 
   const isActive = (href: string) => {
     if (href === '/admin') return pathname === '/admin';
