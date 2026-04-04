@@ -238,19 +238,8 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   };
 
   const buildSectionHref = (targetSection: RepoSection) => {
-    const params = new URLSearchParams();
-    if (targetSection === 'checks' && checksPage > 1) {
-      params.set(SECTION_PAGE_PARAM.checks, String(checksPage));
-    }
-    if (targetSection === 'deployments' && deploymentsPage > 1) {
-      params.set(SECTION_PAGE_PARAM.deployments, String(deploymentsPage));
-    }
-    if (targetSection === 'events' && eventsPage > 1) {
-      params.set(SECTION_PAGE_PARAM.events, String(eventsPage));
-    }
-    const query = params.toString();
     const base = `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/${targetSection}`;
-    return query ? `${base}?${query}` : base;
+    return base;
   };
 
   const fetchJson = async <T,>(url: string): Promise<FetchResult<T>> => {
