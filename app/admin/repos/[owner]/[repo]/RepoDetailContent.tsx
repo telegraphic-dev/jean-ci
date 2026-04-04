@@ -208,6 +208,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const fullName = `${owner}/${repoName}`;
+  const repoApiBase = `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}`;
   const [repo, setRepo] = useState<Repo | null>(null);
   const [counts, setCounts] = useState<Counts>({ checks: 0, deployments: 0, events: 0 });
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
@@ -267,13 +268,13 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
     try {
       const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
-        fetchJson<Repo>(`/api/repos/${fullName}`),
-        fetchJson<Counts>(`/api/repos/${fullName}/counts`),
-        fetchJson<PaginatedResult<CheckRun>>(`/api/repos/${fullName}/checks?page=${checksPage}`),
-        fetchJson<PaginatedResult<Pipeline>>(`/api/repos/${fullName}/pipelines?page=${pipelinesPage}`),
-        fetchJson<PaginatedResult<WebhookEvent>>(`/api/repos/${fullName}/events?page=${eventsPage}`),
+        fetchJson<Repo>(repoApiBase),
+        fetchJson<Counts>(`${repoApiBase}/counts`),
+        fetchJson<PaginatedResult<CheckRun>>(`${repoApiBase}/checks?page=${checksPage}`),
+        fetchJson<PaginatedResult<Pipeline>>(`${repoApiBase}/pipelines?page=${pipelinesPage}`),
+        fetchJson<PaginatedResult<WebhookEvent>>(`${repoApiBase}/events?page=${eventsPage}`),
         fetchJson<{ summary: TaskSummary[]; stats: TaskStats | null }>(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
-        fetchJson<FeatureSession[]>(`/api/repos/${fullName}/sessions`),
+        fetchJson<FeatureSession[]>(`${repoApiBase}/sessions`),
       ]);
       setRepo(repoData.ok && repoData.data ? repoData.data : null);
       setCounts(countsData.ok && countsData.data ? countsData.data : { checks: 0, deployments: 0, events: 0 });
@@ -295,7 +296,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
     } finally {
       setLoading(false);
     }
-  }, [fullName]);
+  }, [fullName, repoApiBase]);
 
   useEffect(() => {
     fetchData(checksPage, deploymentsPage, eventsPage);
