@@ -204,11 +204,13 @@ function getStatusBadge(status: string, conclusion?: string | null) {
 }
 
 export default function RepoDetailContent({ owner, repoName, section }: { owner: string; repoName: string; section: RepoSection }) {
+  const decodedOwner = decodeURIComponent(owner);
+  const decodedRepoName = decodeURIComponent(repoName);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const fullName = `${owner}/${repoName}`;
-  const repoApiBase = `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}`;
+  const fullName = `${decodedOwner}/${decodedRepoName}`;
+  const repoApiBase = `/api/repos/${encodeURIComponent(decodedOwner)}/${encodeURIComponent(decodedRepoName)}`;
   const [repo, setRepo] = useState<Repo | null>(null);
   const [counts, setCounts] = useState<Counts>({ checks: 0, deployments: 0, events: 0 });
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
@@ -237,7 +239,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
     router.replace(query ? `${pathname}?${query}` : pathname);
   };
 
-  const buildSectionHref = (targetSection: RepoSection) => `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/${targetSection}`;
+  const buildSectionHref = (targetSection: RepoSection) => `/admin/repos/${encodeURIComponent(decodedOwner)}/${encodeURIComponent(decodedRepoName)}/${targetSection}`;
 
   const fetchJson = async <T,>(url: string): Promise<FetchResult<T>> => {
     try {
@@ -395,7 +397,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                     setCreatingSession(true);
                     setSessionsError(null);
                     try {
-                      const response = await fetch(`/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/sessions/create`, {
+                      const response = await fetch(`/api/repos/${encodeURIComponent(decodedOwner)}/${encodeURIComponent(decodedRepoName)}/sessions/create`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ title: newSessionTitle, branchName: newSessionBranch }),
