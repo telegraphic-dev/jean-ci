@@ -5,6 +5,7 @@ import path from 'node:path';
 import { buildPublicOpenApiSpec } from '../lib/public-openapi.ts';
 
 const ROUTES_ROOT = path.join(process.cwd(), 'app', 'api', 'public', 'v1');
+const PUBLIC_OPENAPI_ROUTE = '/api/public/openapi.json';
 
 async function listRouteFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -63,7 +64,9 @@ function extractDocumentedParams(specPath: any): { path: Set<string>; query: Set
   return { path, query };
 }
 
-test('public OpenAPI paths stay in sync with implemented GET routes', async () => {
+test('public OpenAPI parity is intentionally scoped to the public token API', async () => {
+  assert.equal(PUBLIC_OPENAPI_ROUTE, '/api/public/openapi.json');
+
   const routeFiles = await listRouteFiles(ROUTES_ROOT);
 
   const implementedPaths: string[] = [];

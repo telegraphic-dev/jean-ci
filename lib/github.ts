@@ -110,6 +110,56 @@ export async function getPRInfo(octokit: any, owner: string, repo: string, prNum
   return data;
 }
 
+export function canCreateOverrideApproval(checkRun: {
+  head_sha?: string | null;
+  pr_number: number;
+}, prInfo: {
+  state?: string;
+  draft?: boolean;
+  head?: { sha?: string | null };
+} | null | undefined): { ok: true } | { ok: false; reason: string } {
+  if (!prInfo) {
+    return { ok: false, reason: `PR #${checkRun.pr_number} was not found` };
+  }
+
+  if (prInfo.state !== 'open') {
+    return { ok: false, reason: `PR #${checkRun.pr_number} is not open` };
+  }
+
+  if (prInfo.draft) {
+    return { ok: false, reason: `PR #${checkRun.pr_number} is still a draft` };
+  }
+
+  const reviewHeadSha = (checkRun.head_sha || '').trim();
+  const currentPrHeadSha = (prInfo.head?.sha || '').trim();
+  if (reviewHeadSha && currentPrHeadSha && reviewHeadSha !== currentPrHeadSha) {
+    return {
+      ok: false,
+      reason: `PR #${checkRun.pr_number} head changed from ${reviewHeadSha} to ${currentPrHeadSha}`,
+    };
+  }
+
+  return { ok: true };
+}
+
+export async function createPRReview(
+  octokit: any,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT',
+  body: string,
+) {
+  const { data } = await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
+    owner,
+    repo,
+    pull_number: prNumber,
+    event,
+    body,
+  });
+  return data;
+}
+
 export async function createCheck(octokit: any, owner: string, repo: string, name: string, headSha: string, status = 'queued') {
   const { data } = await octokit.request('POST /repos/{owner}/{repo}/check-runs', {
     owner, repo, name, head_sha: headSha, status,

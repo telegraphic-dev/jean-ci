@@ -143,6 +143,10 @@ export async function initDatabase() {
         pr_title TEXT,
         pr_body TEXT,
         diff_preview TEXT,
+        manually_overridden BOOLEAN DEFAULT FALSE,
+        override_reason TEXT,
+        overridden_by TEXT,
+        overridden_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP
       );
@@ -374,6 +378,10 @@ export interface CheckRun {
   pr_title?: string;
   pr_body?: string;
   diff_preview?: string;
+  manually_overridden?: boolean;
+  override_reason?: string;
+  overridden_by?: string;
+  overridden_at?: Date;
   created_at: Date;
   completed_at?: Date;
 }
@@ -736,6 +744,36 @@ export async function getAllCheckRunsPaginated(page = 1, limit = 50): Promise<Pa
   return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
 }
 
+export async function overrideCheckRunToPass(id: number, reason: string, overriddenBy: string): Promise<CheckRun | null> {
+  const sanitizedReason = reason.trim();
+  if (!sanitizedReason) {
+    throw new Error('Override reason is required');
+  }
+
+  const result = await pool.query(
+    `UPDATE jean_ci_check_runs
+     SET summary = CONCAT(
+           COALESCE(summary, ''),
+           CASE WHEN COALESCE(summary, '') = '' THEN '' ELSE E'\n\n---\n\n' END,
+           'Manual override recorded by ', $3, '.\n\nReason: ', $2,
+           '\n\nGitHub check/review state was not changed automatically.'
+         ),
+         manually_overridden = TRUE,
+         override_reason = $2,
+         overridden_by = $3,
+         overridden_at = CURRENT_TIMESTAMP,
+         completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+     WHERE id = $1
+       AND status = 'completed'
+       AND conclusion = 'failure'
+       AND COALESCE(manually_overridden, FALSE) = FALSE
+     RETURNING *`,
+    [id, sanitizedReason, overriddenBy]
+  );
+
+  return result.rows[0] || null;
+}
+
 export interface PublicCheckRun {
   id: number;
   github_check_id?: number;
@@ -747,6 +785,10 @@ export interface PublicCheckRun {
   conclusion?: string;
   title?: string;
   summary?: string;
+  manually_overridden?: boolean;
+  override_reason?: string;
+  overridden_by?: string;
+  overridden_at?: Date;
   created_at: Date;
   completed_at?: Date;
 }

@@ -12,7 +12,6 @@ const eventsLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer'
 const repoFilterParam = { name: 'repo', in: 'query', schema: { type: 'string' } } as const;
 const ownerParam = { name: 'owner', in: 'path', required: true, schema: { type: 'string' } } as const;
 const repoParam = { name: 'repo', in: 'path', required: true, schema: { type: 'string' } } as const;
-
 const okResponse = { description: 'Success' } as const;
 const unauthorizedResponse = { description: 'Unauthorized' } as const;
 
