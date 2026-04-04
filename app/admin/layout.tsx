@@ -10,9 +10,26 @@ interface User {
   avatar: string;
 }
 
+function SearchBar() {
+  return (
+    <div className="relative w-full max-w-xs">
+      <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+      <input
+        type="text"
+        placeholder="Search soon…"
+        disabled
+        className="w-full pl-10 pr-4 py-1.5 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-muted)] placeholder:text-[var(--text-muted)] opacity-70 cursor-not-allowed"
+      />
+    </div>
+  );
+}
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -70,67 +87,122 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     return pathname.startsWith(href);
   };
 
+  const generateBreadcrumbs = () => {
+    const parts = pathname.split('/').filter(Boolean);
+    const crumbs: { label: string; href: string }[] = [];
+    let currentPath = '';
+
+    for (const part of parts) {
+      currentPath += `/${part}`;
+      if (part === 'admin') continue;
+
+      let label = part
+        .split('-')
+        .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join(' ');
+
+      if (label.length > 40) label = `${label.slice(0, 37)}...`;
+      crumbs.push({ label, href: currentPath });
+    }
+
+    return crumbs;
+  };
+
+  const breadcrumbs = generateBreadcrumbs();
+
   return (
-    <div className="min-h-screen">
-      {/* Top Navigation */}
-      <nav className="bg-[var(--bg-card)] border-b border-[var(--border)] sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-8">
-              <Link href="/admin" className="text-xl font-bold">
-                <span className="bg-gradient-to-r from-[#b7642b] to-[#9f5522] bg-clip-text text-transparent">jean-ci</span>
-              </Link>
-              <div className="hidden md:flex items-center gap-1">
-                {navItems.map(item => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      isActive(item.href)
-                        ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'
-                    }`}
-                  >
-                    <span>{item.icon}</span>
-                    {item.label}
-                  </Link>
-                ))}
-              </div>
+    <div className="flex min-h-screen bg-[var(--bg-primary)]">
+      <aside className={`fixed md:sticky top-0 left-0 h-screen w-64 bg-[var(--bg-card)] border-r border-[var(--border)] z-40 transform transition-transform duration-200 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+        <div className="px-4 py-3 border-b border-[var(--border)]">
+          <Link href="/admin" className="flex items-center gap-2 text-lg font-bold">
+            <span className="bg-gradient-to-r from-[#b7642b] to-[#9f5522] bg-clip-text text-transparent">jean-ci</span>
+          </Link>
+        </div>
+
+        <nav className="p-4 space-y-1">
+          {navItems.map(item => (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={() => setSidebarOpen(false)}
+              className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                isActive(item.href)
+                  ? 'bg-[var(--accent)] text-[var(--on-accent)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <span className="text-lg">{item.icon}</span>
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--border)] space-y-3">
+          <div className="flex items-center gap-3 px-4">
+            <img src={user.avatar} alt={user.login} className="w-9 h-9 rounded-full" />
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-[var(--text-primary)] truncate">{user.login}</div>
+              <div className="text-xs text-[var(--text-muted)]">GitHub account</div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <img src={user.avatar} alt={user.login} className="w-8 h-8 rounded-full" />
-                <span className="text-sm font-medium hidden sm:block">{user.login}</span>
-              </div>
-              <a href="/api/auth/logout" className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-                Logout
-              </a>
+          </div>
+          <a href="/api/auth/logout" className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--red)] transition-colors">
+            <span className="text-lg">🚪</span>
+            Logout
+          </a>
+        </div>
+      </aside>
+
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <main className="flex-1 overflow-y-auto min-w-0">
+        <div className="sticky top-0 z-20 bg-[var(--bg-primary)]/80 backdrop-blur-xl border-b border-[var(--border)] px-4 md:px-8 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4 min-w-0">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="md:hidden p-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] shrink-0"
+                aria-label="Open menu"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+
+              <nav className="flex items-center gap-2 text-sm overflow-x-auto whitespace-nowrap">
+                <Link href="/admin" className="text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors">Admin</Link>
+                {breadcrumbs.map((crumb, idx) => (
+                  <div key={crumb.href} className="flex items-center gap-2">
+                    <span className="text-[var(--text-muted)]">/</span>
+                    {idx === breadcrumbs.length - 1 ? (
+                      <span className="text-[var(--text-primary)] font-medium">{crumb.label}</span>
+                    ) : (
+                      <Link href={crumb.href} className="text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors">
+                        {crumb.label}
+                      </Link>
+                    )}
+                  </div>
+                ))}
+              </nav>
+            </div>
+
+            <div className="hidden sm:block shrink-0">
+              <SearchBar />
             </div>
           </div>
         </div>
-      </nav>
 
-      {/* Mobile Navigation */}
-      <div className="md:hidden bg-[var(--bg-card)] border-b border-[var(--border)] px-4 py-2 flex gap-2 overflow-x-auto">
-        {navItems.map(item => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm whitespace-nowrap ${
-              isActive(item.href)
-                ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
-                : 'text-[var(--text-secondary)]'
-            }`}
-          >
-            <span>{item.icon}</span>
-            {item.label}
-          </Link>
-        ))}
-      </div>
-
-      {/* Page Content */}
-      <main className="max-w-7xl mx-auto px-4 py-8">
-        {children}
+        <div className="w-full px-4 md:px-8 py-8">
+          <div className="max-w-7xl mx-auto w-full">
+            {children}
+          </div>
+        </div>
       </main>
     </div>
   );

@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { getRepoAdminPath } from '@/lib/admin/repo-links';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface Repo {
   id: number;
@@ -29,13 +30,25 @@ function formatRelativeTime(timestamp: string): string {
 }
 
 export default function ReposPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
   const [syncing, setSyncing] = useState(false);
-  const [sortOrder, setSortOrder] = useState<SortOrder>('activity');
-  const searchParams = useSearchParams();
+  const search = searchParams.get('q') ?? '';
+  const sortOrder = (searchParams.get('sort') as SortOrder) ?? 'activity';
   const filter = searchParams.get('filter') ?? 'enabled'; // Default to enabled
+
+  const updateQuery = (updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(updates)) {
+      if (value == null || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  };
 
   useEffect(() => {
     loadRepos();
@@ -137,13 +150,13 @@ export default function ReposPage() {
 
         <div className="flex gap-2">
           <button
-            onClick={() => setSortOrder('activity')}
+            onClick={() => updateQuery({ sort: 'activity' })}
             className={`px-3 py-1.5 rounded-lg text-sm ${sortOrder === 'activity' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
           >
             Recent Activity
           </button>
           <button
-            onClick={() => setSortOrder('name')}
+            onClick={() => updateQuery({ sort: 'name' })}
             className={`px-3 py-1.5 rounded-lg text-sm ${sortOrder === 'name' ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'}`}
           >
             Name
@@ -156,14 +169,14 @@ export default function ReposPage() {
           type="text"
           placeholder="Search repos..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => updateQuery({ q: e.target.value || null })}
           className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-sm w-64"
         />
       </div>
 
       {/* Repos table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[600px]">
+        <table className="w-full min-w-[920px]">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
@@ -184,7 +197,7 @@ export default function ReposPage() {
               filteredRepos.map(repo => (
                 <tr key={repo.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                   <td className="py-3 px-4">
-                    <Link href={`/admin/repos/${repo.full_name}`} className="text-[var(--accent)] hover:underline font-medium">
+                    <Link href={getRepoAdminPath(repo.full_name)} className="text-[var(--accent)] hover:underline font-medium">
                       {repo.full_name}
                     </Link>
                   </td>

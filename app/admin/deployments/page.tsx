@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { getRepoAdminPath } from '@/lib/admin/repo-links';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface PipelineStage {
   status: 'pending' | 'running' | 'success' | 'failure' | 'skipped';
@@ -104,11 +106,27 @@ function formatRelativeTime(timestamp: string): string {
 }
 
 export default function DeploymentsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [data, setData] = useState<PaginatedResult>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [loading, setLoading] = useState(true);
 
-  const fetchPage = async (page: number) => {
-    const result = await fetch(`/api/pipelines?page=${page}`).then(r => r.json());
+  const pageParam = Number(searchParams.get('page') || '1');
+  const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+
+  const updateQuery = (updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(updates)) {
+      if (value == null || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  };
+
+  const fetchPage = async (targetPage: number) => {
+    const result = await fetch(`/api/pipelines?page=${targetPage}`).then(r => r.json());
     if (result.items) {
       setData(result);
     } else if (result.pipelines) {
@@ -120,8 +138,9 @@ export default function DeploymentsPage() {
   };
 
   useEffect(() => {
-    fetchPage(1).then(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    fetchPage(page).then(() => setLoading(false));
+  }, [page]);
 
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
@@ -177,7 +196,7 @@ export default function DeploymentsPage() {
                     </div>
                   </td>
                   <td className="py-3 px-4">
-                    <Link href={`/admin/repos/${p.repo}`} className="text-[var(--accent)] hover:underline">
+                    <Link href={getRepoAdminPath(p.repo)} className="text-[var(--accent)] hover:underline">
                       {p.repo}
                     </Link>
                   </td>
@@ -197,7 +216,7 @@ export default function DeploymentsPage() {
         </table>
       </div>
 
-      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={fetchPage} />
+      <Pagination page={data.page} totalPages={data.totalPages} onPageChange={(targetPage) => updateQuery({ page: String(targetPage) })} />
 
       <div className="mt-4 text-sm text-[var(--text-muted)] flex items-center gap-4">
         <span>Legend:</span>

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface FeatureSession {
   id: number;
@@ -40,10 +41,24 @@ function buildRepoAdminHref(repoFullName: string): string {
 }
 
 export default function FeatureSessionsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [sessions, setSessions] = useState<FeatureSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
+
+  const search = searchParams.get('q') || '';
+
+  const updateQuery = (updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(updates)) {
+      if (value == null || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -103,7 +118,7 @@ export default function FeatureSessionsPage() {
           type="text"
           placeholder="Search sessions..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => updateQuery({ q: e.target.value || null })}
           className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-sm w-full sm:w-72"
         />
       </div>
