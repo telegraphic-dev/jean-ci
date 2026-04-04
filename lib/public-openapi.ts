@@ -9,6 +9,7 @@ const pageParam = { name: 'page', in: 'query', schema: { type: 'integer', minimu
 const checksLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } } as const;
 const pipelinesLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 50 } } as const;
 const eventsLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } } as const;
+const deploymentsLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } } as const;
 const repoFilterParam = { name: 'repo', in: 'query', schema: { type: 'string' } } as const;
 const ownerParam = { name: 'owner', in: 'path', required: true, schema: { type: 'string' } } as const;
 const repoParam = { name: 'repo', in: 'path', required: true, schema: { type: 'string' } } as const;
@@ -121,7 +122,7 @@ export function buildPublicOpenApiSpec() {
       [`/${PUBLIC_API_VERSION}/repos/{owner}/{repo}/deployments`]: {
         get: {
           summary: 'List deployments for a repository',
-          parameters: [ownerParam, repoParam, pageParam, eventsLimitParam],
+          parameters: [ownerParam, repoParam, pageParam, deploymentsLimitParam],
           responses: { '200': okResponse, '401': unauthorizedResponse },
         },
       },
