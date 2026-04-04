@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 
 interface User {
@@ -143,7 +144,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--border)] space-y-3">
           <div className="flex items-center gap-3 px-4">
             {userAvatar ? (
-              <img src={userAvatar} alt={userLogin} className="w-9 h-9 rounded-full" />
+              <Image src={userAvatar} alt={userLogin} width={36} height={36} className="w-9 h-9 rounded-full" unoptimized />
             ) : (
               <div className="w-9 h-9 rounded-full bg-[var(--bg-secondary)] border border-[var(--border)] flex items-center justify-center text-sm text-[var(--text-muted)]">
                 👤
