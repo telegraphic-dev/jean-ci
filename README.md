@@ -216,6 +216,7 @@ Features:
 jean-ci now exposes a token-protected public API so external services can read operational data without direct database access.
 
 - OpenAPI spec: `/api/public/openapi.json`
+- Scope: public token API only (`/api/public/v1/*`), not admin/session-authenticated routes under `/api/**`
 - Versioned endpoints: `/api/public/v1/*`
 - Auth: `Authorization: Bearer <token>`
 
@@ -237,13 +238,23 @@ jean-ci now exposes a token-protected public API so external services can read o
 - `GET /api/public/v1/repos/{owner}/{repo}/events?page=1&limit=50`
 - `GET /api/public/v1/repos/{owner}/{repo}/deployments?page=1&limit=50`
 
-### Token management
+### Admin-authenticated API endpoints
 
-Admin-authenticated API token management endpoints:
+These endpoints are session-authenticated admin routes under `/api/**` and are intentionally outside the public OpenAPI document at `/api/public/openapi.json`.
+
+#### Token management
 
 - `GET /api/tokens` list issued tokens (hashed at rest; token value is not returned)
 - `POST /api/tokens` create a token (plain token is returned once)
 - `DELETE /api/tokens/{id}` revoke a token
+
+#### Check run override
+
+- `POST /api/checks/{id}/override`
+  - auth: logged-in admin session
+  - body: `{ "reason": "..." }`
+  - success: records a manual override in jean-ci only
+  - does not update the GitHub check run or submit a GitHub approval review
 
 Optional bootstrap token(s) can be set via env vars:
 
