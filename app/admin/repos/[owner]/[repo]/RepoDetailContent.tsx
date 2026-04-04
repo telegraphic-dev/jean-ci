@@ -111,6 +111,12 @@ interface TaskStats {
 
 export type RepoSection = 'sessions' | 'checks' | 'deployments' | 'tasks' | 'events';
 
+const SECTION_PAGE_PARAM: Record<'checks' | 'deployments' | 'events', string> = {
+  checks: 'checksPage',
+  deployments: 'deploymentsPage',
+  events: 'eventsPage',
+};
+
 function Pagination({ page, totalPages, onPageChange }: { page: number; totalPages: number; onPageChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
   return (
@@ -216,9 +222,9 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const [loading, setLoading] = useState(true);
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
 
-  const checksPage = Math.max(1, Number(searchParams.get('page') || '1') || 1);
-  const deploymentsPage = Math.max(1, Number(searchParams.get('page') || '1') || 1);
-  const eventsPage = Math.max(1, Number(searchParams.get('page') || '1') || 1);
+  const checksPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.checks) || '1') || 1);
+  const deploymentsPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.deployments) || '1') || 1);
+  const eventsPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.events) || '1') || 1);
 
   const updateQuery = (updates: Record<string, string | null>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -232,9 +238,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
 
   const buildSectionHref = (targetSection: RepoSection) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (targetSection !== 'checks' && targetSection !== 'deployments' && targetSection !== 'events') {
-      params.delete('page');
-    }
     const query = params.toString();
     const base = `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/${targetSection}`;
     return query ? `${base}?${query}` : base;
@@ -506,7 +509,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
               </tbody>
             </table>
           </div>
-          <Pagination page={checks.page} totalPages={checks.totalPages} onPageChange={(page) => updateQuery({ page: String(page) })} />
+          <Pagination page={checks.page} totalPages={checks.totalPages} onPageChange={(page) => updateQuery({ [SECTION_PAGE_PARAM.checks]: String(page) })} />
         </div>
       )}
 
@@ -551,7 +554,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
               </tbody>
             </table>
           </div>
-          <Pagination page={pipelines.page} totalPages={pipelines.totalPages} onPageChange={(page) => updateQuery({ page: String(page) })} />
+          <Pagination page={pipelines.page} totalPages={pipelines.totalPages} onPageChange={(page) => updateQuery({ [SECTION_PAGE_PARAM.deployments]: String(page) })} />
           <div className="mt-4 text-sm text-[var(--text-muted)] flex items-center gap-4">
             <span>Legend:</span>
             <span className="flex items-center gap-1"><span className="text-[var(--green)]">✅</span> Success</span>
@@ -678,7 +681,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
               </tbody>
             </table>
           </div>
-          <Pagination page={events.page} totalPages={events.totalPages} onPageChange={(page) => updateQuery({ page: String(page) })} />
+          <Pagination page={events.page} totalPages={events.totalPages} onPageChange={(page) => updateQuery({ [SECTION_PAGE_PARAM.events]: String(page) })} />
         </div>
       )}
     </div>

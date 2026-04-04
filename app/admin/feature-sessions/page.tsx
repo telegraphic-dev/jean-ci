@@ -42,6 +42,7 @@ export default function FeatureSessionsPage() {
   const [error, setError] = useState<string | null>(null);
 
   const search = searchParams.get('q') || '';
+  const [searchInput, setSearchInput] = useState(search);
 
   const updateQuery = (updates: Record<string, string | null>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -87,6 +88,22 @@ export default function FeatureSessionsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    setSearchInput(search);
+  }, [search]);
+
+  useEffect(() => {
+    const next = searchInput.trim();
+    const current = search.trim();
+    if (next === current) return;
+
+    const timeout = setTimeout(() => {
+      updateQuery({ q: next || null });
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [searchInput, search]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return sessions.filter(session => {
@@ -110,8 +127,8 @@ export default function FeatureSessionsPage() {
         <input
           type="text"
           placeholder="Search sessions..."
-          value={search}
-          onChange={(e) => updateQuery({ q: e.target.value || null })}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-sm w-full sm:w-72"
         />
       </div>

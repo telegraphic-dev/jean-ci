@@ -7,6 +7,7 @@ export function getRepoAdminPath(repoFullName: string, section?: string) {
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
   const base = `/admin/repos/${encodedOwner}/${encodedRepo}`;
+  const targetSection = section ?? 'sessions';
 
-  return section ? `${base}/${section}` : base;
+  return `${base}/${targetSection}`;
 }

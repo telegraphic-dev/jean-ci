@@ -37,6 +37,7 @@ export default function ReposPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const search = searchParams.get('q') ?? '';
+  const [searchInput, setSearchInput] = useState(search);
   const sortOrder = (searchParams.get('sort') as SortOrder) ?? 'activity';
   const filter = searchParams.get('filter') ?? 'enabled'; // Default to enabled
 
@@ -53,6 +54,22 @@ export default function ReposPage() {
   useEffect(() => {
     loadRepos();
   }, []);
+
+  useEffect(() => {
+    setSearchInput(search);
+  }, [search]);
+
+  useEffect(() => {
+    const next = searchInput.trim();
+    const current = search.trim();
+    if (next === current) return;
+
+    const timeout = setTimeout(() => {
+      updateQuery({ q: next || null });
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [searchInput, search]);
 
   async function loadRepos() {
     const res = await fetch('/api/repos');
@@ -168,8 +185,8 @@ export default function ReposPage() {
         <input
           type="text"
           placeholder="Search repos..."
-          value={search}
-          onChange={(e) => updateQuery({ q: e.target.value || null })}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-sm w-64"
         />
       </div>
