@@ -237,10 +237,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
     router.replace(query ? `${pathname}?${query}` : pathname);
   };
 
-  const buildSectionHref = (targetSection: RepoSection) => {
-    const base = `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/${targetSection}`;
-    return base;
-  };
+  const buildSectionHref = (targetSection: RepoSection) => `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/${targetSection}`;
 
   const fetchJson = async <T,>(url: string): Promise<FetchResult<T>> => {
     try {
@@ -353,6 +350,11 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
           <Link
             key={tab.id}
             href={buildSectionHref(tab.id)}
+            onClick={() => {
+              if (section !== tab.id && selectedOutput !== null) {
+                setSelectedOutput(null);
+              }
+            }}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
               section === tab.id
                 ? 'border-[var(--accent)] text-[var(--accent)]'
