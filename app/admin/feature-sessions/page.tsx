@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { getRepoAdminPath } from '@/lib/admin/repo-links';
 
 interface FeatureSession {
   id: number;
@@ -31,19 +33,26 @@ function formatRelativeTime(timestamp?: string | null): string {
   return `${Math.floor(diff / 604_800_000)}w ago`;
 }
 
-function buildRepoAdminHref(repoFullName: string): string {
-  const [owner, repo] = repoFullName.split('/');
-  if (!owner || !repo) {
-    return '/admin/repos';
-  }
-  return `/admin/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
-}
-
 export default function FeatureSessionsPage() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [sessions, setSessions] = useState<FeatureSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
+
+  const search = searchParams.get('q') || '';
+  const [searchInput, setSearchInput] = useState(search);
+
+  const updateQuery = (updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(updates)) {
+      if (value == null || value === '') params.delete(key);
+      else params.set(key, value);
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +88,22 @@ export default function FeatureSessionsPage() {
     };
   }, []);
 
+  useEffect(() => {
+    setSearchInput(search);
+  }, [search]);
+
+  useEffect(() => {
+    const next = searchInput.trim();
+    const current = search.trim();
+    if (next === current) return;
+
+    const timeout = setTimeout(() => {
+      updateQuery({ q: next || null });
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [searchInput, search]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return sessions.filter(session => {
@@ -102,8 +127,8 @@ export default function FeatureSessionsPage() {
         <input
           type="text"
           placeholder="Search sessions..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] text-sm w-full sm:w-72"
         />
       </div>
@@ -131,7 +156,7 @@ export default function FeatureSessionsPage() {
               ) : filtered.map(session => (
                 <tr key={session.id} className="border-b border-[var(--border)] hover:bg-[var(--bg-card-hover)] transition-colors">
                   <td className="py-3 px-4">
-                    <Link href={buildRepoAdminHref(session.repo_full_name)} className="text-[var(--accent)] hover:underline font-medium">
+                    <Link href={getRepoAdminPath(session.repo_full_name)} className="text-[var(--accent)] hover:underline font-medium">
                       {session.repo_full_name}
                     </Link>
                   </td>
