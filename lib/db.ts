@@ -752,13 +752,11 @@ export async function overrideCheckRunToPass(id: number, reason: string, overrid
 
   const result = await pool.query(
     `UPDATE jean_ci_check_runs
-     SET status = 'completed',
-         conclusion = 'success',
-         title = '✅ Manually overridden to pass',
-         summary = CONCAT(
+     SET summary = CONCAT(
            COALESCE(summary, ''),
            CASE WHEN COALESCE(summary, '') = '' THEN '' ELSE E'\n\n---\n\n' END,
-           'Manual override applied by ', $3, '.\n\nReason: ', $2
+           'Manual override recorded by ', $3, '.\n\nReason: ', $2,
+           '\n\nGitHub check/review state was not changed automatically.'
          ),
          manually_overridden = TRUE,
          override_reason = $2,
