@@ -239,7 +239,17 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
     router.replace(query ? `${pathname}?${query}` : pathname);
   };
 
-  const buildSectionHref = (targetSection: RepoSection) => `/admin/repos/${encodeURIComponent(decodedOwner)}/${encodeURIComponent(decodedRepoName)}/${targetSection}`;
+  const buildSectionHref = (targetSection: RepoSection) => {
+    const params = new URLSearchParams(searchParams.toString());
+
+    if (targetSection !== 'checks') params.delete(SECTION_PAGE_PARAM.checks);
+    if (targetSection !== 'deployments') params.delete(SECTION_PAGE_PARAM.deployments);
+    if (targetSection !== 'events') params.delete(SECTION_PAGE_PARAM.events);
+
+    const query = params.toString();
+    const base = `/admin/repos/${encodeURIComponent(decodedOwner)}/${encodeURIComponent(decodedRepoName)}/${targetSection}`;
+    return query ? `${base}?${query}` : base;
+  };
 
   const fetchJson = async <T,>(url: string): Promise<FetchResult<T>> => {
     try {
