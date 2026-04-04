@@ -292,6 +292,12 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
     fetchData(checksPage, deploymentsPage, eventsPage);
   }, [fetchData, checksPage, deploymentsPage, eventsPage]);
 
+  useEffect(() => {
+    if (section !== 'tasks' && selectedOutput !== null) {
+      setSelectedOutput(null);
+    }
+  }, [section, selectedOutput]);
+
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
   }
@@ -635,7 +641,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
         </div>
       )}
 
-      {selectedOutput && (
+      {section === 'tasks' && selectedOutput && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setSelectedOutput(null)}>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">

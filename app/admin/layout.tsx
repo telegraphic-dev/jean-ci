@@ -82,6 +82,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: '/admin/prompt', label: 'Prompt', icon: '📝' },
   ];
 
+  const userLogin = user?.login ?? 'Signed-out user';
+  const userAvatar = user?.avatar ?? '';
+
   const isActive = (href: string) => {
     if (href === '/admin') return pathname === '/admin';
     return pathname.startsWith(href);
@@ -139,9 +142,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-[var(--border)] space-y-3">
           <div className="flex items-center gap-3 px-4">
-            <img src={user.avatar} alt={user.login} className="w-9 h-9 rounded-full" />
+            {userAvatar ? (
+              <img src={userAvatar} alt={userLogin} className="w-9 h-9 rounded-full" />
+            ) : (
+              <div className="w-9 h-9 rounded-full bg-[var(--bg-secondary)] border border-[var(--border)] flex items-center justify-center text-sm text-[var(--text-muted)]">
+                👤
+              </div>
+            )}
             <div className="min-w-0">
-              <div className="text-sm font-medium text-[var(--text-primary)] truncate">{user.login}</div>
+              <div className="text-sm font-medium text-[var(--text-primary)] truncate">{userLogin}</div>
               <div className="text-xs text-[var(--text-muted)]">GitHub account</div>
             </div>
           </div>
