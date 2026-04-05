@@ -40,7 +40,7 @@ export function buildPublicOpenApiSpec() {
       },
       [`/${PUBLIC_API_VERSION}/local-review`]: {
         post: {
-          summary: 'Run jean-ci review checks against a caller-provided local diff',
+          summary: 'Queue jean-ci review checks against a caller-provided local diff',
           requestBody: {
             required: true,
             content: {
@@ -87,7 +87,19 @@ export function buildPublicOpenApiSpec() {
               },
             },
           },
-          responses: { '200': okResponse, '400': badRequestResponse, '401': unauthorizedResponse, '500': { description: 'Internal server error' } },
+          responses: { '202': { description: 'Accepted for async processing' }, '400': badRequestResponse, '401': unauthorizedResponse, '500': { description: 'Internal server error' } },
+        },
+        get: {
+          summary: 'Get local review run status by runId query parameter',
+          parameters: [{ name: 'runId', in: 'query', required: true, schema: { type: 'string' } }],
+          responses: { '200': okResponse, '400': badRequestResponse, '401': unauthorizedResponse, '404': { description: 'Run not found' } },
+        },
+      },
+      [`/${PUBLIC_API_VERSION}/local-review/{runId}`]: {
+        get: {
+          summary: 'Get local review run status by path',
+          parameters: [{ name: 'runId', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { '200': okResponse, '401': unauthorizedResponse, '404': { description: 'Run not found' } },
         },
       },
       [`/${PUBLIC_API_VERSION}/stats`]: {
