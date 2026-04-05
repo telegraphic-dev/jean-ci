@@ -535,9 +535,10 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                   {sessions.map(session => {
                     const active = session.session_key === selectedSessionKey;
                     return (
-                      <button
+                      <div
                         key={session.session_key}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => {
                           sessionChatRequestSeq.current += 1;
                           sessionChatSendSeq.current += 1;
@@ -546,7 +547,17 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                           setSessionChat(null);
                           setSessionChatError(null);
                         }}
-                        className={`w-full text-left p-4 flex flex-col gap-3 transition-colors ${active ? 'bg-[var(--bg-secondary)]' : 'hover:bg-[var(--bg-card-hover)]'}`}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          sessionChatRequestSeq.current += 1;
+                          sessionChatSendSeq.current += 1;
+                          setSessionChatSending(false);
+                          setSelectedSessionKey(session.session_key);
+                          setSessionChat(null);
+                          setSessionChatError(null);
+                        }}
+                        className={`w-full text-left p-4 flex flex-col gap-3 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--accent)] ${active ? 'bg-[var(--bg-secondary)]' : 'hover:bg-[var(--bg-card-hover)]'}`}
                       >
                         <div>
                           <div className="font-medium">{session.title}</div>
@@ -578,7 +589,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                             )}
                           </div>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -665,7 +676,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         if (payload && payload.sessionKey === targetSessionKey) {
                           setSessionChat(payload);
                         }
-                        const acceptedSend = response.ok || payload?.runStatus === 'timeout' || payload?.runStatus === 'running';
+                        const acceptedSend = response.ok || payload?.runStatus === 'timeout';
                         if (acceptedSend) {
                           setSessionChatInput('');
                         }

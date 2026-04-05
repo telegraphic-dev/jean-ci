@@ -31,7 +31,11 @@ export async function GET(_req: NextRequest, { params }: Params) {
     return NextResponse.json(state);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load feature session chat';
-    const status = message === 'Feature session not found' ? 404 : 502;
+    const status = message === 'Feature session not found'
+      ? 404
+      : message === 'Feature session key does not belong to this repository'
+        ? 400
+        : 502;
     return NextResponse.json({ error: message }, { status });
   }
 }
@@ -99,7 +103,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json(state, { status });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to send feature session message';
-    const status = errorMessage === 'Feature session not found' ? 404 : 502;
+    const status = errorMessage === 'Feature session not found'
+      ? 404
+      : errorMessage === 'Feature session key does not belong to this repository'
+        ? 400
+        : 502;
     return NextResponse.json({ error: errorMessage }, { status });
   }
 }
