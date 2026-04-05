@@ -8,6 +8,7 @@ import {
 } from '../lib/repo-feature-session-chat.ts';
 
 const REPO_SESSION_KEY = 'jean-ci:telegraphic-dev-jean-ci:feature:session-1';
+const LEGACY_AGENT_PREFIX_SESSION_KEY = 'agent:main:main:jean-ci:telegraphic-dev-jean-ci:feature:session-legacy';
 
 test('buildFeatureSessionIdempotencyKey is stable for the same request inputs', () => {
   const a = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
@@ -92,6 +93,36 @@ test('getRepoFeatureSessionChat marks last-user-message transcripts as running',
 
   const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', REPO_SESSION_KEY, deps);
   assert.equal(result.runStatus, 'running');
+});
+
+test('getRepoFeatureSessionChat accepts legacy gateway-prefixed repo keys', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: LEGACY_AGENT_PREFIX_SESSION_KEY,
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Legacy feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async () => {
+      throw new Error('should not upsert on read');
+    },
+    callGatewayRpc: async () => ({
+      success: true,
+      result: {
+        messages: [{ role: 'assistant', content: 'legacy ok' }],
+      },
+    }),
+  };
+
+  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', LEGACY_AGENT_PREFIX_SESSION_KEY, deps);
+  assert.equal(result.runStatus, 'idle');
+  assert.equal(result.messages[0]?.text, 'legacy ok');
 });
 
 test('sendRepoFeatureSessionChatMessage waits for run completion and updates activity timestamp', async () => {

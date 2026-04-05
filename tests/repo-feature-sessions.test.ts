@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRepoSessionSeedPrompt } from '../lib/repo-feature-session-prompt.ts';
-import { createRepoFeatureSession, type RepoFeatureSessionDeps } from '../lib/repo-feature-sessions.ts';
+import { createRepoFeatureSession, isRepoFeatureSessionKeyForRepo, type RepoFeatureSessionDeps } from '../lib/repo-feature-sessions.ts';
 
 test('buildRepoSessionSeedPrompt binds the session to a repository and PR backlink rules', () => {
   const prompt = buildRepoSessionSeedPrompt('telegraphic-dev/jean-ci');
@@ -157,4 +157,14 @@ test('createRepoFeatureSession requests repo-bound feature key without duplicate
 
   const createPayload = (rpcCalls[0]?.payload as { key?: string }) || {};
   assert.match(createPayload.key || '', /^jean-ci:telegraphic-dev-jean-ci:feature:[a-f0-9-]{36}$/);
+});
+
+test('isRepoFeatureSessionKeyForRepo accepts canonical, legacy, and gateway-prefixed key formats', () => {
+  const repo = 'telegraphic-dev/jean-ci';
+
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean:feature:abc'), false);
 });
