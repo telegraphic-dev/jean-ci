@@ -24,7 +24,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   }
 
   try {
-    const state = await getRepoFeatureSessionChat(fullName, decodeURIComponent(sessionKey));
+    const state = await getRepoFeatureSessionChat(fullName, sessionKey);
     return NextResponse.json(state);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to load feature session chat';
@@ -59,7 +59,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   try {
-    const state = await sendRepoFeatureSessionChatMessage(fullName, decodeURIComponent(sessionKey), message);
+    const state = await sendRepoFeatureSessionChatMessage(fullName, sessionKey, message);
     return NextResponse.json(state);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to send feature session message';
