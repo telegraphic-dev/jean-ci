@@ -154,3 +154,45 @@ test('performManualOverride rejects global review override when approval eligibi
   assert.equal(result.status, 409);
   assert.match(result.error, /head changed/i);
 });
+
+test('performManualOverride does not mutate GitHub if DB override cannot be recorded', async () => {
+  const calls: string[] = [];
+  const { performManualOverrideWithDeps } = await loadTestHelpers();
+
+  const result = await performManualOverrideWithDeps(45, 'approved manually', 'vlad', {
+    getCheckRun: async () => ({
+      id: 45,
+      github_check_id: 91011,
+      repo: 'telegraphic-dev/jean-ci',
+      pr_number: 102,
+      check_name: 'Code Review',
+      head_sha: 'sha102',
+      status: 'completed',
+      conclusion: 'failure',
+      created_at: FIXTURE_DATE,
+    } as any),
+    getRepo: async () => ({ installation_id: 777 } as any),
+    overrideCheckRunToPass: async () => null,
+    getInstallationOctokit: async () => ({ token: 'octokit' } as any),
+    getPRInfo: async () => ({
+      state: 'open',
+      draft: false,
+      head: { sha: 'sha102' },
+    } as any),
+    createPRReview: async () => {
+      calls.push('createPRReview');
+      return {} as any;
+    },
+    updateCheck: async () => {
+      calls.push('updateCheck');
+      return {} as any;
+    },
+    canCreateOverrideApproval: () => ({ ok: true } as const),
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.status, 409);
+  assert.match(result.error, /before override could be recorded/i);
+  assert.deepEqual(calls, []);
+});

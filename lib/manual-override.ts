@@ -107,16 +107,24 @@ async function performManualOverrideWithDeps(
   const { owner, repo } = repoParts;
   const octokit = await deps.getInstallationOctokit((repoConfig as Repo).installation_id);
 
-  let githubReviewSubmitted = false;
-  let githubCheckUpdated = false;
-
-  if (isGlobalReviewCheck(checkRun)) {
+  const shouldSubmitReview = isGlobalReviewCheck(checkRun);
+  if (shouldSubmitReview) {
     const prInfo = await deps.getPRInfo(octokit, owner, repo, checkRun.pr_number);
     const approvalCheck = deps.canCreateOverrideApproval(checkRun, prInfo);
     if (!approvalCheck.ok) {
       return { ok: false, status: 409, error: `Cannot override on GitHub: ${approvalCheck.reason}` };
     }
+  }
 
+  const updated = await deps.overrideCheckRunToPass(checkId, sanitizedReason, actor);
+  if (!updated) {
+    return { ok: false, status: 409, error: 'Check run changed before override could be recorded' };
+  }
+
+  let githubReviewSubmitted = false;
+  let githubCheckUpdated = false;
+
+  if (shouldSubmitReview) {
     await deps.createPRReview(
       octokit,
       owner,
@@ -139,11 +147,6 @@ async function performManualOverrideWithDeps(
       },
     });
     githubCheckUpdated = true;
-  }
-
-  const updated = await deps.overrideCheckRunToPass(checkId, sanitizedReason, actor);
-  if (!updated) {
-    return { ok: false, status: 409, error: 'Check run changed before override could be recorded' };
   }
 
   return {
