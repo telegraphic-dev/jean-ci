@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { callGatewayRpc } from './openclaw-ws.ts';
 import { getRepoFeatureSessions, upsertRepoFeatureSession } from './db.ts';
+import { buildFeatureSessionKeyPrefix } from './repo-feature-sessions.ts';
 
 const MAX_FEATURE_SESSION_MESSAGE_LENGTH = 20_000;
 const FINAL_ASSISTANT_ROLES = new Set(['assistant']);
@@ -161,6 +162,10 @@ async function requireRepoFeatureSession(
   sessionKey: string,
   deps: RepoFeatureSessionChatDeps,
 ) {
+  if (!sessionKey.startsWith(buildFeatureSessionKeyPrefix(repoFullName))) {
+    throw new Error('Feature session key does not belong to this repository');
+  }
+
   const sessions = await deps.getRepoFeatureSessions(repoFullName);
   const match = sessions.find((item) => item.session_key === sessionKey);
   if (!match) {

@@ -7,6 +7,8 @@ import {
   type RepoFeatureSessionChatDeps,
 } from '../lib/repo-feature-session-chat.ts';
 
+const REPO_SESSION_KEY = 'main:jean-ci:telegraphic-dev-jean-ci:feature:session-1';
+
 test('buildFeatureSessionIdempotencyKey is stable for the same request inputs', () => {
   const a = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
   const b = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
@@ -19,7 +21,7 @@ test('buildFeatureSessionIdempotencyKey is stable for the same request inputs', 
 test('getRepoFeatureSessionChat returns normalized transcript messages', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -48,8 +50,8 @@ test('getRepoFeatureSessionChat returns normalized transcript messages', async (
     },
   };
 
-  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'session-1', deps);
-  assert.equal(result.sessionKey, 'session-1');
+  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', REPO_SESSION_KEY, deps);
+  assert.equal(result.sessionKey, REPO_SESSION_KEY);
   assert.equal(result.runStatus, 'idle');
   assert.deepEqual(result.messages, [
     { role: 'system', text: 'seed' },
@@ -61,7 +63,7 @@ test('getRepoFeatureSessionChat returns normalized transcript messages', async (
 test('getRepoFeatureSessionChat marks last-user-message transcripts as running', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -88,7 +90,7 @@ test('getRepoFeatureSessionChat marks last-user-message transcripts as running',
     }),
   };
 
-  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'session-1', deps);
+  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', REPO_SESSION_KEY, deps);
   assert.equal(result.runStatus, 'running');
 });
 
@@ -98,7 +100,7 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
 
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -111,11 +113,11 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
     }]),
     upsertRepoFeatureSession: async (record) => {
       upserted = true;
-      assert.equal(record.session_key, 'session-1');
+      assert.equal(record.session_key, REPO_SESSION_KEY);
       assert.ok(record.last_activity_at instanceof Date);
       return {
         id: 1,
-        session_key: 'session-1',
+        session_key: REPO_SESSION_KEY,
         repo_full_name: 'telegraphic-dev/jean-ci',
         title: 'Feature chat',
         branch_name: 'feat/chat',
@@ -151,9 +153,9 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
     },
   };
 
-  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps);
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', REPO_SESSION_KEY, 'please implement chat', 'request-1', deps);
   assert.deepEqual(calls.map((call) => call.method), ['sessions.send', 'agent.wait', 'sessions.get']);
-  assert.equal(calls[0]?.payload?.idempotencyKey, buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'please implement chat'));
+  assert.equal(calls[0]?.payload?.idempotencyKey, buildFeatureSessionIdempotencyKey(REPO_SESSION_KEY, 'request-1', 'please implement chat'));
   assert.equal(result.runStatus, 'idle');
   assert.equal(result.runId, 'run-1');
   assert.equal(result.messages.at(-1)?.text, 'done');
@@ -163,7 +165,7 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
 test('sendRepoFeatureSessionChatMessage returns timeout state with transcript instead of throwing', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -176,7 +178,7 @@ test('sendRepoFeatureSessionChatMessage returns timeout state with transcript in
     }]),
     upsertRepoFeatureSession: async (record) => ({
       id: 1,
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -209,7 +211,7 @@ test('sendRepoFeatureSessionChatMessage returns timeout state with transcript in
     },
   };
 
-  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps);
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', REPO_SESSION_KEY, 'please implement chat', 'request-1', deps);
   assert.equal(result.runStatus, 'timeout');
   assert.equal(result.error, 'Timed out waiting for assistant reply');
   assert.equal(result.messages.at(-1)?.role, 'user');
@@ -218,7 +220,7 @@ test('sendRepoFeatureSessionChatMessage returns timeout state with transcript in
 test('sendRepoFeatureSessionChatMessage maps send status when runId is missing', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -231,7 +233,7 @@ test('sendRepoFeatureSessionChatMessage maps send status when runId is missing',
     }]),
     upsertRepoFeatureSession: async (record) => ({
       id: 1,
-      session_key: 'session-1',
+      session_key: REPO_SESSION_KEY,
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Feature chat',
       branch_name: 'feat/chat',
@@ -262,7 +264,35 @@ test('sendRepoFeatureSessionChatMessage maps send status when runId is missing',
     },
   };
 
-  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps);
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', REPO_SESSION_KEY, 'please implement chat', 'request-1', deps);
   assert.equal(result.runStatus, 'idle');
   assert.equal(result.runId, undefined);
+});
+
+test('repo feature session chat rejects session keys outside the repo namespace before gateway access', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: 'main:jean-ci:other-repo:feature:session-9',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Wrong session',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async () => {
+      throw new Error('should not upsert');
+    },
+    callGatewayRpc: async () => {
+      throw new Error('should not reach gateway');
+    },
+  };
+
+  await assert.rejects(
+    () => getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'main:jean-ci:other-repo:feature:session-9', deps),
+    /Feature session key does not belong to this repository/
+  );
 });
