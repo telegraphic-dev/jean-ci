@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { Markdown } from '@/components/Markdown';
 
 interface Repo {
   id: number;
@@ -621,14 +622,26 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                 ) : !sessionChat || sessionChat.messages.length === 0 ? (
                   <div className="text-[var(--text-muted)] text-sm">No messages yet.</div>
                 ) : (
-                  sessionChat.messages.map((message, index) => (
-                    <div key={`${message.role}-${index}`} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] rounded-2xl px-4 py-3 whitespace-pre-wrap text-sm border ${message.role === 'user' ? 'bg-[var(--accent)] text-white border-[var(--accent)]' : message.role === 'assistant' ? 'bg-[var(--bg-card)] border-[var(--border)]' : 'bg-[var(--bg-secondary)] border-[var(--border)] text-[var(--text-secondary)]'}`}>
-                        <div className={`text-[10px] uppercase tracking-wide mb-1 ${message.role === 'user' ? 'text-white/70' : 'text-[var(--text-muted)]'}`}>{message.role}</div>
-                        {message.text}
+                sessionChat.messages.map((message, index) => {
+                  const isUser = message.role === 'user';
+                  const bubbleClasses = isUser
+                    ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
+                    : message.role === 'assistant'
+                      ? 'bg-[var(--bg-card)] border-[var(--border)] text-[var(--text-primary)]'
+                      : 'bg-[var(--bg-secondary)] border-[var(--border)] text-[var(--text-secondary)]';
+                  const labelClasses = isUser ? 'text-white/70' : 'text-[var(--text-muted)]';
+                  const markdownClassName = isUser ? 'text-white' : 'text-[var(--text-primary)]';
+                  return (
+                    <div key={`${message.role}-${index}`} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] rounded-2xl border px-4 py-3 text-sm ${bubbleClasses}`}>
+                        <div className={`text-[10px] uppercase tracking-wide mb-2 ${labelClasses}`}>{message.role}</div>
+                        <div className="space-y-2">
+                          <Markdown content={message.text} className={`prose-sm ${markdownClassName}`} />
+                        </div>
                       </div>
                     </div>
-                  ))
+                  );
+                })
                 )}
               </div>
 
