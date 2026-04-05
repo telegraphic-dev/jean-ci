@@ -245,6 +245,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const [sessionChatError, setSessionChatError] = useState<string | null>(null);
   const sessionChatRequestSeq = useRef(0);
   const sessionChatSendSeq = useRef(0);
+  const selectedSessionKeyRef = useRef<string | null>(null);
 
   const checksPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.checks) || '1') || 1);
   const deploymentsPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.deployments) || '1') || 1);
@@ -327,6 +328,10 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
       setSelectedOutput(null);
     }
   }, [section, selectedOutput]);
+
+  useEffect(() => {
+    selectedSessionKeyRef.current = selectedSessionKey;
+  }, [selectedSessionKey]);
 
   const loadSessionChat = useCallback(async (sessionKey: string) => {
     const requestSeq = ++sessionChatRequestSeq.current;
@@ -653,7 +658,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         if (
                           sendSeq !== sessionChatSendSeq.current
                           || targetRequestSeq !== sessionChatRequestSeq.current
-                          || selectedSessionKey !== targetSessionKey
+                          || selectedSessionKeyRef.current !== targetSessionKey
                         ) {
                           return;
                         }
@@ -678,7 +683,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         if (
                           sendSeq !== sessionChatSendSeq.current
                           || targetRequestSeq !== sessionChatRequestSeq.current
-                          || selectedSessionKey !== targetSessionKey
+                          || selectedSessionKeyRef.current !== targetSessionKey
                         ) {
                           return;
                         }
@@ -687,7 +692,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         if (
                           sendSeq === sessionChatSendSeq.current
                           && targetRequestSeq === sessionChatRequestSeq.current
-                          && selectedSessionKey === targetSessionKey
+                          && selectedSessionKeyRef.current === targetSessionKey
                         ) {
                           setSessionChatSending(false);
                         }
