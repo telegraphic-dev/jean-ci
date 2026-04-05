@@ -49,10 +49,10 @@ function extractImplementedQueryParams(source: string): Set<string> {
   return params;
 }
 
-function extractDocumentedParams(specPath: any): { path: Set<string>; query: Set<string> } {
+function extractDocumentedParams(operation: any): { path: Set<string>; query: Set<string> } {
   const path = new Set<string>();
   const query = new Set<string>();
-  const params = specPath?.get?.parameters ?? [];
+  const params = operation?.parameters ?? [];
   for (const param of params) {
     if (param?.in === 'path' && typeof param.name === 'string') {
       path.add(param.name);
@@ -64,13 +64,36 @@ function extractDocumentedParams(specPath: any): { path: Set<string>; query: Set
   return { path, query };
 }
 
+function extractImplementedBodyRequirements(source: string): { requiresHeadShaOrRef: boolean; selectedChecksNonEmpty: boolean } {
+  return {
+    requiresHeadShaOrRef:
+      source.includes("headSha or ref is required") ||
+      (source.includes('body.headSha') && source.includes('body.ref')),
+    selectedChecksNonEmpty: source.includes('selectedChecks must contain only non-empty strings'),
+  };
+}
+
+function extractDocumentedBodyRequirements(operation: any): { requiresHeadShaOrRef: boolean; selectedChecksNonEmpty: boolean } {
+  const schema = operation?.requestBody?.content?.['application/json']?.schema;
+  const anyOf = Array.isArray(schema?.anyOf) ? schema.anyOf : [];
+  const selectedChecksItemSchema = schema?.properties?.selectedChecks?.items;
+
+  const requiresHeadSha = anyOf.some((entry: any) => Array.isArray(entry?.required) && entry.required.length === 1 && entry.required[0] === 'headSha');
+  const requiresRef = anyOf.some((entry: any) => Array.isArray(entry?.required) && entry.required.length === 1 && entry.required[0] === 'ref');
+
+  return {
+    requiresHeadShaOrRef: requiresHeadSha && requiresRef,
+    selectedChecksNonEmpty: typeof selectedChecksItemSchema?.minLength === 'number' && selectedChecksItemSchema.minLength >= 1,
+  };
+}
+
 test('public OpenAPI parity is intentionally scoped to the public token API', async () => {
   assert.equal(PUBLIC_OPENAPI_ROUTE, '/api/public/openapi.json');
 
   const routeFiles = await listRouteFiles(ROUTES_ROOT);
 
   const implementedPaths: string[] = [];
-  const implementationByPath = new Map<string, { path: Set<string>; query: Set<string> }>();
+  const implementationByPath = new Map<string, { path: Set<string>; query: Set<string>; body: { requiresHeadShaOrRef: boolean; selectedChecksNonEmpty: boolean } }>();
   for (const routeFile of routeFiles) {
     const source = await fs.readFile(routeFile, 'utf8');
     const supportsGet = source.includes('export async function GET');
@@ -81,6 +104,7 @@ test('public OpenAPI parity is intentionally scoped to the public token API', as
       implementationByPath.set(pathName, {
         path: extractImplementedPathParams(routeFile),
         query: supportsGet ? extractImplementedQueryParams(source) : new Set<string>(),
+        body: supportsPost ? extractImplementedBodyRequirements(source) : { requiresHeadShaOrRef: false, selectedChecksNonEmpty: false },
       });
     }
   }
@@ -97,7 +121,8 @@ test('public OpenAPI parity is intentionally scoped to the public token API', as
     const implemented = implementationByPath.get(pathName);
     assert.ok(implemented, `Missing implementation metadata for ${pathName}`);
 
-    const documentedParams = extractDocumentedParams(specPath?.get ? specPath : { get: specPath?.post });
+    const operation = specPath?.get || specPath?.post;
+    const documentedParams = extractDocumentedParams(operation);
     assert.deepEqual(
       [...documentedParams.path].sort(),
       [...implemented.path].sort(),
@@ -108,5 +133,19 @@ test('public OpenAPI parity is intentionally scoped to the public token API', as
       [...implemented.query].sort(),
       `Query param mismatch for ${pathName}`
     );
+
+    if (specPath?.post) {
+      const documentedBody = extractDocumentedBodyRequirements(specPath.post);
+      assert.equal(
+        documentedBody.requiresHeadShaOrRef,
+        implemented.body.requiresHeadShaOrRef,
+        `POST body headSha/ref requirement mismatch for ${pathName}`
+      );
+      assert.equal(
+        documentedBody.selectedChecksNonEmpty,
+        implemented.body.selectedChecksNonEmpty,
+        `POST body selectedChecks item validation mismatch for ${pathName}`
+      );
+    }
   }
 });

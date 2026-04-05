@@ -47,20 +47,42 @@ export function buildPublicOpenApiSpec() {
               'application/json': {
                 schema: {
                   type: 'object',
+                  additionalProperties: false,
                   required: ['repo', 'diff'],
                   properties: {
-                    repo: { type: 'string', description: 'Repository slug, e.g. owner/repo' },
+                    repo: {
+                      type: 'string',
+                      pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$',
+                      description: 'Repository slug in owner/repo format',
+                    },
                     title: { type: 'string' },
                     body: { type: 'string' },
-                    diff: { type: 'string', description: 'Unified git diff to review' },
-                    headSha: { type: 'string', description: 'Commit SHA used to load git-backed .jean-ci/pr-checks prompts' },
-                    ref: { type: 'string', description: 'Git ref used to load git-backed .jean-ci/pr-checks prompts when headSha is not provided' },
+                    diff: { type: 'string', minLength: 1, description: 'Unified git diff to review' },
+                    headSha: {
+                      type: 'string',
+                      minLength: 1,
+                      pattern: '^[A-Za-z0-9._/-]+$',
+                      description: 'Commit SHA used to load git-backed .jean-ci/pr-checks prompts',
+                    },
+                    ref: {
+                      type: 'string',
+                      minLength: 1,
+                      pattern: '^[A-Za-z0-9._/-]+$',
+                      description: 'Git ref used to load git-backed .jean-ci/pr-checks prompts when headSha is not provided',
+                    },
                     selectedChecks: {
                       type: 'array',
-                      items: { type: 'string' },
                       description: 'Optional subset of git-backed checks to run by name, including Code Review',
+                      items: {
+                        type: 'string',
+                        minLength: 1,
+                      },
                     },
                   },
+                  anyOf: [
+                    { required: ['headSha'] },
+                    { required: ['ref'] },
+                  ],
                 },
               },
             },
