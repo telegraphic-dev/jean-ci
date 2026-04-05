@@ -118,7 +118,7 @@ test('performManualOverride submits GitHub approval review for global review che
   if (!result.ok) return;
   assert.equal(result.githubCheckUpdated, true);
   assert.equal(result.githubReviewSubmitted, true);
-  assert.deepEqual(calls, ['createPRReview', 'updateCheck:5678']);
+  assert.deepEqual(calls, ['updateCheck:5678', 'createPRReview']);
 });
 
 test('performManualOverride rejects global review override when approval eligibility fails', async () => {
@@ -240,8 +240,8 @@ test('performManualOverride rolls back DB override when GitHub sync fails', asyn
       overridden_by: 'vlad',
       created_at: FIXTURE_DATE,
     } as any),
-    rollbackManualOverride: async () => {
-      calls.push('rollbackManualOverride');
+    rollbackManualOverride: async (_id: number, previousSummary: string | null | undefined) => {
+      calls.push(`rollbackManualOverride:${previousSummary ?? '<null>'}`);
       return {} as any;
     },
     getInstallationOctokit: async () => ({ token: 'octokit' } as any),
@@ -254,8 +254,9 @@ test('performManualOverride rolls back DB override when GitHub sync fails', asyn
       calls.push('createPRReview');
       throw new Error('GitHub review API exploded');
     },
-    updateCheck: async () => {
-      calls.push('updateCheck');
+    updateCheck: async (...args: any[]) => {
+      const conclusion = args[4]?.conclusion;
+      calls.push(`updateCheck:${conclusion || 'unknown'}`);
       return {} as any;
     },
     canCreateOverrideApproval: () => ({ ok: true } as const),
@@ -265,5 +266,10 @@ test('performManualOverride rolls back DB override when GitHub sync fails', asyn
   if (result.ok) return;
   assert.equal(result.status, 502);
   assert.match(result.error, /GitHub override failed/i);
-  assert.deepEqual(calls, ['createPRReview', 'rollbackManualOverride']);
+  assert.deepEqual(calls, [
+    'updateCheck:success',
+    'createPRReview',
+    'updateCheck:failure',
+    'rollbackManualOverride:<null>',
+  ]);
 });

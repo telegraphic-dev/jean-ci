@@ -774,7 +774,7 @@ export async function overrideCheckRunToPass(id: number, reason: string, overrid
   return result.rows[0] || null;
 }
 
-export async function rollbackManualOverride(id: number, reason: string, overriddenBy: string): Promise<CheckRun | null> {
+export async function rollbackManualOverride(id: number, previousSummary: string | null | undefined, reason: string, overriddenBy: string): Promise<CheckRun | null> {
   const sanitizedReason = reason.trim();
   if (!sanitizedReason) {
     throw new Error('Override reason is required');
@@ -782,47 +782,17 @@ export async function rollbackManualOverride(id: number, reason: string, overrid
 
   const result = await pool.query(
     `UPDATE jean_ci_check_runs
-     SET summary = CONCAT(
-           REPLACE(
-             COALESCE(summary, ''),
-             CONCAT(
-               CASE
-                 WHEN POSITION('Manual override recorded by ' IN COALESCE(summary, '')) > 1 THEN E'\n\n---\n\n'
-                 ELSE ''
-               END,
-               'Manual override recorded by ', $3::text, '.\n\nReason: ', $2::text,
-               '\n\nGitHub override requested and pending synchronization.'
-             ),
-             ''
-           ),
-           CASE
-             WHEN COALESCE(summary, '') = '' THEN ''
-             WHEN REPLACE(
-               COALESCE(summary, ''),
-               CONCAT(
-                 CASE
-                   WHEN POSITION('Manual override recorded by ' IN COALESCE(summary, '')) > 1 THEN E'\n\n---\n\n'
-                   ELSE ''
-                 END,
-                 'Manual override recorded by ', $3::text, '.\n\nReason: ', $2::text,
-                 '\n\nGitHub override requested and pending synchronization.'
-               ),
-               ''
-             ) = '' THEN ''
-             ELSE E'\n\n---\n\n'
-           END,
-           'Manual override rollback after GitHub sync failure for ', $3::text, '.\n\nReason: ', $2::text
-         ),
+     SET summary = $2::text,
          manually_overridden = FALSE,
          override_reason = NULL,
          overridden_by = NULL,
          overridden_at = NULL
      WHERE id = $1
        AND manually_overridden = TRUE
-       AND override_reason = $2::text
-       AND overridden_by = $3::text
+       AND override_reason = $3::text
+       AND overridden_by = $4::text
      RETURNING *`,
-    [id, sanitizedReason, overriddenBy]
+    [id, previousSummary ?? null, sanitizedReason, overriddenBy]
   );
 
   return result.rows[0] || null;

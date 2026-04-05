@@ -72,6 +72,13 @@ function buildOverrideCheckSummary(actor: string, reason: string, checkRunId: nu
   ].join('\n');
 }
 
+function buildOriginalCheckOutput(checkRun: CheckRun) {
+  return {
+    title: checkRun.title || checkRun.check_name || 'Check failed',
+    summary: checkRun.summary || '',
+  };
+}
+
 async function performManualOverrideWithDeps(
   checkId: number,
   reason: string,
@@ -127,18 +134,6 @@ async function performManualOverrideWithDeps(
   let githubCheckUpdated = false;
 
   try {
-    if (shouldSubmitReview) {
-      await deps.createPRReview(
-        octokit,
-        owner,
-        repo,
-        checkRun.pr_number,
-        'APPROVE',
-        buildOverrideReviewBody(actor, sanitizedReason, checkRun.id),
-      );
-      githubReviewSubmitted = true;
-    }
-
     if (checkRun.github_check_id) {
       await deps.updateCheck(octokit, owner, repo, checkRun.github_check_id, {
         status: 'completed',
@@ -151,12 +146,44 @@ async function performManualOverrideWithDeps(
       });
       githubCheckUpdated = true;
     }
+
+    if (shouldSubmitReview) {
+      await deps.createPRReview(
+        octokit,
+        owner,
+        repo,
+        checkRun.pr_number,
+        'APPROVE',
+        buildOverrideReviewBody(actor, sanitizedReason, checkRun.id),
+      );
+      githubReviewSubmitted = true;
+    }
   } catch (error: any) {
-    await deps.rollbackManualOverride(checkId, sanitizedReason, actor);
+    const rollbackErrors: string[] = [];
+
+    if (githubCheckUpdated && checkRun.github_check_id) {
+      try {
+        await deps.updateCheck(octokit, owner, repo, checkRun.github_check_id, {
+          status: 'completed',
+          conclusion: checkRun.conclusion || 'failure',
+          completed_at: checkRun.completed_at ? new Date(checkRun.completed_at).toISOString() : new Date().toISOString(),
+          output: buildOriginalCheckOutput(checkRun),
+        });
+      } catch (rollbackError: any) {
+        rollbackErrors.push(`GitHub check rollback failed: ${rollbackError?.message || 'unknown error'}`);
+      }
+    }
+
+    try {
+      await deps.rollbackManualOverride(checkId, checkRun.summary, sanitizedReason, actor);
+    } catch (rollbackError: any) {
+      rollbackErrors.push(`DB rollback failed: ${rollbackError?.message || 'unknown error'}`);
+    }
+
     return {
       ok: false,
       status: 502,
-      error: `GitHub override failed: ${error?.message || 'unknown error'}`,
+      error: [`GitHub override failed: ${error?.message || 'unknown error'}`, ...rollbackErrors].join('. '),
     };
   }
 
