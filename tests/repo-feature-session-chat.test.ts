@@ -80,7 +80,9 @@ test('getRepoFeatureSessionChat marks last-user-message transcripts as running',
       result: {
         messages: [
           { role: 'assistant', content: 'previous reply' },
+          { role: 'system', content: 'metadata' },
           { role: 'user', content: 'keep going' },
+          { role: 'tool', content: 'tool output' },
         ],
       },
     }),
@@ -211,4 +213,56 @@ test('sendRepoFeatureSessionChatMessage returns timeout state with transcript in
   assert.equal(result.runStatus, 'timeout');
   assert.equal(result.error, 'Timed out waiting for assistant reply');
   assert.equal(result.messages.at(-1)?.role, 'user');
+});
+
+test('sendRepoFeatureSessionChatMessage maps send status when runId is missing', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: 'session-1',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async (record) => ({
+      id: 1,
+      session_key: 'session-1',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      last_activity_at: record.last_activity_at as Date,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }),
+    callGatewayRpc: async (method: string) => {
+      if (method === 'sessions.send') {
+        return { success: true, result: { status: 'completed' } };
+      }
+      if (method === 'sessions.get') {
+        return {
+          success: true,
+          result: {
+            messages: [
+              { role: 'user', content: 'please implement chat' },
+              { role: 'assistant', content: 'done' },
+            ],
+          },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    },
+  };
+
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps);
+  assert.equal(result.runStatus, 'idle');
+  assert.equal(result.runId, undefined);
 });

@@ -3,6 +3,8 @@ import { callGatewayRpc } from './openclaw-ws.ts';
 import { getRepoFeatureSessions, upsertRepoFeatureSession } from './db.ts';
 
 const MAX_FEATURE_SESSION_MESSAGE_LENGTH = 20_000;
+const FINAL_ASSISTANT_ROLES = new Set(['assistant']);
+const NON_FINAL_ROLES = new Set(['system', 'tool', 'unknown']);
 
 export interface RepoFeatureSessionChatDeps {
   getRepoFeatureSessions: typeof getRepoFeatureSessions;
@@ -44,10 +46,12 @@ export async function getRepoFeatureSessionChat(
     throw new Error(transcriptResult.error);
   }
 
+  const messages = normalizeMessages(transcriptResult.result?.messages || []);
+
   return {
     sessionKey: session.session_key,
-    messages: normalizeMessages(transcriptResult.result?.messages || []),
-    runStatus: inferRunStatusFromMessages(transcriptResult.result?.messages || []),
+    messages,
+    runStatus: inferRunStatusFromMessages(messages),
   };
 }
 
@@ -78,7 +82,7 @@ export async function sendRepoFeatureSessionChatMessage(
   }
 
   const runId = typeof sendResult.result?.runId === 'string' ? sendResult.result.runId : undefined;
-  let runStatus: RepoFeatureSessionChatState['runStatus'] = 'running';
+  let runStatus: RepoFeatureSessionChatState['runStatus'] = runId ? 'running' : mapSessionsSendStatusToRunStatus(sendResult.result?.status);
   let runError: string | undefined;
 
   if (runId) {
@@ -115,7 +119,7 @@ export async function sendRepoFeatureSessionChatMessage(
   }
 
   const messages = normalizeMessages(transcriptResult.result?.messages || []);
-  const inferredRunStatus = inferRunStatusFromMessages(transcriptResult.result?.messages || []);
+  const inferredRunStatus = inferRunStatusFromMessages(messages);
   const finalRunStatus = runStatus === 'idle' ? inferredRunStatus : runStatus;
 
   const now = new Date();
@@ -179,11 +183,22 @@ function normalizeMessages(input: unknown[]): RepoFeatureSessionChatMessage[] {
   return messages;
 }
 
-function inferRunStatusFromMessages(input: unknown[]): RepoFeatureSessionChatState['runStatus'] {
-  const messages = normalizeMessages(input);
-  const last = messages.at(-1);
-  if (!last) return 'idle';
-  return last.role === 'user' ? 'running' : 'idle';
+function inferRunStatusFromMessages(messages: RepoFeatureSessionChatMessage[]): RepoFeatureSessionChatState['runStatus'] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = messages[index]?.role;
+    if (!role || NON_FINAL_ROLES.has(role)) continue;
+    if (FINAL_ASSISTANT_ROLES.has(role)) return 'idle';
+    if (role === 'user') return 'running';
+  }
+
+  return 'idle';
+}
+
+function mapSessionsSendStatusToRunStatus(status: string | undefined): RepoFeatureSessionChatState['runStatus'] {
+  if (!status) return 'running';
+  if (status === 'ok' || status === 'completed') return 'idle';
+  if (status === 'error' || status === 'failed') return 'error';
+  return 'running';
 }
 
 function extractMessageText(message: Record<string, unknown>): string {

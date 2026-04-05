@@ -660,12 +660,18 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         if (payload && payload.sessionKey === targetSessionKey) {
                           setSessionChat(payload);
                         }
+                        const acceptedSend = response.ok || payload?.runStatus === 'timeout' || payload?.runStatus === 'running';
+                        if (acceptedSend) {
+                          setSessionChatInput('');
+                        }
                         if (!response.ok) {
                           const nextError = payload?.error
-                            || (payload?.runStatus === 'timeout' ? 'Assistant reply timed out.' : 'Failed to send message.');
+                            || (payload?.runStatus === 'timeout'
+                              ? 'Assistant reply timed out.'
+                              : payload?.runStatus === 'running'
+                                ? 'Assistant is still working.'
+                                : 'Failed to send message.');
                           setSessionChatError(nextError);
-                        } else {
-                          setSessionChatInput('');
                         }
                         await fetchData(checksPage, deploymentsPage, eventsPage);
                       } catch {
