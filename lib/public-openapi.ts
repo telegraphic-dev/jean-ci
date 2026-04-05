@@ -13,6 +13,7 @@ const repoFilterParam = { name: 'repo', in: 'query', schema: { type: 'string' } 
 const ownerParam = { name: 'owner', in: 'path', required: true, schema: { type: 'string' } } as const;
 const repoParam = { name: 'repo', in: 'path', required: true, schema: { type: 'string' } } as const;
 const okResponse = { description: 'Success' } as const;
+const badRequestResponse = { description: 'Bad request' } as const;
 const unauthorizedResponse = { description: 'Unauthorized' } as const;
 
 export function buildPublicOpenApiSpec() {
@@ -35,6 +36,47 @@ export function buildPublicOpenApiSpec() {
         get: {
           summary: 'Health check for authenticated public API clients',
           responses: { '200': okResponse, '401': unauthorizedResponse },
+        },
+      },
+      [`/${PUBLIC_API_VERSION}/local-review`]: {
+        post: {
+          summary: 'Run jean-ci review checks against a caller-provided local diff',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['repo', 'diff'],
+                  properties: {
+                    repo: { type: 'string', description: 'Repository slug, e.g. owner/repo' },
+                    title: { type: 'string' },
+                    body: { type: 'string' },
+                    diff: { type: 'string', description: 'Unified git diff to review' },
+                    headSha: { type: 'string' },
+                    selectedChecks: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Optional subset of checks to run by name, including Code Review',
+                    },
+                    checks: {
+                      type: 'array',
+                      description: 'Optional local .jean-ci/pr-checks payloads supplied by the client',
+                      items: {
+                        type: 'object',
+                        required: ['name', 'prompt'],
+                        properties: {
+                          name: { type: 'string' },
+                          prompt: { type: 'string' },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { '200': okResponse, '400': badRequestResponse, '401': unauthorizedResponse },
         },
       },
       [`/${PUBLIC_API_VERSION}/stats`]: {

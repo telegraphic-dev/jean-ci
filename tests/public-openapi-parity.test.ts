@@ -73,12 +73,14 @@ test('public OpenAPI parity is intentionally scoped to the public token API', as
   const implementationByPath = new Map<string, { path: Set<string>; query: Set<string> }>();
   for (const routeFile of routeFiles) {
     const source = await fs.readFile(routeFile, 'utf8');
-    if (source.includes('export async function GET')) {
+    const supportsGet = source.includes('export async function GET');
+    const supportsPost = source.includes('export async function POST');
+    if (supportsGet || supportsPost) {
       const pathName = toOpenApiPath(routeFile);
       implementedPaths.push(pathName);
       implementationByPath.set(pathName, {
         path: extractImplementedPathParams(routeFile),
-        query: extractImplementedQueryParams(source),
+        query: supportsGet ? extractImplementedQueryParams(source) : new Set<string>(),
       });
     }
   }
@@ -90,12 +92,12 @@ test('public OpenAPI parity is intentionally scoped to the public token API', as
   assert.deepEqual(documented, uniqueImplemented);
   for (const pathName of documented) {
     const specPath = spec.paths[pathName as keyof typeof spec.paths];
-    assert.ok(specPath?.get, `Missing GET operation for ${pathName}`);
+    assert.ok(specPath?.get || specPath?.post, `Missing documented operation for ${pathName}`);
 
     const implemented = implementationByPath.get(pathName);
     assert.ok(implemented, `Missing implementation metadata for ${pathName}`);
 
-    const documentedParams = extractDocumentedParams(specPath);
+    const documentedParams = extractDocumentedParams(specPath?.get ? specPath : { get: specPath?.post });
     assert.deepEqual(
       [...documentedParams.path].sort(),
       [...implemented.path].sort(),

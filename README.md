@@ -224,6 +224,7 @@ jean-ci now exposes a token-protected public API so external services can read o
 
 - `GET /api/public/openapi.json`
 - `GET /api/public/v1/health`
+- `POST /api/public/v1/local-review`
 - `GET /api/public/v1/stats`
 - `GET /api/public/v1/repos`
 - `GET /api/public/v1/checks?page=1&limit=50&repo=owner/repo`
@@ -255,6 +256,37 @@ These endpoints are session-authenticated admin routes under `/api/**` and are i
   - body: `{ "reason": "..." }`
   - success: records a manual override in jean-ci only
   - does not update the GitHub check run or submit a GitHub approval review
+
+### Local review execution
+
+`POST /api/public/v1/local-review` lets a local client send a repo slug, unified diff, and optional local `.jean-ci/pr-checks/*.md` prompt contents to the real jean-ci service for execution.
+
+Example:
+
+```bash
+curl -X POST "$JEAN_CI_URL/api/public/v1/local-review" \
+  -H "Authorization: Bearer $JEAN_CI_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @- <<'JSON'
+{
+  "repo": "telegraphic-dev/jean-ci",
+  "title": "Local diff review",
+  "body": "Run jean-ci against my working tree",
+  "diff": "diff --git a/file b/file\n...",
+  "checks": [
+    {
+      "name": "api-openapi-parity",
+      "prompt": "# API/OpenAPI Parity Check\n..."
+    }
+  ]
+}
+JSON
+```
+
+Notes:
+- Use an existing public API token or one captured when created; token values are shown only once and are not visible again in the UI.
+- This endpoint executes the real jean-ci review flow and output parser; the caller only supplies local diff/prompt content.
+- The public OpenAPI document at `/api/public/openapi.json` includes this endpoint.
 
 Optional bootstrap token(s) can be set via env vars:
 
