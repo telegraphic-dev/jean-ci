@@ -11,7 +11,7 @@ await test('runLocalReview executes Code Review and git-backed custom checks thr
     title: 'Local diff review',
     body: 'Review working tree changes',
     diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
-    headSha: 'abc123',
+    headSha: '0123456789abcdef0123456789abcdef01234567',
     __deps: {
       getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
       fetchChecksFromGit: async () => ([
@@ -47,7 +47,7 @@ await test('runLocalReview executes Code Review and git-backed custom checks thr
   ]);
   assert.equal(callOpenClawCalls.length, 2);
   assert.match(callOpenClawCalls[0]?.context || '', /# Pull Request: Local diff review/);
-  assert.equal(callOpenClawCalls[0]?.metadata.headSha, 'abc123');
+  assert.equal(callOpenClawCalls[0]?.metadata.headSha, '0123456789abcdef0123456789abcdef01234567');
   assert.equal(callOpenClawCalls[1]?.metadata.promptName, 'api-openapi-parity');
   callOpenClawCalls.length = 0;
 });
@@ -58,7 +58,7 @@ await test('runLocalReview keeps Code Review enabled when selectedChecks targets
   const result = await runLocalReview({
     repo: 'telegraphic-dev/jean-ci',
     diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
-    headSha: 'abc123',
+    headSha: '0123456789abcdef0123456789abcdef01234567',
     selectedChecks: ['api-openapi-parity'],
     __deps: {
       getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
@@ -86,7 +86,7 @@ await test('runLocalReview reports invalid git-backed prompt files without calli
   const result = await runLocalReview({
     repo: 'telegraphic-dev/jean-ci',
     diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
-    headSha: 'abc123',
+    headSha: '0123456789abcdef0123456789abcdef01234567',
     selectedChecks: ['broken-check'],
     __deps: {
       getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
@@ -125,7 +125,7 @@ await test('runLocalReview rejects unknown selectedChecks instead of silently dr
     () => runLocalReview({
       repo: 'telegraphic-dev/jean-ci',
       diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
-      headSha: 'abc123',
+      headSha: '0123456789abcdef0123456789abcdef01234567',
       selectedChecks: ['missing-check'],
       __deps: {
         getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
@@ -160,6 +160,11 @@ await test('runLocalReview rejects invalid repo slugs and requires git ref', asy
   );
 
   await assert.rejects(
+    () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', headSha: 'abc123' } as any),
+    /headSha must be a full 40-character commit SHA/
+  );
+
+  await assert.rejects(
     () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', ref: 'refs/heads/main.lock' } as any),
     /headSha\/ref contains invalid characters/
   );
@@ -167,5 +172,32 @@ await test('runLocalReview rejects invalid repo slugs and requires git ref', asy
   await assert.rejects(
     () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', ref: 'refs//heads/main' } as any),
     /headSha\/ref contains invalid characters/
+  );
+});
+
+await test('runLocalReview classifies tracked-repo and diff limit failures as client validation errors', async () => {
+  await assert.rejects(
+    () => runLocalReview({
+      repo: 'telegraphic-dev/jean-ci',
+      diff: 'diff --git a/x b/x\n+1\n',
+      headSha: '0123456789abcdef0123456789abcdef01234567',
+      __deps: {
+        getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
+        fetchChecksFromGit: async () => {
+          throw new Error('repo is not tracked');
+        },
+        callReviewer: async () => ({ success: true, response: 'VERDICT: PASS\n\n- No blocking issues found' } as const),
+      },
+    } as any),
+    /repo is not tracked/
+  );
+
+  await assert.rejects(
+    () => runLocalReview({
+      repo: 'telegraphic-dev/jean-ci',
+      diff: 'x'.repeat(200001),
+      headSha: '0123456789abcdef0123456789abcdef01234567',
+    } as any),
+    /diff exceeds LOCAL_REVIEW_MAX_DIFF/
   );
 });

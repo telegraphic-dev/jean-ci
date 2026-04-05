@@ -79,11 +79,12 @@ function extractImplementedBodyRequirements(source: string): { requiresHeadShaOr
   };
 }
 
-function extractDocumentedBodyRequirements(operation: any): { requiresHeadShaOrRef: boolean; selectedChecksNonEmpty: boolean; selectedChecksDocsMatch: boolean; hasServerErrorResponse: boolean } {
+function extractDocumentedBodyRequirements(operation: any): { requiresHeadShaOrRef: boolean; selectedChecksNonEmpty: boolean; selectedChecksDocsMatch: boolean; headShaMatchesFullShaContract: boolean; hasServerErrorResponse: boolean } {
   const schema = operation?.requestBody?.content?.['application/json']?.schema;
   const anyOf = Array.isArray(schema?.anyOf) ? schema.anyOf : [];
   const selectedChecks = schema?.properties?.selectedChecks;
   const selectedChecksItemSchema = selectedChecks?.items;
+  const headShaSchema = schema?.properties?.headSha;
 
   const requiresHeadSha = anyOf.some((entry: any) => Array.isArray(entry?.required) && entry.required.length === 1 && entry.required[0] === 'headSha');
   const requiresRef = anyOf.some((entry: any) => Array.isArray(entry?.required) && entry.required.length === 1 && entry.required[0] === 'ref');
@@ -92,6 +93,10 @@ function extractDocumentedBodyRequirements(operation: any): { requiresHeadShaOrR
     requiresHeadShaOrRef: requiresHeadSha && requiresRef,
     selectedChecksNonEmpty: typeof selectedChecksItemSchema?.minLength === 'number' && selectedChecksItemSchema.minLength >= 1,
     selectedChecksDocsMatch: selectedChecks?.description === 'Optional subset of git-backed checks to run by name. Code Review always runs and cannot be excluded.',
+    headShaMatchesFullShaContract:
+      headShaSchema?.minLength === 40
+      && headShaSchema?.maxLength === 40
+      && headShaSchema?.pattern === '^[A-Fa-f0-9]{40}$',
     hasServerErrorResponse: operation?.responses?.['500']?.description === 'Internal server error',
   };
 }
@@ -161,6 +166,11 @@ test('public OpenAPI parity is intentionally scoped to the public token API', as
           documentedBody.selectedChecksDocsMatch,
           true,
           `POST selectedChecks documentation mismatch for ${pathName}`
+        );
+        assert.equal(
+          documentedBody.headShaMatchesFullShaContract,
+          true,
+          `POST headSha documentation mismatch for ${pathName}`
         );
         assert.equal(
           documentedBody.hasServerErrorResponse,

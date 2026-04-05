@@ -162,6 +162,11 @@ function validateGitRef(ref: string): boolean {
   return /^[A-Za-z0-9._\/-]+$/.test(trimmed);
 }
 
+function validateHeadSha(headSha: string): boolean {
+  const trimmed = headSha.trim();
+  return /^[a-f0-9]{40}$/i.test(trimmed);
+}
+
 function buildSessionMetadata(repo: string, promptName: string, headSha?: string | null): ReviewSessionMetadata {
   const [owner, repoName] = repo.split('/');
   if (!owner || !repoName) {
@@ -186,11 +191,16 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
     throw new Error('repo must be in owner/repo format');
   }
 
-  const reviewRef = (input.headSha || input.ref || '').trim();
+  const headSha = (input.headSha || '').trim();
+  const ref = (input.ref || '').trim();
+  const reviewRef = (headSha || ref || '').trim();
   if (!reviewRef) {
     throw new Error('headSha or ref is required');
   }
-  if (!validateGitRef(reviewRef)) {
+  if (headSha && !validateHeadSha(headSha)) {
+    throw new Error('headSha must be a full 40-character commit SHA');
+  }
+  if (ref && !validateGitRef(ref)) {
     throw new Error('headSha/ref contains invalid characters');
   }
 
@@ -217,7 +227,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       const { getInstallationOctokit, fetchPRCheckFiles } = await import('./github.ts');
       const repoConfig = await getRepo(repoFullName);
       if (!repoConfig) {
-        throw new Error(`repo is not tracked: ${repoFullName}`);
+        throw new Error('repo is not tracked');
       }
       const octokit = await getInstallationOctokit(repoConfig.installation_id);
       const [owner, repoName] = repoFullName.split('/');
@@ -261,7 +271,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       }
     }
 
-    const result = await deps.callReviewer(check.prompt, reviewContext, buildSessionMetadata(repo, check.isGlobal ? 'review' : check.name, input.headSha || reviewRef));
+    const result = await deps.callReviewer(check.prompt, reviewContext, buildSessionMetadata(repo, check.isGlobal ? 'review' : check.name, headSha || reviewRef));
     if (!result.success) {
       executionFailures.push({
         name: check.name,

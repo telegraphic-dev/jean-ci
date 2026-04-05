@@ -60,8 +60,9 @@ export function buildPublicOpenApiSpec() {
                     diff: { type: 'string', minLength: 1, description: 'Unified git diff to review' },
                     headSha: {
                       type: 'string',
-                      minLength: 1,
-                      pattern: '^[A-Za-z0-9._/-]+$',
+                      minLength: 40,
+                      maxLength: 40,
+                      pattern: '^[A-Fa-f0-9]{40}$',
                       description: 'Commit SHA used to load git-backed .jean-ci/pr-checks prompts',
                     },
                     ref: {
