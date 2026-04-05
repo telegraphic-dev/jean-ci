@@ -4,6 +4,7 @@ import { getRepoFeatureSessions, upsertRepoFeatureSession } from './db.ts';
 import { buildFeatureSessionKeyPrefix } from './repo-feature-sessions.ts';
 
 const MAX_FEATURE_SESSION_MESSAGE_LENGTH = 20_000;
+const FEATURE_SESSION_CHAT_TRANSCRIPT_LIMIT = 500;
 const FINAL_ASSISTANT_ROLES = new Set(['assistant']);
 const NON_FINAL_ROLES = new Set(['system', 'tool', 'unknown']);
 
@@ -40,7 +41,7 @@ export async function getRepoFeatureSessionChat(
   const session = await requireRepoFeatureSession(repoFullName, sessionKey, deps);
   const transcriptResult = await deps.callGatewayRpc<{ messages?: unknown[] }>('sessions.get', {
     key: session.session_key,
-    limit: 100,
+    limit: FEATURE_SESSION_CHAT_TRANSCRIPT_LIMIT,
   });
 
   if (!transcriptResult.success) {
@@ -112,7 +113,7 @@ export async function sendRepoFeatureSessionChatMessage(
 
   const transcriptResult = await deps.callGatewayRpc<{ messages?: unknown[] }>('sessions.get', {
     key: session.session_key,
-    limit: 100,
+    limit: FEATURE_SESSION_CHAT_TRANSCRIPT_LIMIT,
   });
 
   if (!transcriptResult.success) {
