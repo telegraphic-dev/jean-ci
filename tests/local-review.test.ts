@@ -5,21 +5,21 @@ import { runLocalReview } from '../lib/local-review.ts';
 
 const callOpenClawCalls: Array<{ prompt: string; context: string; metadata: any }> = [];
 
-await test('runLocalReview executes Code Review and local custom checks through jean-ci review flow', async () => {
+await test('runLocalReview executes Code Review and git-backed custom checks through jean-ci review flow', async () => {
   const result = await runLocalReview({
     repo: 'telegraphic-dev/jean-ci',
     title: 'Local diff review',
     body: 'Review working tree changes',
     diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
     headSha: 'abc123',
-    checks: [
-      {
-        name: 'api-openapi-parity',
-        prompt: `# API/OpenAPI Parity Check\n\n## Purpose\nKeep API and OpenAPI aligned.\n\n## Review Instructions\nCheck parity.\n\n## Verdict Criteria\nPASS if aligned. FAIL otherwise.`,
-      },
-    ],
     __deps: {
       getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
+      fetchChecksFromGit: async () => ([
+        {
+          name: 'api-openapi-parity',
+          prompt: `# API/OpenAPI Parity Check\n\n## Purpose\nKeep API and OpenAPI aligned.\n\n## Review Instructions\nCheck parity.\n\n## Verdict Criteria\nPASS if aligned. FAIL otherwise.`,
+        },
+      ]),
       callReviewer: async (prompt: string, context: string, metadata: any) => {
         callOpenClawCalls.push({ prompt, context, metadata });
         if (prompt.includes('Parity')) {
@@ -52,14 +52,15 @@ await test('runLocalReview executes Code Review and local custom checks through 
   callOpenClawCalls.length = 0;
 });
 
-await test('runLocalReview reports invalid custom prompt files without calling reviewer', async () => {
+await test('runLocalReview reports invalid git-backed prompt files without calling reviewer', async () => {
   const result = await runLocalReview({
     repo: 'telegraphic-dev/jean-ci',
     diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
+    headSha: 'abc123',
     selectedChecks: ['broken-check'],
-    checks: [{ name: 'broken-check', prompt: 'too short' }],
     __deps: {
       getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
+      fetchChecksFromGit: async () => [{ name: 'broken-check', prompt: 'too short' }],
       callReviewer: async () => {
         throw new Error('callReviewer should not be called for invalid custom checks');
       },
@@ -81,4 +82,16 @@ await test('runLocalReview reports invalid custom prompt files without calling r
       ]),
     },
   ]);
+});
+
+await test('runLocalReview rejects invalid repo slugs and requires git ref', async () => {
+  await assert.rejects(
+    () => runLocalReview({ repo: 'not-a-valid-repo', diff: 'diff --git a/x b/x\n+1\n' } as any),
+    /owner\/repo/
+  );
+
+  await assert.rejects(
+    () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n' } as any),
+    /headSha or ref is required/
+  );
 });

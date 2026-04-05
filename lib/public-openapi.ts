@@ -53,23 +53,12 @@ export function buildPublicOpenApiSpec() {
                     title: { type: 'string' },
                     body: { type: 'string' },
                     diff: { type: 'string', description: 'Unified git diff to review' },
-                    headSha: { type: 'string' },
+                    headSha: { type: 'string', description: 'Commit SHA used to load git-backed .jean-ci/pr-checks prompts' },
+                    ref: { type: 'string', description: 'Git ref used to load git-backed .jean-ci/pr-checks prompts when headSha is not provided' },
                     selectedChecks: {
                       type: 'array',
                       items: { type: 'string' },
-                      description: 'Optional subset of checks to run by name, including Code Review',
-                    },
-                    checks: {
-                      type: 'array',
-                      description: 'Optional local .jean-ci/pr-checks payloads supplied by the client',
-                      items: {
-                        type: 'object',
-                        required: ['name', 'prompt'],
-                        properties: {
-                          name: { type: 'string' },
-                          prompt: { type: 'string' },
-                        },
-                      },
+                      description: 'Optional subset of git-backed checks to run by name, including Code Review',
                     },
                   },
                 },

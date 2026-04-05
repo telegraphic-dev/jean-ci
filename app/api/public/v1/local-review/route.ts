@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requirePublicApiToken } from '@/lib/public-api';
-import { runLocalReview, type LocalReviewCheckInput } from '@/lib/local-review';
+import { runLocalReview } from '@/lib/local-review';
 
 interface LocalReviewRequestBody {
   repo?: string;
   title?: string | null;
   body?: string | null;
   diff?: string;
-  checks?: LocalReviewCheckInput[];
   selectedChecks?: string[];
   headSha?: string | null;
+  ref?: string | null;
 }
 
 function badRequest(message: string) {
@@ -41,12 +41,16 @@ export async function POST(req: NextRequest) {
     return badRequest('diff is required');
   }
 
-  if (body.checks != null && !Array.isArray(body.checks)) {
-    return badRequest('checks must be an array');
-  }
-
   if (body.selectedChecks != null && !Array.isArray(body.selectedChecks)) {
     return badRequest('selectedChecks must be an array');
+  }
+
+  const selectedChecks = Array.isArray(body.selectedChecks)
+    ? body.selectedChecks.filter((name): name is string => typeof name === 'string').map((name) => name.trim())
+    : undefined;
+
+  if (selectedChecks && selectedChecks.some((name) => !name)) {
+    return badRequest('selectedChecks must contain only non-empty strings');
   }
 
   try {
@@ -55,15 +59,9 @@ export async function POST(req: NextRequest) {
       title: typeof body.title === 'string' ? body.title : null,
       body: typeof body.body === 'string' ? body.body : null,
       diff: body.diff,
-      checks: Array.isArray(body.checks)
-        ? body.checks
-            .filter((check): check is LocalReviewCheckInput => Boolean(check) && typeof check.name === 'string' && typeof check.prompt === 'string')
-            .map((check) => ({ name: check.name.trim(), prompt: check.prompt }))
-        : [],
-      selectedChecks: Array.isArray(body.selectedChecks)
-        ? body.selectedChecks.filter((name): name is string => typeof name === 'string').map((name) => name.trim()).filter(Boolean)
-        : undefined,
+      selectedChecks,
       headSha: typeof body.headSha === 'string' ? body.headSha : null,
+      ref: typeof body.ref === 'string' ? body.ref : null,
     });
 
     return NextResponse.json(result);

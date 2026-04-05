@@ -259,7 +259,7 @@ These endpoints are session-authenticated admin routes under `/api/**` and are i
 
 ### Local review execution
 
-`POST /api/public/v1/local-review` lets a local client send a repo slug, unified diff, and optional local `.jean-ci/pr-checks/*.md` prompt contents to the real jean-ci service for execution.
+`POST /api/public/v1/local-review` lets a local client send a repo slug, unified diff, and a git `headSha`/`ref`. jean-ci loads `.jean-ci/pr-checks/*.md` from git at that revision and runs them against the caller-provided local diff.
 
 Example:
 
@@ -272,20 +272,17 @@ curl -X POST "$JEAN_CI_URL/api/public/v1/local-review" \
   "repo": "telegraphic-dev/jean-ci",
   "title": "Local diff review",
   "body": "Run jean-ci against my working tree",
+  "headSha": "327049e",
   "diff": "diff --git a/file b/file\n...",
-  "checks": [
-    {
-      "name": "api-openapi-parity",
-      "prompt": "# API/OpenAPI Parity Check\n..."
-    }
-  ]
+  "selectedChecks": ["api-openapi-parity"]
 }
 JSON
 ```
 
 Notes:
 - Use an existing public API token or one captured when created; token values are shown only once and are not visible again in the UI.
-- This endpoint executes the real jean-ci review flow and output parser; the caller only supplies local diff/prompt content.
+- The caller supplies the local diff, but review prompts come only from git (`.jean-ci/pr-checks/*.md`) at the provided `headSha`/`ref`.
+- `repo` must be `owner/repo`; `headSha` or `ref` is required.
 - The public OpenAPI document at `/api/public/openapi.json` includes this endpoint.
 
 Optional bootstrap token(s) can be set via env vars:

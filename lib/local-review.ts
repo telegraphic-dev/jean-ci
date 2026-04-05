@@ -6,6 +6,12 @@ export interface LocalReviewCheckInput {
   prompt: string;
 }
 
+export interface GitBackedCheckInput {
+  name: string;
+  prompt: string;
+  path?: string;
+}
+
 type ReviewerResult =
   | { success: true; response: string }
   | { success: false; error: string; errorType: 'gateway' | 'unknown' };
@@ -13,6 +19,7 @@ type ReviewerResult =
 interface LocalReviewDeps {
   getUserPrompt: () => Promise<string>;
   callReviewer: (prompt: string, context?: string, metadata?: ReviewSessionMetadata) => Promise<ReviewerResult>;
+  fetchChecksFromGit: (repo: string, ref: string) => Promise<GitBackedCheckInput[]>;
 }
 
 export interface LocalReviewRequest {
@@ -20,9 +27,9 @@ export interface LocalReviewRequest {
   title?: string | null;
   body?: string | null;
   diff: string;
-  checks?: LocalReviewCheckInput[];
   selectedChecks?: string[];
   headSha?: string | null;
+  ref?: string | null;
   __deps?: Partial<LocalReviewDeps>;
 }
 
@@ -96,7 +103,7 @@ function buildReviewContext(
   ].join('\n');
 }
 
-function normalizeChecks(userPrompt: string, inputChecks: LocalReviewCheckInput[] = []): PreparedCheck[] {
+function normalizeChecks(userPrompt: string, inputChecks: GitBackedCheckInput[] = []): PreparedCheck[] {
   return [
     { name: 'Code Review', prompt: userPrompt, isGlobal: true },
     ...inputChecks
@@ -119,6 +126,19 @@ function normalizeRepo(repo: string): string {
   return repo.trim().replace(/^https:\/\/github\.com\//, '').replace(/^github\.com\//, '').replace(/^\/+|\/+$/g, '');
 }
 
+function validateRepoSlug(repo: string): boolean {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
+}
+
+function validateGitRef(ref: string): boolean {
+  const trimmed = ref.trim();
+  if (!trimmed) return false;
+  if (trimmed.includes('..') || trimmed.includes(' ') || trimmed.startsWith('/') || trimmed.endsWith('/') || trimmed.startsWith('.')) {
+    return false;
+  }
+  return /^[A-Za-z0-9._\/-]+$/.test(trimmed);
+}
+
 function buildSessionMetadata(repo: string, promptName: string, headSha?: string | null): ReviewSessionMetadata {
   const [owner = 'local', repoName = 'unknown-repo'] = repo.split('/');
   return {
@@ -134,6 +154,17 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
   const repo = normalizeRepo(input.repo || '');
   if (!repo) {
     throw new Error('repo is required');
+  }
+  if (!validateRepoSlug(repo)) {
+    throw new Error('repo must be in owner/repo format');
+  }
+
+  const reviewRef = (input.headSha || input.ref || '').trim();
+  if (!reviewRef) {
+    throw new Error('headSha or ref is required');
+  }
+  if (!validateGitRef(reviewRef)) {
+    throw new Error('headSha/ref contains invalid characters');
   }
 
   const diff = input.diff || '';
@@ -154,11 +185,28 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       const { callOpenClaw } = await import('./llm.ts');
       return callOpenClaw(prompt, context, metadata);
     },
+    fetchChecksFromGit: async (repoFullName, ref) => {
+      const { getRepo } = await import('./db.ts');
+      const { getInstallationOctokit, fetchPRCheckFiles } = await import('./github.ts');
+      const repoConfig = await getRepo(repoFullName);
+      if (!repoConfig) {
+        throw new Error(`repo is not tracked: ${repoFullName}`);
+      }
+      const octokit = await getInstallationOctokit(repoConfig.installation_id);
+      const [owner, repoName] = repoFullName.split('/');
+      const files = await fetchPRCheckFiles(octokit, owner, repoName, ref);
+      return files.map((file: { name: string; content: string; path?: string }) => ({
+        name: file.name,
+        prompt: file.content,
+        path: file.path,
+      }));
+    },
     ...input.__deps,
   };
 
   const userPrompt = await deps.getUserPrompt();
-  const preparedChecks = filterChecks(normalizeChecks(userPrompt, input.checks || []), input.selectedChecks);
+  const gitChecks = await deps.fetchChecksFromGit(repo, reviewRef);
+  const preparedChecks = filterChecks(normalizeChecks(userPrompt, gitChecks), input.selectedChecks);
 
   if (preparedChecks.length === 0) {
     throw new Error('No checks selected');
@@ -186,7 +234,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       }
     }
 
-    const result = await deps.callReviewer(check.prompt, reviewContext, buildSessionMetadata(repo, check.isGlobal ? 'review' : check.name, input.headSha));
+    const result = await deps.callReviewer(check.prompt, reviewContext, buildSessionMetadata(repo, check.isGlobal ? 'review' : check.name, input.headSha || reviewRef));
     if (!result.success) {
       executionFailures.push({
         name: check.name,
