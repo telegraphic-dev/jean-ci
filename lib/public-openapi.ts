@@ -6,9 +6,11 @@ const PUBLIC_API_INFO = {
 } as const;
 
 const pageParam = { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } } as const;
+const offsetParam = { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0 } } as const;
 const checksLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } } as const;
 const pipelinesLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 50 } } as const;
 const eventsLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } } as const;
+const deploymentsLimitParam = { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } } as const;
 const repoFilterParam = { name: 'repo', in: 'query', schema: { type: 'string' } } as const;
 const ownerParam = { name: 'owner', in: 'path', required: true, schema: { type: 'string' } } as const;
 const repoParam = { name: 'repo', in: 'path', required: true, schema: { type: 'string' } } as const;
@@ -77,7 +79,7 @@ export function buildPublicOpenApiSpec() {
             { name: 'view', in: 'query', schema: { type: 'string', enum: ['summary', 'events'] } },
             repoFilterParam,
             { name: 'task', in: 'query', schema: { type: 'string' } },
-            pageParam,
+            offsetParam,
             eventsLimitParam,
           ],
           responses: { '200': okResponse, '401': unauthorizedResponse },
@@ -121,7 +123,7 @@ export function buildPublicOpenApiSpec() {
       [`/${PUBLIC_API_VERSION}/repos/{owner}/{repo}/deployments`]: {
         get: {
           summary: 'List deployments for a repository',
-          parameters: [ownerParam, repoParam, pageParam, eventsLimitParam],
+          parameters: [ownerParam, repoParam, pageParam, deploymentsLimitParam],
           responses: { '200': okResponse, '401': unauthorizedResponse },
         },
       },
