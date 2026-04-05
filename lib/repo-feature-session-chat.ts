@@ -84,14 +84,14 @@ export async function sendRepoFeatureSessionChatMessage(
   }
 
   const runId = typeof sendResult.result?.runId === 'string' ? sendResult.result.runId : undefined;
-  let runStatus: RepoFeatureSessionChatState['runStatus'] = runId ? 'running' : mapSessionsSendStatusToRunStatus(sendResult.result?.status);
+  let runStatus: RepoFeatureSessionChatState['runStatus'] = mapSessionsSendStatusToRunStatus(sendResult.result?.status);
   let runError: string | undefined;
 
-  if (runId) {
-    const waitResult = await deps.callGatewayRpc<{ status?: string; error?: string }>('agent.wait', {
-      runId,
-      timeoutMs: 30_000,
-    });
+  if (runId || runStatus === 'running') {
+    const waitPayload = runId
+      ? { runId, timeoutMs: 30_000 }
+      : { key: session.session_key, timeoutMs: 30_000 };
+    const waitResult = await deps.callGatewayRpc<{ status?: string; error?: string }>('agent.wait', waitPayload);
 
     if (!waitResult.success) {
       throw new Error(waitResult.error);

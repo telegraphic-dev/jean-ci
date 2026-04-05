@@ -99,7 +99,9 @@ export async function POST(req: NextRequest, { params }: Params) {
       ? 504
       : state.runStatus === 'error'
         ? 502
-        : 200;
+        : state.runStatus === 'running'
+          ? 202
+          : 200;
     return NextResponse.json(state, { status });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to send feature session message';

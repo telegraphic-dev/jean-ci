@@ -217,7 +217,7 @@ test('sendRepoFeatureSessionChatMessage returns timeout state with transcript in
   assert.equal(result.messages.at(-1)?.role, 'user');
 });
 
-test('sendRepoFeatureSessionChatMessage maps send status when runId is missing', async () => {
+test('sendRepoFeatureSessionChatMessage maps final send status when runId is missing', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
       session_key: REPO_SESSION_KEY,
@@ -267,6 +267,66 @@ test('sendRepoFeatureSessionChatMessage maps send status when runId is missing',
   const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', REPO_SESSION_KEY, 'please implement chat', 'request-1', deps);
   assert.equal(result.runStatus, 'idle');
   assert.equal(result.runId, undefined);
+});
+
+test('sendRepoFeatureSessionChatMessage waits by session key when runId is missing and send status is non-final', async () => {
+  const calls: string[] = [];
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: REPO_SESSION_KEY,
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async (record) => ({
+      id: 1,
+      session_key: REPO_SESSION_KEY,
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      last_activity_at: record.last_activity_at as Date,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }),
+    callGatewayRpc: async (method: string, payload?: any) => {
+      calls.push(method);
+      if (method === 'sessions.send') {
+        return { success: true, result: { status: 'accepted' } };
+      }
+      if (method === 'agent.wait') {
+        assert.equal(payload?.runId, undefined);
+        assert.equal(payload?.key, REPO_SESSION_KEY);
+        return { success: true, result: { status: 'timeout' } };
+      }
+      if (method === 'sessions.get') {
+        return {
+          success: true,
+          result: {
+            messages: [
+              { role: 'user', content: 'please implement chat' },
+            ],
+          },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    },
+  };
+
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', REPO_SESSION_KEY, 'please implement chat', 'request-1', deps);
+  assert.deepEqual(calls, ['sessions.send', 'agent.wait', 'sessions.get']);
+  assert.equal(result.runId, undefined);
+  assert.equal(result.runStatus, 'timeout');
+  assert.equal(result.error, 'Timed out waiting for assistant reply');
 });
 
 test('repo feature session chat rejects session keys outside the repo namespace before gateway access', async () => {
