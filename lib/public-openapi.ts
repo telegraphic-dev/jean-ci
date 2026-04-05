@@ -72,7 +72,7 @@ export function buildPublicOpenApiSpec() {
                     },
                     selectedChecks: {
                       type: 'array',
-                      description: 'Optional subset of git-backed checks to run by name, including Code Review',
+                      description: 'Optional subset of git-backed checks to run by name. Code Review always runs and cannot be excluded.',
                       items: {
                         type: 'string',
                         minLength: 1,
@@ -87,7 +87,7 @@ export function buildPublicOpenApiSpec() {
               },
             },
           },
-          responses: { '200': okResponse, '400': badRequestResponse, '401': unauthorizedResponse },
+          responses: { '200': okResponse, '400': badRequestResponse, '401': unauthorizedResponse, '500': { description: 'Internal server error' } },
         },
       },
       [`/${PUBLIC_API_VERSION}/stats`]: {

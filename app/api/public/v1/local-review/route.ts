@@ -12,11 +12,14 @@ interface LocalReviewRequestBody {
   ref?: string | null;
 }
 
+const MAX_BODY_BYTES = parseInt(process.env.LOCAL_REVIEW_MAX_BODY_BYTES || '262144', 10);
+const GENERIC_SERVER_ERROR = 'Local review failed';
+
 function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
-function serverError(message: string) {
+function serverError(message: string = GENERIC_SERVER_ERROR) {
   return NextResponse.json({ error: message }, { status: 500 });
 }
 
@@ -38,14 +41,31 @@ export async function POST(req: NextRequest) {
     return auth.response;
   }
 
-  let body: LocalReviewRequestBody;
+  const contentLengthHeader = req.headers.get('content-length');
+  const contentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : Number.NaN;
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return badRequest(`Request body too large (max ${MAX_BODY_BYTES} bytes)`);
+  }
+
+  let rawBody: string;
   try {
-    body = await req.json();
+    rawBody = await req.text();
   } catch {
     return badRequest('Request body must be valid JSON');
   }
 
-  if (!body || typeof body !== 'object') {
+  if (Buffer.byteLength(rawBody, 'utf8') > MAX_BODY_BYTES) {
+    return badRequest(`Request body too large (max ${MAX_BODY_BYTES} bytes)`);
+  }
+
+  let body: LocalReviewRequestBody;
+  try {
+    body = JSON.parse(rawBody) as LocalReviewRequestBody;
+  } catch {
+    return badRequest('Request body must be valid JSON');
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return badRequest('Request body must be a JSON object');
   }
 
@@ -88,7 +108,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Local review failed';
-    return isClientValidationError(message) ? badRequest(message) : serverError(message);
+    const message = error instanceof Error ? error.message : GENERIC_SERVER_ERROR;
+    return isClientValidationError(message) ? badRequest(message) : serverError();
   }
 }

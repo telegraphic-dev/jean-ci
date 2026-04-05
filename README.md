@@ -283,6 +283,9 @@ Notes:
 - Use an existing public API token or one captured when created; token values are shown only once and are not visible again in the UI.
 - The caller supplies the local diff, but review prompts come only from git (`.jean-ci/pr-checks/*.md`) at the provided `headSha`/`ref`.
 - `repo` must be `owner/repo`; `headSha` or `ref` is required.
+- `selectedChecks` only filters git-backed checks; the built-in `Code Review` always runs.
+- Request bodies are size-limited before parsing; oversized requests are rejected with HTTP 400.
+- Internal execution failures return a generic HTTP 500 error body from this public endpoint.
 - The public OpenAPI document at `/api/public/openapi.json` includes this endpoint.
 
 Optional bootstrap token(s) can be set via env vars:
