@@ -50,11 +50,44 @@ test('getRepoFeatureSessionChat returns normalized transcript messages', async (
 
   const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'session-1', deps);
   assert.equal(result.sessionKey, 'session-1');
+  assert.equal(result.runStatus, 'idle');
   assert.deepEqual(result.messages, [
     { role: 'system', text: 'seed' },
     { role: 'user', text: 'hello' },
     { role: 'assistant', text: 'hi there' },
   ]);
+});
+
+test('getRepoFeatureSessionChat marks last-user-message transcripts as running', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: 'session-1',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async () => {
+      throw new Error('should not upsert on read');
+    },
+    callGatewayRpc: async () => ({
+      success: true,
+      result: {
+        messages: [
+          { role: 'assistant', content: 'previous reply' },
+          { role: 'user', content: 'keep going' },
+        ],
+      },
+    }),
+  };
+
+  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'session-1', deps);
+  assert.equal(result.runStatus, 'running');
 });
 
 test('sendRepoFeatureSessionChatMessage waits for run completion and updates activity timestamp', async () => {
@@ -125,7 +158,7 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
   assert.equal(upserted, true);
 });
 
-test('sendRepoFeatureSessionChatMessage fails on agent timeout instead of returning success transcript', async () => {
+test('sendRepoFeatureSessionChatMessage returns timeout state with transcript instead of throwing', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
       session_key: 'session-1',
@@ -139,9 +172,20 @@ test('sendRepoFeatureSessionChatMessage fails on agent timeout instead of return
       created_at: new Date(),
       updated_at: new Date(),
     }]),
-    upsertRepoFeatureSession: async () => {
-      throw new Error('should not upsert on timeout');
-    },
+    upsertRepoFeatureSession: async (record) => ({
+      id: 1,
+      session_key: 'session-1',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      last_activity_at: record.last_activity_at as Date,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }),
     callGatewayRpc: async (method: string) => {
       if (method === 'sessions.send') {
         return { success: true, result: { runId: 'run-1', status: 'accepted' } };
@@ -149,12 +193,22 @@ test('sendRepoFeatureSessionChatMessage fails on agent timeout instead of return
       if (method === 'agent.wait') {
         return { success: true, result: { status: 'timeout' } };
       }
+      if (method === 'sessions.get') {
+        return {
+          success: true,
+          result: {
+            messages: [
+              { role: 'user', content: 'please implement chat' },
+            ],
+          },
+        };
+      }
       throw new Error(`unexpected method ${method}`);
     },
   };
 
-  await assert.rejects(
-    sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps),
-    /Timed out waiting for assistant reply/
-  );
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps);
+  assert.equal(result.runStatus, 'timeout');
+  assert.equal(result.error, 'Timed out waiting for assistant reply');
+  assert.equal(result.messages.at(-1)?.role, 'user');
 });

@@ -91,14 +91,15 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   try {
     const state = await sendRepoFeatureSessionChatMessage(fullName, sessionKey, message, requestId);
-    return NextResponse.json(state);
+    const status = state.runStatus === 'timeout'
+      ? 504
+      : state.runStatus === 'error'
+        ? 502
+        : 200;
+    return NextResponse.json(state, { status });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to send feature session message';
-    const status = errorMessage === 'Feature session not found'
-      ? 404
-      : errorMessage.includes('Timed out')
-        ? 504
-        : 502;
+    const status = errorMessage === 'Feature session not found' ? 404 : 502;
     return NextResponse.json({ error: errorMessage }, { status });
   }
 }

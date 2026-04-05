@@ -47,7 +47,7 @@ export async function getRepoFeatureSessionChat(
   return {
     sessionKey: session.session_key,
     messages: normalizeMessages(transcriptResult.result?.messages || []),
-    runStatus: 'idle',
+    runStatus: inferRunStatusFromMessages(transcriptResult.result?.messages || []),
   };
 }
 
@@ -78,29 +78,31 @@ export async function sendRepoFeatureSessionChatMessage(
   }
 
   const runId = typeof sendResult.result?.runId === 'string' ? sendResult.result.runId : undefined;
-  if (!runId) {
-    throw new Error('sessions.send did not return a runId');
-  }
+  let runStatus: RepoFeatureSessionChatState['runStatus'] = 'running';
+  let runError: string | undefined;
 
-  const waitResult = await deps.callGatewayRpc<{ status?: string; error?: string }>('agent.wait', {
-    runId,
-    timeoutMs: 30_000,
-  });
+  if (runId) {
+    const waitResult = await deps.callGatewayRpc<{ status?: string; error?: string }>('agent.wait', {
+      runId,
+      timeoutMs: 30_000,
+    });
 
-  if (!waitResult.success) {
-    throw new Error(waitResult.error);
-  }
+    if (!waitResult.success) {
+      throw new Error(waitResult.error);
+    }
 
-  if (waitResult.result?.status === 'timeout') {
-    throw new Error('Timed out waiting for assistant reply');
-  }
-
-  if (waitResult.result?.status === 'error') {
-    throw new Error(waitResult.result.error || 'Assistant run failed');
-  }
-
-  if (waitResult.result?.status !== 'ok') {
-    throw new Error(`Unexpected agent run status: ${waitResult.result?.status || 'unknown'}`);
+    if (waitResult.result?.status === 'timeout') {
+      runStatus = 'timeout';
+      runError = 'Timed out waiting for assistant reply';
+    } else if (waitResult.result?.status === 'error') {
+      runStatus = 'error';
+      runError = waitResult.result.error || 'Assistant run failed';
+    } else if (waitResult.result?.status === 'ok') {
+      runStatus = 'idle';
+    } else {
+      runStatus = 'running';
+      runError = waitResult.result?.status ? `Run still in progress: ${waitResult.result.status}` : undefined;
+    }
   }
 
   const transcriptResult = await deps.callGatewayRpc<{ messages?: unknown[] }>('sessions.get', {
@@ -111,6 +113,10 @@ export async function sendRepoFeatureSessionChatMessage(
   if (!transcriptResult.success) {
     throw new Error(transcriptResult.error);
   }
+
+  const messages = normalizeMessages(transcriptResult.result?.messages || []);
+  const inferredRunStatus = inferRunStatusFromMessages(transcriptResult.result?.messages || []);
+  const finalRunStatus = runStatus === 'idle' ? inferredRunStatus : runStatus;
 
   const now = new Date();
   await deps.upsertRepoFeatureSession({
@@ -127,9 +133,10 @@ export async function sendRepoFeatureSessionChatMessage(
 
   return {
     sessionKey: session.session_key,
-    messages: normalizeMessages(transcriptResult.result?.messages || []),
-    runStatus: 'idle',
+    messages,
+    runStatus: finalRunStatus,
     runId,
+    error: runError,
   };
 }
 
@@ -170,6 +177,13 @@ function normalizeMessages(input: unknown[]): RepoFeatureSessionChatMessage[] {
   }
 
   return messages;
+}
+
+function inferRunStatusFromMessages(input: unknown[]): RepoFeatureSessionChatState['runStatus'] {
+  const messages = normalizeMessages(input);
+  const last = messages.at(-1);
+  if (!last) return 'idle';
+  return last.role === 'user' ? 'running' : 'idle';
 }
 
 function extractMessageText(message: Record<string, unknown>): string {

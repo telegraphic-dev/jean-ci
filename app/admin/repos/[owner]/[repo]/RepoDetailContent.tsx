@@ -632,12 +632,16 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                           body: JSON.stringify({ message: sessionChatInput, requestId }),
                         });
                         const payload = await response.json().catch(() => null);
-                        if (!response.ok) {
-                          setSessionChatError(payload?.error || 'Failed to send message.');
-                          return;
+                        if (payload) {
+                          setSessionChat(payload);
                         }
-                        setSessionChat(payload);
-                        setSessionChatInput('');
+                        if (!response.ok) {
+                          const nextError = payload?.error
+                            || (payload?.runStatus === 'timeout' ? 'Assistant reply timed out.' : 'Failed to send message.');
+                          setSessionChatError(nextError);
+                        } else {
+                          setSessionChatInput('');
+                        }
                         await fetchData(checksPage, deploymentsPage, eventsPage);
                       } catch {
                         setSessionChatError('Failed to send message.');
