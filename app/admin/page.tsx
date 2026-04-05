@@ -83,7 +83,7 @@ export default function AdminOverview() {
     <div>
       <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
       
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4 mb-8">
         <Link href="/admin/reviews" className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 hover:shadow-lg transition-shadow">
           <div className="text-3xl mb-2">🔀</div>
           <div className="text-3xl font-bold text-[var(--blue)]">{stats?.openPRs ?? '...'}</div>
@@ -115,7 +115,7 @@ export default function AdminOverview() {
         </Link>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid xl:grid-cols-2 gap-6">
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6">
           <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
           <div className="space-y-2">
