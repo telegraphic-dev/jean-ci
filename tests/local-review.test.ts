@@ -120,6 +120,29 @@ await test('runLocalReview reports invalid git-backed prompt files without calli
   ]);
 });
 
+await test('runLocalReview rejects unknown selectedChecks instead of silently dropping them', async () => {
+  await assert.rejects(
+    () => runLocalReview({
+      repo: 'telegraphic-dev/jean-ci',
+      diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
+      headSha: 'abc123',
+      selectedChecks: ['missing-check'],
+      __deps: {
+        getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
+        fetchChecksFromGit: async () => [{
+          name: 'api-openapi-parity',
+          prompt: `# API/OpenAPI Parity Check\n\n## Purpose\nKeep API and OpenAPI aligned.\n\n## Review Instructions\nCheck parity.\n\n## Verdict Criteria\nPASS if aligned. FAIL otherwise.`,
+        }],
+        callReviewer: async () => ({
+          success: true,
+          response: 'VERDICT: PASS\n\n- No blocking issues found',
+        } as const),
+      },
+    } as any),
+    /unknown selectedChecks: missing-check/
+  );
+});
+
 await test('runLocalReview rejects invalid repo slugs and requires git ref', async () => {
   await assert.rejects(
     () => runLocalReview({ repo: 'not-a-valid-repo', diff: 'diff --git a/x b/x\n+1\n' } as any),
@@ -133,6 +156,16 @@ await test('runLocalReview rejects invalid repo slugs and requires git ref', asy
 
   await assert.rejects(
     () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', ref: 'bad ref' } as any),
+    /headSha\/ref contains invalid characters/
+  );
+
+  await assert.rejects(
+    () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', ref: 'refs/heads/main.lock' } as any),
+    /headSha\/ref contains invalid characters/
+  );
+
+  await assert.rejects(
+    () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', ref: 'refs//heads/main' } as any),
     /headSha\/ref contains invalid characters/
   );
 });

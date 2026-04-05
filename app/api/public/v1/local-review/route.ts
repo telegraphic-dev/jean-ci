@@ -32,7 +32,13 @@ function isClientValidationError(message: string): boolean {
     'headSha/ref contains invalid characters',
     'No checks selected',
     'too many checks requested',
-  ].some((prefix) => message === prefix || message.startsWith(`${prefix} (`));
+    'unknown selectedChecks',
+  ].some((prefix) => message === prefix || message.startsWith(`${prefix} (`) || message.startsWith(`${prefix}:`));
+}
+
+function hasOnlyAllowedKeys(body: Record<string, unknown>): boolean {
+  const allowedKeys = new Set(['repo', 'title', 'body', 'diff', 'selectedChecks', 'headSha', 'ref']);
+  return Object.keys(body).every((key) => allowedKeys.has(key));
 }
 
 export async function POST(req: NextRequest) {
@@ -67,6 +73,10 @@ export async function POST(req: NextRequest) {
 
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return badRequest('Request body must be a JSON object');
+  }
+
+  if (!hasOnlyAllowedKeys(body as Record<string, unknown>)) {
+    return badRequest('Request body contains unknown fields');
   }
 
   if (typeof body.repo !== 'string' || body.repo.trim().length === 0) {

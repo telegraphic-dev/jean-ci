@@ -119,6 +119,12 @@ function filterChecks(checks: PreparedCheck[], selectedChecks?: string[]): Prepa
   }
 
   const selected = new Set(selectedChecks.map((name) => name.trim()).filter(Boolean));
+  const availableGitChecks = new Set(checks.filter((check) => !check.isGlobal).map((check) => check.name));
+  const unknownChecks = [...selected].filter((name) => !availableGitChecks.has(name));
+  if (unknownChecks.length > 0) {
+    throw new Error(`unknown selectedChecks: ${unknownChecks.sort().join(', ')}`);
+  }
+
   return checks.filter((check) => check.isGlobal || selected.has(check.name));
 }
 
@@ -133,9 +139,26 @@ function validateRepoSlug(repo: string): boolean {
 function validateGitRef(ref: string): boolean {
   const trimmed = ref.trim();
   if (!trimmed) return false;
-  if (trimmed.includes('..') || trimmed.includes(' ') || trimmed.startsWith('/') || trimmed.endsWith('/') || trimmed.startsWith('.')) {
+  if (
+    trimmed.includes('..') ||
+    trimmed.includes(' ') ||
+    trimmed.startsWith('/') ||
+    trimmed.endsWith('/') ||
+    trimmed.startsWith('.') ||
+    trimmed.endsWith('.') ||
+    trimmed.endsWith('.lock') ||
+    trimmed.includes('\\') ||
+    trimmed.includes('@{') ||
+    trimmed.includes('//')
+  ) {
     return false;
   }
+
+  const parts = trimmed.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..' || part.startsWith('.') || part.endsWith('.lock'))) {
+    return false;
+  }
+
   return /^[A-Za-z0-9._\/-]+$/.test(trimmed);
 }
 
