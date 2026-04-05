@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildRepoSessionSeedPrompt } from '../lib/repo-feature-session-prompt.ts';
-import { createRepoFeatureSession, type RepoFeatureSessionDeps } from '../lib/repo-feature-sessions.ts';
+import { createRepoFeatureSession, isRepoFeatureSessionKeyForRepo, type RepoFeatureSessionDeps } from '../lib/repo-feature-sessions.ts';
 
 test('buildRepoSessionSeedPrompt binds the session to a repository and PR backlink rules', () => {
   const prompt = buildRepoSessionSeedPrompt('telegraphic-dev/jean-ci');
@@ -130,4 +130,41 @@ test('createRepoFeatureSession returns and persists the canonical key from sessi
   assert.equal(persistedSessionKey, 'created-key');
   assert.equal((rpcCalls[1]?.payload as { key?: string })?.key, 'created-key');
   assert.match(String((rpcCalls[1]?.payload as { message?: string })?.message ?? ''), /Session key: created-key/);
+});
+
+test('createRepoFeatureSession requests repo-bound feature key without duplicate agent namespace segment', async () => {
+  const rpcCalls: Array<{ method: string; payload: unknown }> = [];
+  const deps: RepoFeatureSessionDeps = {
+    callGatewayRpc: async (method: string, payload?: unknown) => {
+      rpcCalls.push({ method, payload });
+
+      if (method === 'sessions.create') {
+        return { success: true, result: { key: 'created-key' } };
+      }
+      if (method === 'sessions.send') {
+        return { success: true, result: { ok: true } };
+      }
+
+      throw new Error(`unexpected rpc method: ${method}`);
+    },
+    upsertRepoFeatureSession: async () => {},
+  };
+
+  await createRepoFeatureSession({
+    repoFullName: 'telegraphic-dev/jean-ci',
+    title: 'Session key format test',
+  }, deps);
+
+  const createPayload = (rpcCalls[0]?.payload as { key?: string }) || {};
+  assert.match(createPayload.key || '', /^jean-ci:telegraphic-dev-jean-ci:feature:[a-f0-9-]{36}$/);
+});
+
+test('isRepoFeatureSessionKeyForRepo accepts canonical, legacy, and gateway-prefixed key formats', () => {
+  const repo = 'telegraphic-dev/jean-ci';
+
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean:feature:abc'), false);
 });

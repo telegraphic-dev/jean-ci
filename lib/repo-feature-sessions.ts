@@ -235,7 +235,26 @@ async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoF
 
 export function buildFeatureSessionKeyPrefix(repoFullName: string): string {
   const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return `jean-ci:${repoSlug}:feature:`;
+}
+
+export function buildLegacyFeatureSessionKeyPrefix(repoFullName: string): string {
+  const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
   return `main:jean-ci:${repoSlug}:feature:`;
+}
+
+export function isRepoFeatureSessionKeyForRepo(repoFullName: string, sessionKey: string): boolean {
+  const canonicalPrefix = buildFeatureSessionKeyPrefix(repoFullName);
+  const legacyPrefix = buildLegacyFeatureSessionKeyPrefix(repoFullName);
+  const agentCanonicalPrefix = `agent:main:${canonicalPrefix}`;
+  const agentLegacyPrefix = `agent:main:${legacyPrefix}`;
+
+  return [
+    canonicalPrefix,
+    legacyPrefix,
+    agentCanonicalPrefix,
+    agentLegacyPrefix,
+  ].some((prefix) => sessionKey.startsWith(prefix));
 }
 
 function buildFeatureSessionKey(repoFullName: string): string {

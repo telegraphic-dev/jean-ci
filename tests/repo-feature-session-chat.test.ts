@@ -7,7 +7,8 @@ import {
   type RepoFeatureSessionChatDeps,
 } from '../lib/repo-feature-session-chat.ts';
 
-const REPO_SESSION_KEY = 'main:jean-ci:telegraphic-dev-jean-ci:feature:session-1';
+const REPO_SESSION_KEY = 'jean-ci:telegraphic-dev-jean-ci:feature:session-1';
+const LEGACY_AGENT_PREFIX_SESSION_KEY = 'agent:main:main:jean-ci:telegraphic-dev-jean-ci:feature:session-legacy';
 
 test('buildFeatureSessionIdempotencyKey is stable for the same request inputs', () => {
   const a = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
@@ -92,6 +93,36 @@ test('getRepoFeatureSessionChat marks last-user-message transcripts as running',
 
   const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', REPO_SESSION_KEY, deps);
   assert.equal(result.runStatus, 'running');
+});
+
+test('getRepoFeatureSessionChat accepts legacy gateway-prefixed repo keys', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: LEGACY_AGENT_PREFIX_SESSION_KEY,
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Legacy feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async () => {
+      throw new Error('should not upsert on read');
+    },
+    callGatewayRpc: async () => ({
+      success: true,
+      result: {
+        messages: [{ role: 'assistant', content: 'legacy ok' }],
+      },
+    }),
+  };
+
+  const result = await getRepoFeatureSessionChat('telegraphic-dev/jean-ci', LEGACY_AGENT_PREFIX_SESSION_KEY, deps);
+  assert.equal(result.runStatus, 'idle');
+  assert.equal(result.messages[0]?.text, 'legacy ok');
 });
 
 test('sendRepoFeatureSessionChatMessage waits for run completion and updates activity timestamp', async () => {
@@ -387,7 +418,7 @@ test('sendRepoFeatureSessionChatMessage preserves running status even if transcr
 test('repo feature session chat rejects session keys outside the repo namespace before gateway access', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'main:jean-ci:other-repo:feature:session-9',
+      session_key: 'jean-ci:other-repo:feature:session-9',
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Wrong session',
       branch_name: 'feat/chat',
@@ -407,7 +438,7 @@ test('repo feature session chat rejects session keys outside the repo namespace 
   };
 
   await assert.rejects(
-    () => getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'main:jean-ci:other-repo:feature:session-9', deps),
+    () => getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'jean-ci:other-repo:feature:session-9', deps),
     /Feature session key does not belong to this repository/
   );
 });
@@ -415,7 +446,7 @@ test('repo feature session chat rejects session keys outside the repo namespace 
 test('repo feature session chat rejects prefix-collision session keys from another repo', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'main:jean-ci:telegraphic-dev-jean:feature:session-9',
+      session_key: 'jean-ci:telegraphic-dev-jean:feature:session-9',
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Collision session',
       branch_name: 'feat/chat',
@@ -435,7 +466,7 @@ test('repo feature session chat rejects prefix-collision session keys from anoth
   };
 
   await assert.rejects(
-    () => getRepoFeatureSessionChat('telegraphic-dev/jean', 'main:jean-ci:telegraphic-dev-jean-ci:feature:session-9', deps),
+    () => getRepoFeatureSessionChat('telegraphic-dev/jean', 'jean-ci:telegraphic-dev-jean-ci:feature:session-9', deps),
     /Feature session key does not belong to this repository/
   );
 });
