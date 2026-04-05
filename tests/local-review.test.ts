@@ -52,7 +52,37 @@ await test('runLocalReview executes Code Review and git-backed custom checks thr
   callOpenClawCalls.length = 0;
 });
 
-await test('runLocalReview reports invalid git-backed prompt files without calling reviewer', async () => {
+await test('runLocalReview keeps Code Review enabled when selectedChecks targets only git-backed checks', async () => {
+  const prompts: string[] = [];
+
+  const result = await runLocalReview({
+    repo: 'telegraphic-dev/jean-ci',
+    diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
+    headSha: 'abc123',
+    selectedChecks: ['api-openapi-parity'],
+    __deps: {
+      getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
+      fetchChecksFromGit: async () => [{
+        name: 'api-openapi-parity',
+        prompt: `# API/OpenAPI Parity Check\n\n## Purpose\nKeep API and OpenAPI aligned.\n\n## Review Instructions\nCheck parity.\n\n## Verdict Criteria\nPASS if aligned. FAIL otherwise.`,
+      }],
+      callReviewer: async (prompt: string) => {
+        prompts.push(prompt);
+        return {
+          success: true,
+          response: 'VERDICT: PASS\n\n- No blocking issues found',
+        } as const;
+      },
+    },
+  } as any);
+
+  assert.deepEqual(result.checks.map((check) => check.name), ['Code Review', 'api-openapi-parity']);
+  assert.equal(prompts.length, 2);
+});
+
+await test('runLocalReview reports invalid git-backed prompt files without calling reviewer for that check', async () => {
+  const prompts: string[] = [];
+
   const result = await runLocalReview({
     repo: 'telegraphic-dev/jean-ci',
     diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
@@ -61,14 +91,20 @@ await test('runLocalReview reports invalid git-backed prompt files without calli
     __deps: {
       getUserPrompt: async () => '## Review Criteria\n\nKeep it tight.',
       fetchChecksFromGit: async () => [{ name: 'broken-check', prompt: 'too short' }],
-      callReviewer: async () => {
-        throw new Error('callReviewer should not be called for invalid custom checks');
+      callReviewer: async (prompt: string) => {
+        prompts.push(prompt);
+        return {
+          success: true,
+          response: 'VERDICT: PASS\n\n- No blocking issues found',
+        } as const;
       },
     },
   } as any);
 
-  assert.equal(result.checks.length, 0);
+  assert.equal(result.checks.length, 1);
+  assert.equal(result.checks[0]?.name, 'Code Review');
   assert.equal(result.executionFailures.length, 0);
+  assert.equal(prompts.length, 1);
   assert.deepEqual(result.validationFailures, [
     {
       name: 'broken-check',
@@ -93,5 +129,10 @@ await test('runLocalReview rejects invalid repo slugs and requires git ref', asy
   await assert.rejects(
     () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n' } as any),
     /headSha or ref is required/
+  );
+
+  await assert.rejects(
+    () => runLocalReview({ repo: 'telegraphic-dev/jean-ci', diff: 'diff --git a/x b/x\n+1\n', ref: 'bad ref' } as any),
+    /headSha\/ref contains invalid characters/
   );
 });

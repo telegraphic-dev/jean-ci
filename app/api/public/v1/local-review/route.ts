@@ -16,6 +16,22 @@ function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
+function serverError(message: string) {
+  return NextResponse.json({ error: message }, { status: 500 });
+}
+
+function isClientValidationError(message: string): boolean {
+  return [
+    'repo is required',
+    'repo must be in owner/repo format',
+    'diff is required',
+    'headSha or ref is required',
+    'headSha/ref contains invalid characters',
+    'No checks selected',
+    'too many checks requested',
+  ].some((prefix) => message === prefix || message.startsWith(`${prefix} (`));
+}
+
 export async function POST(req: NextRequest) {
   const auth = await requirePublicApiToken(req);
   if (!auth.authorized) {
@@ -41,15 +57,21 @@ export async function POST(req: NextRequest) {
     return badRequest('diff is required');
   }
 
+  const headSha = typeof body.headSha === 'string' ? body.headSha.trim() : '';
+  const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
+  if (!headSha && !ref) {
+    return badRequest('headSha or ref is required');
+  }
+
   if (body.selectedChecks != null && !Array.isArray(body.selectedChecks)) {
     return badRequest('selectedChecks must be an array');
   }
 
   const selectedChecks = Array.isArray(body.selectedChecks)
-    ? body.selectedChecks.filter((name): name is string => typeof name === 'string').map((name) => name.trim())
+    ? body.selectedChecks.map((name) => (typeof name === 'string' ? name.trim() : '__invalid__'))
     : undefined;
 
-  if (selectedChecks && selectedChecks.some((name) => !name)) {
+  if (selectedChecks && selectedChecks.some((name) => !name || name === '__invalid__')) {
     return badRequest('selectedChecks must contain only non-empty strings');
   }
 
@@ -60,13 +82,13 @@ export async function POST(req: NextRequest) {
       body: typeof body.body === 'string' ? body.body : null,
       diff: body.diff,
       selectedChecks,
-      headSha: typeof body.headSha === 'string' ? body.headSha : null,
-      ref: typeof body.ref === 'string' ? body.ref : null,
+      headSha: headSha || null,
+      ref: ref || null,
     });
 
     return NextResponse.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Local review failed';
-    return badRequest(message);
+    return isClientValidationError(message) ? badRequest(message) : serverError(message);
   }
 }

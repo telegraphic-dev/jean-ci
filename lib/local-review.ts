@@ -119,7 +119,7 @@ function filterChecks(checks: PreparedCheck[], selectedChecks?: string[]): Prepa
   }
 
   const selected = new Set(selectedChecks.map((name) => name.trim()).filter(Boolean));
-  return checks.filter((check) => selected.has(check.name));
+  return checks.filter((check) => check.isGlobal || selected.has(check.name));
 }
 
 function normalizeRepo(repo: string): string {
@@ -140,7 +140,11 @@ function validateGitRef(ref: string): boolean {
 }
 
 function buildSessionMetadata(repo: string, promptName: string, headSha?: string | null): ReviewSessionMetadata {
-  const [owner = 'local', repoName = 'unknown-repo'] = repo.split('/');
+  const [owner, repoName] = repo.split('/');
+  if (!owner || !repoName) {
+    throw new Error('repo must be in owner/repo format');
+  }
+
   return {
     owner,
     repo: repoName,

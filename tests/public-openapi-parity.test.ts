@@ -67,9 +67,10 @@ function extractDocumentedParams(operation: any): { path: Set<string>; query: Se
 function extractImplementedBodyRequirements(source: string): { requiresHeadShaOrRef: boolean; selectedChecksNonEmpty: boolean } {
   return {
     requiresHeadShaOrRef:
-      source.includes("headSha or ref is required") ||
-      (source.includes('body.headSha') && source.includes('body.ref')),
-    selectedChecksNonEmpty: source.includes('selectedChecks must contain only non-empty strings'),
+      source.includes("headSha or ref is required") &&
+      source.includes('const headSha = typeof body.headSha === \'string\' ? body.headSha.trim() : \'\'') &&
+      source.includes('const ref = typeof body.ref === \'string\' ? body.ref.trim() : \'\''),
+    selectedChecksNonEmpty: source.includes('selectedChecks must contain only non-empty strings') && source.includes("typeof name === 'string' ? name.trim() : '__invalid__'"),
   };
 }
 
