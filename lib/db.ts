@@ -755,12 +755,12 @@ export async function overrideCheckRunToPass(id: number, reason: string, overrid
      SET summary = CONCAT(
            COALESCE(summary, ''),
            CASE WHEN COALESCE(summary, '') = '' THEN '' ELSE E'\n\n---\n\n' END,
-           'Manual override recorded by ', $3, '.\n\nReason: ', $2,
+           'Manual override recorded by ', $3::text, '.\n\nReason: ', $2::text,
            '\n\nGitHub check/review state was not changed automatically.'
          ),
          manually_overridden = TRUE,
-         override_reason = $2,
-         overridden_by = $3,
+         override_reason = $2::text,
+         overridden_by = $3::text,
          overridden_at = CURRENT_TIMESTAMP,
          completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
      WHERE id = $1
