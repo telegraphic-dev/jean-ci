@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
 import { callGatewayRpc } from './openclaw-ws.ts';
 import { getRepoFeatureSessions, upsertRepoFeatureSession } from './db.ts';
+
+const MAX_FEATURE_SESSION_MESSAGE_LENGTH = 20_000;
 
 export interface RepoFeatureSessionChatDeps {
   getRepoFeatureSessions: typeof getRepoFeatureSessions;
@@ -52,6 +55,7 @@ export async function sendRepoFeatureSessionChatMessage(
   repoFullName: string,
   sessionKey: string,
   message: string,
+  requestId: string,
   deps: RepoFeatureSessionChatDeps = defaultDeps,
 ): Promise<RepoFeatureSessionChatState> {
   const session = await requireRepoFeatureSession(repoFullName, sessionKey, deps);
@@ -59,11 +63,14 @@ export async function sendRepoFeatureSessionChatMessage(
   if (!trimmed) {
     throw new Error('message is required');
   }
+  if (trimmed.length > MAX_FEATURE_SESSION_MESSAGE_LENGTH) {
+    throw new Error(`message exceeds ${MAX_FEATURE_SESSION_MESSAGE_LENGTH} characters`);
+  }
 
   const sendResult = await deps.callGatewayRpc<{ runId?: string; status?: string }>('sessions.send', {
     key: session.session_key,
     message: trimmed,
-    idempotencyKey: `repo-feature-chat-${Date.now()}`,
+    idempotencyKey: buildFeatureSessionIdempotencyKey(session.session_key, requestId, trimmed),
   });
 
   if (!sendResult.success) {
@@ -71,28 +78,29 @@ export async function sendRepoFeatureSessionChatMessage(
   }
 
   const runId = typeof sendResult.result?.runId === 'string' ? sendResult.result.runId : undefined;
-  let runStatus: RepoFeatureSessionChatState['runStatus'] = 'idle';
-  let runError: string | undefined;
+  if (!runId) {
+    throw new Error('sessions.send did not return a runId');
+  }
 
-  if (runId) {
-    const waitResult = await deps.callGatewayRpc<{ status?: string; error?: string }>('agent.wait', {
-      runId,
-      timeoutMs: 30_000,
-    });
+  const waitResult = await deps.callGatewayRpc<{ status?: string; error?: string }>('agent.wait', {
+    runId,
+    timeoutMs: 30_000,
+  });
 
-    if (!waitResult.success) {
-      throw new Error(waitResult.error);
-    }
+  if (!waitResult.success) {
+    throw new Error(waitResult.error);
+  }
 
-    if (waitResult.result?.status === 'timeout') {
-      runStatus = 'timeout';
-      runError = 'Timed out waiting for assistant reply';
-    } else if (waitResult.result?.status === 'error') {
-      runStatus = 'error';
-      runError = waitResult.result.error || 'Assistant run failed';
-    } else if (waitResult.result?.status && waitResult.result.status !== 'ok') {
-      runStatus = 'running';
-    }
+  if (waitResult.result?.status === 'timeout') {
+    throw new Error('Timed out waiting for assistant reply');
+  }
+
+  if (waitResult.result?.status === 'error') {
+    throw new Error(waitResult.result.error || 'Assistant run failed');
+  }
+
+  if (waitResult.result?.status !== 'ok') {
+    throw new Error(`Unexpected agent run status: ${waitResult.result?.status || 'unknown'}`);
   }
 
   const transcriptResult = await deps.callGatewayRpc<{ messages?: unknown[] }>('sessions.get', {
@@ -120,10 +128,21 @@ export async function sendRepoFeatureSessionChatMessage(
   return {
     sessionKey: session.session_key,
     messages: normalizeMessages(transcriptResult.result?.messages || []),
-    runStatus,
+    runStatus: 'idle',
     runId,
-    error: runError,
   };
+}
+
+export function buildFeatureSessionIdempotencyKey(sessionKey: string, requestId: string, message: string): string {
+  const hash = createHash('sha256')
+    .update(sessionKey)
+    .update('\n')
+    .update(requestId)
+    .update('\n')
+    .update(message)
+    .digest('hex');
+
+  return `repo-feature-chat-${hash}`;
 }
 
 async function requireRepoFeatureSession(

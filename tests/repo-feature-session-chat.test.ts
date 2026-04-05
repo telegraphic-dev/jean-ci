@@ -1,10 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildFeatureSessionIdempotencyKey,
   getRepoFeatureSessionChat,
   sendRepoFeatureSessionChatMessage,
   type RepoFeatureSessionChatDeps,
 } from '../lib/repo-feature-session-chat.ts';
+
+test('buildFeatureSessionIdempotencyKey is stable for the same request inputs', () => {
+  const a = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
+  const b = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
+  const c = buildFeatureSessionIdempotencyKey('session-1', 'request-2', 'hello');
+
+  assert.equal(a, b);
+  assert.notEqual(a, c);
+});
 
 test('getRepoFeatureSessionChat returns normalized transcript messages', async () => {
   const deps: RepoFeatureSessionChatDeps = {
@@ -48,7 +58,7 @@ test('getRepoFeatureSessionChat returns normalized transcript messages', async (
 });
 
 test('sendRepoFeatureSessionChatMessage waits for run completion and updates activity timestamp', async () => {
-  const calls: string[] = [];
+  const calls: Array<{ method: string; payload?: any }> = [];
   let upserted = false;
 
   const deps: RepoFeatureSessionChatDeps = {
@@ -83,8 +93,8 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
         updated_at: new Date(),
       };
     },
-    callGatewayRpc: async (method: string) => {
-      calls.push(method);
+    callGatewayRpc: async (method: string, payload?: unknown) => {
+      calls.push({ method, payload });
       if (method === 'sessions.send') {
         return { success: true, result: { runId: 'run-1', status: 'accepted' } };
       }
@@ -106,10 +116,45 @@ test('sendRepoFeatureSessionChatMessage waits for run completion and updates act
     },
   };
 
-  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', deps);
-  assert.deepEqual(calls, ['sessions.send', 'agent.wait', 'sessions.get']);
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps);
+  assert.deepEqual(calls.map((call) => call.method), ['sessions.send', 'agent.wait', 'sessions.get']);
+  assert.equal(calls[0]?.payload?.idempotencyKey, buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'please implement chat'));
   assert.equal(result.runStatus, 'idle');
   assert.equal(result.runId, 'run-1');
   assert.equal(result.messages.at(-1)?.text, 'done');
   assert.equal(upserted, true);
+});
+
+test('sendRepoFeatureSessionChatMessage fails on agent timeout instead of returning success transcript', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: 'session-1',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async () => {
+      throw new Error('should not upsert on timeout');
+    },
+    callGatewayRpc: async (method: string) => {
+      if (method === 'sessions.send') {
+        return { success: true, result: { runId: 'run-1', status: 'accepted' } };
+      }
+      if (method === 'agent.wait') {
+        return { success: true, result: { status: 'timeout' } };
+      }
+      throw new Error(`unexpected method ${method}`);
+    },
+  };
+
+  await assert.rejects(
+    sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', 'session-1', 'please implement chat', 'request-1', deps),
+    /Timed out waiting for assistant reply/
+  );
 });

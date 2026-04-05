@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -242,6 +242,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const [sessionChatLoading, setSessionChatLoading] = useState(false);
   const [sessionChatInput, setSessionChatInput] = useState('');
   const [sessionChatError, setSessionChatError] = useState<string | null>(null);
+  const sessionChatRequestSeq = useRef(0);
 
   const checksPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.checks) || '1') || 1);
   const deploymentsPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.deployments) || '1') || 1);
@@ -326,11 +327,13 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   }, [section, selectedOutput]);
 
   const loadSessionChat = useCallback(async (sessionKey: string) => {
+    const requestSeq = ++sessionChatRequestSeq.current;
     setSessionChatLoading(true);
     setSessionChatError(null);
     try {
       const response = await fetch(`${repoApiBase}/sessions/${encodeURIComponent(sessionKey)}`);
       const payload = await response.json().catch(() => null);
+      if (requestSeq !== sessionChatRequestSeq.current) return;
       if (!response.ok) {
         setSessionChat(null);
         setSessionChatError(payload?.error || 'Failed to load chat.');
@@ -338,10 +341,13 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
       }
       setSessionChat(payload);
     } catch {
+      if (requestSeq !== sessionChatRequestSeq.current) return;
       setSessionChat(null);
       setSessionChatError('Failed to load chat.');
     } finally {
-      setSessionChatLoading(false);
+      if (requestSeq === sessionChatRequestSeq.current) {
+        setSessionChatLoading(false);
+      }
     }
   }, [repoApiBase]);
 
@@ -519,7 +525,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         type="button"
                         onClick={() => {
                           setSelectedSessionKey(session.session_key);
-                          void loadSessionChat(session.session_key);
                         }}
                         className={`w-full text-left p-4 flex flex-col gap-3 transition-colors ${active ? 'bg-[var(--bg-secondary)]' : 'hover:bg-[var(--bg-card-hover)]'}`}
                       >
@@ -618,10 +623,13 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                       setSessionChatLoading(true);
                       setSessionChatError(null);
                       try {
+                        const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                          ? crypto.randomUUID()
+                          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
                         const response = await fetch(`${repoApiBase}/sessions/${encodeURIComponent(selectedSessionKey)}`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ message: sessionChatInput }),
+                          body: JSON.stringify({ message: sessionChatInput, requestId }),
                         });
                         const payload = await response.json().catch(() => null);
                         if (!response.ok) {
