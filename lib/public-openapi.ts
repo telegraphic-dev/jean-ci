@@ -13,6 +13,7 @@ const repoFilterParam = { name: 'repo', in: 'query', schema: { type: 'string' } 
 const ownerParam = { name: 'owner', in: 'path', required: true, schema: { type: 'string' } } as const;
 const repoParam = { name: 'repo', in: 'path', required: true, schema: { type: 'string' } } as const;
 const okResponse = { description: 'Success' } as const;
+const badRequestResponse = { description: 'Bad request' } as const;
 const unauthorizedResponse = { description: 'Unauthorized' } as const;
 
 export function buildPublicOpenApiSpec() {
@@ -35,6 +36,58 @@ export function buildPublicOpenApiSpec() {
         get: {
           summary: 'Health check for authenticated public API clients',
           responses: { '200': okResponse, '401': unauthorizedResponse },
+        },
+      },
+      [`/${PUBLIC_API_VERSION}/local-review`]: {
+        post: {
+          summary: 'Run jean-ci review checks against a caller-provided local diff',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['repo', 'diff'],
+                  properties: {
+                    repo: {
+                      type: 'string',
+                      pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$',
+                      description: 'Repository slug in owner/repo format',
+                    },
+                    title: { type: 'string' },
+                    body: { type: 'string' },
+                    diff: { type: 'string', minLength: 1, description: 'Unified git diff to review' },
+                    headSha: {
+                      type: 'string',
+                      minLength: 1,
+                      pattern: '^[A-Za-z0-9._/-]+$',
+                      description: 'Commit SHA used to load git-backed .jean-ci/pr-checks prompts',
+                    },
+                    ref: {
+                      type: 'string',
+                      minLength: 1,
+                      pattern: '^[A-Za-z0-9._/-]+$',
+                      description: 'Git ref used to load git-backed .jean-ci/pr-checks prompts when headSha is not provided',
+                    },
+                    selectedChecks: {
+                      type: 'array',
+                      description: 'Optional subset of git-backed checks to run by name. Code Review always runs and cannot be excluded.',
+                      items: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                  },
+                  anyOf: [
+                    { required: ['headSha'] },
+                    { required: ['ref'] },
+                  ],
+                },
+              },
+            },
+          },
+          responses: { '200': okResponse, '400': badRequestResponse, '401': unauthorizedResponse, '500': { description: 'Internal server error' } },
         },
       },
       [`/${PUBLIC_API_VERSION}/stats`]: {

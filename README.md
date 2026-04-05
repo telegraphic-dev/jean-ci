@@ -224,6 +224,7 @@ jean-ci now exposes a token-protected public API so external services can read o
 
 - `GET /api/public/openapi.json`
 - `GET /api/public/v1/health`
+- `POST /api/public/v1/local-review`
 - `GET /api/public/v1/stats`
 - `GET /api/public/v1/repos`
 - `GET /api/public/v1/checks?page=1&limit=50&repo=owner/repo`
@@ -255,6 +256,37 @@ These endpoints are session-authenticated admin routes under `/api/**` and are i
   - body: `{ "reason": "..." }`
   - success: records a manual override in jean-ci only
   - does not update the GitHub check run or submit a GitHub approval review
+
+### Local review execution
+
+`POST /api/public/v1/local-review` lets a local client send a repo slug, unified diff, and a git `headSha`/`ref`. jean-ci loads `.jean-ci/pr-checks/*.md` from git at that revision and runs them against the caller-provided local diff.
+
+Example:
+
+```bash
+curl -X POST "$JEAN_CI_URL/api/public/v1/local-review" \
+  -H "Authorization: Bearer $JEAN_CI_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @- <<'JSON'
+{
+  "repo": "telegraphic-dev/jean-ci",
+  "title": "Local diff review",
+  "body": "Run jean-ci against my working tree",
+  "headSha": "327049e",
+  "diff": "diff --git a/file b/file\n...",
+  "selectedChecks": ["api-openapi-parity"]
+}
+JSON
+```
+
+Notes:
+- Use an existing public API token or one captured when created; token values are shown only once and are not visible again in the UI.
+- The caller supplies the local diff, but review prompts come only from git (`.jean-ci/pr-checks/*.md`) at the provided `headSha`/`ref`.
+- `repo` must be `owner/repo`; `headSha` or `ref` is required.
+- `selectedChecks` only filters git-backed checks; the built-in `Code Review` always runs.
+- Request bodies are size-limited before parsing; oversized requests are rejected with HTTP 400.
+- Internal execution failures return a generic HTTP 500 error body from this public endpoint.
+- The public OpenAPI document at `/api/public/openapi.json` includes this endpoint.
 
 Optional bootstrap token(s) can be set via env vars:
 
