@@ -235,7 +235,7 @@ async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoF
 
 export function buildFeatureSessionKeyPrefix(repoFullName: string): string {
   const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
-  return `main:jean-ci:${repoSlug}:feature:`;
+  return `jean-ci:${repoSlug}:feature:`;
 }
 
 function buildFeatureSessionKey(repoFullName: string): string {

@@ -7,7 +7,7 @@ import {
   type RepoFeatureSessionChatDeps,
 } from '../lib/repo-feature-session-chat.ts';
 
-const REPO_SESSION_KEY = 'main:jean-ci:telegraphic-dev-jean-ci:feature:session-1';
+const REPO_SESSION_KEY = 'jean-ci:telegraphic-dev-jean-ci:feature:session-1';
 
 test('buildFeatureSessionIdempotencyKey is stable for the same request inputs', () => {
   const a = buildFeatureSessionIdempotencyKey('session-1', 'request-1', 'hello');
@@ -387,7 +387,7 @@ test('sendRepoFeatureSessionChatMessage preserves running status even if transcr
 test('repo feature session chat rejects session keys outside the repo namespace before gateway access', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'main:jean-ci:other-repo:feature:session-9',
+      session_key: 'jean-ci:other-repo:feature:session-9',
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Wrong session',
       branch_name: 'feat/chat',
@@ -407,7 +407,7 @@ test('repo feature session chat rejects session keys outside the repo namespace 
   };
 
   await assert.rejects(
-    () => getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'main:jean-ci:other-repo:feature:session-9', deps),
+    () => getRepoFeatureSessionChat('telegraphic-dev/jean-ci', 'jean-ci:other-repo:feature:session-9', deps),
     /Feature session key does not belong to this repository/
   );
 });
@@ -415,7 +415,7 @@ test('repo feature session chat rejects session keys outside the repo namespace 
 test('repo feature session chat rejects prefix-collision session keys from another repo', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{
-      session_key: 'main:jean-ci:telegraphic-dev-jean:feature:session-9',
+      session_key: 'jean-ci:telegraphic-dev-jean:feature:session-9',
       repo_full_name: 'telegraphic-dev/jean-ci',
       title: 'Collision session',
       branch_name: 'feat/chat',
@@ -435,7 +435,7 @@ test('repo feature session chat rejects prefix-collision session keys from anoth
   };
 
   await assert.rejects(
-    () => getRepoFeatureSessionChat('telegraphic-dev/jean', 'main:jean-ci:telegraphic-dev-jean-ci:feature:session-9', deps),
+    () => getRepoFeatureSessionChat('telegraphic-dev/jean', 'jean-ci:telegraphic-dev-jean-ci:feature:session-9', deps),
     /Feature session key does not belong to this repository/
   );
 });
