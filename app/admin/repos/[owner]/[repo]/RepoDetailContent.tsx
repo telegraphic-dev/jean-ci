@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 
@@ -80,6 +80,19 @@ interface FeatureSession {
   last_activity_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface FeatureSessionChatMessage {
+  role: string;
+  text: string;
+}
+
+interface FeatureSessionChatState {
+  sessionKey: string;
+  messages: FeatureSessionChatMessage[];
+  runStatus: 'idle' | 'running' | 'timeout' | 'error';
+  runId?: string;
+  error?: string;
 }
 
 interface FetchResult<T> {
@@ -224,6 +237,15 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const [tasks, setTasks] = useState<{ summary: TaskSummary[]; stats: TaskStats | null }>({ summary: [], stats: null });
   const [loading, setLoading] = useState(true);
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
+  const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
+  const [sessionChat, setSessionChat] = useState<FeatureSessionChatState | null>(null);
+  const [sessionChatLoading, setSessionChatLoading] = useState(false);
+  const [sessionChatSending, setSessionChatSending] = useState(false);
+  const [sessionChatInput, setSessionChatInput] = useState('');
+  const [sessionChatError, setSessionChatError] = useState<string | null>(null);
+  const sessionChatRequestSeq = useRef(0);
+  const sessionChatSendSeq = useRef(0);
+  const selectedSessionKeyRef = useRef<string | null>(null);
 
   const checksPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.checks) || '1') || 1);
   const deploymentsPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.deployments) || '1') || 1);
@@ -306,6 +328,71 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
       setSelectedOutput(null);
     }
   }, [section, selectedOutput]);
+
+  useEffect(() => {
+    selectedSessionKeyRef.current = selectedSessionKey;
+  }, [selectedSessionKey]);
+
+  const loadSessionChat = useCallback(async (sessionKey: string) => {
+    const requestSeq = ++sessionChatRequestSeq.current;
+    setSessionChatLoading(true);
+    setSessionChatError(null);
+    try {
+      const response = await fetch(`${repoApiBase}/sessions/${encodeURIComponent(sessionKey)}`);
+      const payload = await response.json().catch(() => null);
+      if (requestSeq !== sessionChatRequestSeq.current) return;
+      if (!response.ok) {
+        setSessionChat(null);
+        setSessionChatError(payload?.error || 'Failed to load chat.');
+        return;
+      }
+      setSessionChat(payload);
+    } catch {
+      if (requestSeq !== sessionChatRequestSeq.current) return;
+      setSessionChat(null);
+      setSessionChatError('Failed to load chat.');
+    } finally {
+      if (requestSeq === sessionChatRequestSeq.current) {
+        setSessionChatLoading(false);
+      }
+    }
+  }, [repoApiBase]);
+
+  useEffect(() => {
+    if (section !== 'sessions') {
+      setSelectedSessionKey(null);
+      setSessionChat(null);
+      setSessionChatError(null);
+      setSessionChatInput('');
+      setSessionChatLoading(false);
+      setSessionChatSending(false);
+      sessionChatRequestSeq.current += 1;
+      sessionChatSendSeq.current += 1;
+      return;
+    }
+
+    if (sessions.length === 0) {
+      setSelectedSessionKey(null);
+      setSessionChat(null);
+      setSessionChatLoading(false);
+      setSessionChatSending(false);
+      return;
+    }
+
+    const hasSelected = selectedSessionKey && sessions.some((session) => session.session_key === selectedSessionKey);
+    const nextKey = hasSelected ? selectedSessionKey : sessions[0]?.session_key;
+
+    if (nextKey && nextKey !== selectedSessionKey) {
+      setSelectedSessionKey(nextKey);
+      setSessionChat(null);
+      setSessionChatError(null);
+      return;
+    }
+
+    if (nextKey && (!sessionChat || sessionChat.sessionKey !== nextKey)) {
+      void loadSessionChat(nextKey);
+    }
+  }, [section, sessions, selectedSessionKey, sessionChat, loadSessionChat]);
 
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
@@ -437,49 +524,198 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
             </div>
           )}
 
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-            {sessionsError ? (
-              <div className="p-6 text-red-400">{sessionsError}</div>
-            ) : sessions.length === 0 ? (
-              <div className="p-6 text-[var(--text-muted)]">No feature sessions tracked for this repository yet.</div>
-            ) : (
-              <div className="divide-y divide-[var(--border)]">
-                {sessions.map(session => (
-                  <div key={session.session_key} className="p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                    <div>
-                      <div className="font-medium">{session.title}</div>
-                      <div className="mt-1 text-xs text-[var(--text-muted)] font-mono break-all">{session.session_key}</div>
-                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                        <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
-                        {session.branch_name && (
-                          <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)] font-mono">{session.branch_name}</span>
-                        )}
-                        {session.pr_number && (
-                          <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">PR #{session.pr_number}</span>
-                        )}
+          <div className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-4">
+            <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
+              {sessionsError ? (
+                <div className="p-6 text-red-400">{sessionsError}</div>
+              ) : sessions.length === 0 ? (
+                <div className="p-6 text-[var(--text-muted)]">No feature sessions tracked for this repository yet.</div>
+              ) : (
+                <div className="divide-y divide-[var(--border)]">
+                  {sessions.map(session => {
+                    const active = session.session_key === selectedSessionKey;
+                    return (
+                      <div
+                        key={session.session_key}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          sessionChatRequestSeq.current += 1;
+                          sessionChatSendSeq.current += 1;
+                          setSessionChatSending(false);
+                          setSelectedSessionKey(session.session_key);
+                          setSessionChat(null);
+                          setSessionChatError(null);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          sessionChatRequestSeq.current += 1;
+                          sessionChatSendSeq.current += 1;
+                          setSessionChatSending(false);
+                          setSelectedSessionKey(session.session_key);
+                          setSessionChat(null);
+                          setSessionChatError(null);
+                        }}
+                        className={`w-full text-left p-4 flex flex-col gap-3 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--accent)] ${active ? 'bg-[var(--bg-secondary)]' : 'hover:bg-[var(--bg-card-hover)]'}`}
+                      >
+                        <div>
+                          <div className="font-medium">{session.title}</div>
+                          <div className="mt-1 text-xs text-[var(--text-muted)] font-mono break-all">{session.session_key}</div>
+                          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                            <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
+                            {session.branch_name && (
+                              <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)] font-mono">{session.branch_name}</span>
+                            )}
+                            {session.pr_number && (
+                              <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">PR #{session.pr_number}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-2 text-sm">
+                          <div className="text-[var(--text-muted)]">
+                            {session.last_activity_at ? formatRelativeTime(session.last_activity_at) : 'no activity yet'}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {session.session_url && (
+                              <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline" onClick={(e) => e.stopPropagation()}>
+                                Open gateway session
+                              </a>
+                            )}
+                            {session.pr_url && (
+                              <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline" onClick={(e) => e.stopPropagation()}>
+                                Open PR
+                              </a>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex flex-col items-start md:items-end gap-2 text-sm">
-                      <div className="text-[var(--text-muted)]">
-                        {session.last_activity_at ? formatRelativeTime(session.last_activity_at) : 'no activity yet'}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {session.session_url && (
-                          <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                            Open session
-                          </a>
-                        )}
-                        {session.pr_url && (
-                          <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                            Open PR
-                          </a>
-                        )}
-                      </div>
-                    </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden min-h-[480px] flex flex-col">
+              <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-medium">Session Chat</div>
+                  <div className="text-xs text-[var(--text-muted)]">
+                    {selectedSessionKey ? selectedSessionKey : 'Select a feature session'}
                   </div>
-                ))}
+                </div>
+                {sessionChat?.runStatus && sessionChat.runStatus !== 'idle' && (
+                  <span className={`text-xs px-2 py-1 rounded-full ${sessionChat.runStatus === 'timeout' || sessionChat.runStatus === 'error' ? 'bg-red-500/10 text-red-400' : 'bg-yellow-500/10 text-yellow-400'}`}>
+                    {sessionChat.runStatus}
+                  </span>
+                )}
               </div>
-            )}
+
+              <div className="flex-1 overflow-auto p-4 space-y-3 bg-[var(--bg-primary)]/30">
+                {sessionChatLoading ? (
+                  <div className="text-[var(--text-muted)] text-sm">Loading chat…</div>
+                ) : sessionChatError ? (
+                  <div className="text-red-400 text-sm">{sessionChatError}</div>
+                ) : !selectedSessionKey ? (
+                  <div className="text-[var(--text-muted)] text-sm">Pick a feature session to view and continue the conversation.</div>
+                ) : !sessionChat || sessionChat.messages.length === 0 ? (
+                  <div className="text-[var(--text-muted)] text-sm">No messages yet.</div>
+                ) : (
+                  sessionChat.messages.map((message, index) => (
+                    <div key={`${message.role}-${index}`} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[85%] rounded-2xl px-4 py-3 whitespace-pre-wrap text-sm border ${message.role === 'user' ? 'bg-[var(--accent)] text-white border-[var(--accent)]' : message.role === 'assistant' ? 'bg-[var(--bg-card)] border-[var(--border)]' : 'bg-[var(--bg-secondary)] border-[var(--border)] text-[var(--text-secondary)]'}`}>
+                        <div className={`text-[10px] uppercase tracking-wide mb-1 ${message.role === 'user' ? 'text-white/70' : 'text-[var(--text-muted)]'}`}>{message.role}</div>
+                        {message.text}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="border-t border-[var(--border)] p-4 space-y-3">
+                {sessionChat?.error && (
+                  <div className="text-xs text-red-400">{sessionChat.error}</div>
+                )}
+                <textarea
+                  value={sessionChatInput}
+                  onChange={(e) => setSessionChatInput(e.target.value)}
+                  placeholder={selectedSessionKey ? 'Tell the feature session what to do next…' : 'Select a session first'}
+                  disabled={!selectedSessionKey || sessionChatSending}
+                  rows={4}
+                  className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] disabled:opacity-50"
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs text-[var(--text-muted)]">Messages are sent directly to the underlying OpenClaw session.</div>
+                  <button
+                    type="button"
+                    disabled={!selectedSessionKey || !sessionChatInput.trim() || sessionChatSending}
+                    onClick={async () => {
+                      if (!selectedSessionKey) return;
+                      const targetSessionKey = selectedSessionKey;
+                      const targetRequestSeq = sessionChatRequestSeq.current;
+                      const sendSeq = ++sessionChatSendSeq.current;
+                      setSessionChatSending(true);
+                      setSessionChatError(null);
+                      try {
+                        const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                          ? crypto.randomUUID()
+                          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                        const response = await fetch(`${repoApiBase}/sessions/${encodeURIComponent(targetSessionKey)}`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ message: sessionChatInput, requestId }),
+                        });
+                        const payload = await response.json().catch(() => null);
+                        if (
+                          sendSeq !== sessionChatSendSeq.current
+                          || targetRequestSeq !== sessionChatRequestSeq.current
+                          || selectedSessionKeyRef.current !== targetSessionKey
+                        ) {
+                          return;
+                        }
+                        if (payload && payload.sessionKey === targetSessionKey) {
+                          setSessionChat(payload);
+                        }
+                        const acceptedSend = response.ok || response.status === 202 || payload?.runStatus === 'timeout';
+                        if (acceptedSend) {
+                          setSessionChatInput('');
+                        }
+                        if (response.status === 202 || payload?.runStatus === 'running') {
+                          setSessionChatError(null);
+                        } else if (!response.ok) {
+                          const nextError = payload?.error
+                            || (payload?.runStatus === 'timeout'
+                              ? 'Assistant reply timed out.'
+                              : 'Failed to send message.');
+                          setSessionChatError(nextError);
+                        }
+                        await fetchData(checksPage, deploymentsPage, eventsPage);
+                      } catch {
+                        if (
+                          sendSeq !== sessionChatSendSeq.current
+                          || targetRequestSeq !== sessionChatRequestSeq.current
+                          || selectedSessionKeyRef.current !== targetSessionKey
+                        ) {
+                          return;
+                        }
+                        setSessionChatError('Failed to send message.');
+                      } finally {
+                        if (
+                          sendSeq === sessionChatSendSeq.current
+                          && targetRequestSeq === sessionChatRequestSeq.current
+                          && selectedSessionKeyRef.current === targetSessionKey
+                        ) {
+                          setSessionChatSending(false);
+                        }
+                      }
+                    }}
+                    className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                  >
+                    {sessionChatSending ? 'Sending…' : 'Send'}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

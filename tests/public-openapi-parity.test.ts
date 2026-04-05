@@ -43,8 +43,12 @@ function extractImplementedQueryParams(source: string): Set<string> {
     params.add(match[1]);
   }
   if (source.includes('parsePaginationParams(')) {
-    params.add('page');
     params.add('limit');
+    if (source.includes('const { limit, offset } = parsePaginationParams(') || source.includes('{ limit, offset } = parsePaginationParams(')) {
+      params.add('offset');
+    } else {
+      params.add('page');
+    }
   }
   return params;
 }

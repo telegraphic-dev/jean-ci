@@ -233,9 +233,13 @@ async function cleanupFailedFeatureSessionCreate(sessionKey: string, deps: RepoF
   }
 }
 
-function buildFeatureSessionKey(repoFullName: string): string {
+export function buildFeatureSessionKeyPrefix(repoFullName: string): string {
   const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
-  return `main:jean-ci:${repoSlug}:feature:${randomUUID()}`;
+  return `main:jean-ci:${repoSlug}:feature:`;
+}
+
+function buildFeatureSessionKey(repoFullName: string): string {
+  return `${buildFeatureSessionKeyPrefix(repoFullName)}${randomUUID()}`;
 }
 
 function resolveCreatedSessionKey(payload: unknown, fallbackKey: string): string {
