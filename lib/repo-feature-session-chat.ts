@@ -163,7 +163,8 @@ async function requireRepoFeatureSession(
   sessionKey: string,
   deps: RepoFeatureSessionChatDeps,
 ) {
-  if (!sessionKey.startsWith(buildFeatureSessionKeyPrefix(repoFullName))) {
+  const expectedPrefix = buildFeatureSessionKeyPrefix(repoFullName);
+  if (!sessionKey.startsWith(expectedPrefix)) {
     throw new Error('Feature session key does not belong to this repository');
   }
 

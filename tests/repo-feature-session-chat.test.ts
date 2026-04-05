@@ -356,3 +356,31 @@ test('repo feature session chat rejects session keys outside the repo namespace 
     /Feature session key does not belong to this repository/
   );
 });
+
+test('repo feature session chat rejects prefix-collision session keys from another repo', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: 'main:jean-ci:telegraphic-dev-jean:feature:session-9',
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Collision session',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async () => {
+      throw new Error('should not upsert');
+    },
+    callGatewayRpc: async () => {
+      throw new Error('should not reach gateway');
+    },
+  };
+
+  await assert.rejects(
+    () => getRepoFeatureSessionChat('telegraphic-dev/jean', 'main:jean-ci:telegraphic-dev-jean-ci:feature:session-9', deps),
+    /Feature session key does not belong to this repository/
+  );
+});
