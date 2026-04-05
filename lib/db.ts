@@ -756,7 +756,7 @@ export async function overrideCheckRunToPass(id: number, reason: string, overrid
            COALESCE(summary, ''),
            CASE WHEN COALESCE(summary, '') = '' THEN '' ELSE E'\n\n---\n\n' END,
            'Manual override recorded by ', $3::text, '.\n\nReason: ', $2::text,
-           '\n\nGitHub check/review state was not changed automatically.'
+           '\n\nGitHub override requested and pending synchronization.'
          ),
          manually_overridden = TRUE,
          override_reason = $2::text,
@@ -767,6 +767,60 @@ export async function overrideCheckRunToPass(id: number, reason: string, overrid
        AND status = 'completed'
        AND conclusion = 'failure'
        AND COALESCE(manually_overridden, FALSE) = FALSE
+     RETURNING *`,
+    [id, sanitizedReason, overriddenBy]
+  );
+
+  return result.rows[0] || null;
+}
+
+export async function rollbackManualOverride(id: number, reason: string, overriddenBy: string): Promise<CheckRun | null> {
+  const sanitizedReason = reason.trim();
+  if (!sanitizedReason) {
+    throw new Error('Override reason is required');
+  }
+
+  const result = await pool.query(
+    `UPDATE jean_ci_check_runs
+     SET summary = CONCAT(
+           REPLACE(
+             COALESCE(summary, ''),
+             CONCAT(
+               CASE
+                 WHEN POSITION('Manual override recorded by ' IN COALESCE(summary, '')) > 1 THEN E'\n\n---\n\n'
+                 ELSE ''
+               END,
+               'Manual override recorded by ', $3::text, '.\n\nReason: ', $2::text,
+               '\n\nGitHub override requested and pending synchronization.'
+             ),
+             ''
+           ),
+           CASE
+             WHEN COALESCE(summary, '') = '' THEN ''
+             WHEN REPLACE(
+               COALESCE(summary, ''),
+               CONCAT(
+                 CASE
+                   WHEN POSITION('Manual override recorded by ' IN COALESCE(summary, '')) > 1 THEN E'\n\n---\n\n'
+                   ELSE ''
+                 END,
+                 'Manual override recorded by ', $3::text, '.\n\nReason: ', $2::text,
+                 '\n\nGitHub override requested and pending synchronization.'
+               ),
+               ''
+             ) = '' THEN ''
+             ELSE E'\n\n---\n\n'
+           END,
+           'Manual override rollback after GitHub sync failure for ', $3::text, '.\n\nReason: ', $2::text
+         ),
+         manually_overridden = FALSE,
+         override_reason = NULL,
+         overridden_by = NULL,
+         overridden_at = NULL
+     WHERE id = $1
+       AND manually_overridden = TRUE
+       AND override_reason = $2::text
+       AND overridden_by = $3::text
      RETURNING *`,
     [id, sanitizedReason, overriddenBy]
   );

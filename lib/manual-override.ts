@@ -1,4 +1,4 @@
-import { getCheckRun, getRepo, overrideCheckRunToPass, type CheckRun, type Repo } from './db.ts';
+import { getCheckRun, getRepo, overrideCheckRunToPass, rollbackManualOverride, type CheckRun, type Repo } from './db.ts';
 import { canCreateOverrideApproval, createPRReview, getInstallationOctokit, getPRInfo, updateCheck } from './github.ts';
 
 export interface ManualOverrideSuccess {
@@ -20,6 +20,7 @@ export interface ManualOverrideDeps {
   getCheckRun: typeof getCheckRun;
   getRepo: typeof getRepo;
   overrideCheckRunToPass: typeof overrideCheckRunToPass;
+  rollbackManualOverride: typeof rollbackManualOverride;
   getInstallationOctokit: typeof getInstallationOctokit;
   getPRInfo: typeof getPRInfo;
   createPRReview: typeof createPRReview;
@@ -31,6 +32,7 @@ const defaultDeps: ManualOverrideDeps = {
   getCheckRun,
   getRepo,
   overrideCheckRunToPass,
+  rollbackManualOverride,
   getInstallationOctokit,
   getPRInfo,
   createPRReview,
@@ -124,29 +126,38 @@ async function performManualOverrideWithDeps(
   let githubReviewSubmitted = false;
   let githubCheckUpdated = false;
 
-  if (shouldSubmitReview) {
-    await deps.createPRReview(
-      octokit,
-      owner,
-      repo,
-      checkRun.pr_number,
-      'APPROVE',
-      buildOverrideReviewBody(actor, sanitizedReason, checkRun.id),
-    );
-    githubReviewSubmitted = true;
-  }
+  try {
+    if (shouldSubmitReview) {
+      await deps.createPRReview(
+        octokit,
+        owner,
+        repo,
+        checkRun.pr_number,
+        'APPROVE',
+        buildOverrideReviewBody(actor, sanitizedReason, checkRun.id),
+      );
+      githubReviewSubmitted = true;
+    }
 
-  if (checkRun.github_check_id) {
-    await deps.updateCheck(octokit, owner, repo, checkRun.github_check_id, {
-      status: 'completed',
-      conclusion: 'success',
-      completed_at: new Date().toISOString(),
-      output: {
-        title: '✅ Manually overridden',
-        summary: buildOverrideCheckSummary(actor, sanitizedReason, checkRun.id),
-      },
-    });
-    githubCheckUpdated = true;
+    if (checkRun.github_check_id) {
+      await deps.updateCheck(octokit, owner, repo, checkRun.github_check_id, {
+        status: 'completed',
+        conclusion: 'success',
+        completed_at: new Date().toISOString(),
+        output: {
+          title: '✅ Manually overridden',
+          summary: buildOverrideCheckSummary(actor, sanitizedReason, checkRun.id),
+        },
+      });
+      githubCheckUpdated = true;
+    }
+  } catch (error: any) {
+    await deps.rollbackManualOverride(checkId, sanitizedReason, actor);
+    return {
+      ok: false,
+      status: 502,
+      error: `GitHub override failed: ${error?.message || 'unknown error'}`,
+    };
   }
 
   return {

@@ -39,6 +39,9 @@ test('performManualOverride updates GitHub check and records DB override for non
       overridden_by: 'vlad',
       created_at: FIXTURE_DATE,
     } as any),
+    rollbackManualOverride: async () => {
+      throw new Error('should not rollback on happy path');
+    },
     getInstallationOctokit: async () => ({ token: 'octokit' } as any),
     getPRInfo: async () => {
       throw new Error('should not fetch PR info for non-global checks');
@@ -91,6 +94,9 @@ test('performManualOverride submits GitHub approval review for global review che
       overridden_by: 'vlad',
       created_at: FIXTURE_DATE,
     } as any),
+    rollbackManualOverride: async () => {
+      throw new Error('should not rollback on happy path');
+    },
     getInstallationOctokit: async () => ({ token: 'octokit' } as any),
     getPRInfo: async () => ({
       state: 'open',
@@ -134,6 +140,9 @@ test('performManualOverride rejects global review override when approval eligibi
     overrideCheckRunToPass: async () => {
       throw new Error('should not record DB override when GitHub override is invalid');
     },
+    rollbackManualOverride: async () => {
+      throw new Error('should not rollback when DB write never happened');
+    },
     getInstallationOctokit: async () => ({ token: 'octokit' } as any),
     getPRInfo: async () => ({
       state: 'open',
@@ -173,6 +182,9 @@ test('performManualOverride does not mutate GitHub if DB override cannot be reco
     } as any),
     getRepo: async () => ({ installation_id: 777 } as any),
     overrideCheckRunToPass: async () => null,
+    rollbackManualOverride: async () => {
+      throw new Error('should not rollback when DB write was not recorded');
+    },
     getInstallationOctokit: async () => ({ token: 'octokit' } as any),
     getPRInfo: async () => ({
       state: 'open',
@@ -195,4 +207,63 @@ test('performManualOverride does not mutate GitHub if DB override cannot be reco
   assert.equal(result.status, 409);
   assert.match(result.error, /before override could be recorded/i);
   assert.deepEqual(calls, []);
+});
+
+test('performManualOverride rolls back DB override when GitHub sync fails', async () => {
+  const calls: string[] = [];
+  const { performManualOverrideWithDeps } = await loadTestHelpers();
+
+  const result = await performManualOverrideWithDeps(46, 'approved manually', 'vlad', {
+    getCheckRun: async () => ({
+      id: 46,
+      github_check_id: 1112,
+      repo: 'telegraphic-dev/jean-ci',
+      pr_number: 103,
+      check_name: 'Code Review',
+      head_sha: 'sha103',
+      status: 'completed',
+      conclusion: 'failure',
+      created_at: FIXTURE_DATE,
+    } as any),
+    getRepo: async () => ({ installation_id: 777 } as any),
+    overrideCheckRunToPass: async () => ({
+      id: 46,
+      github_check_id: 1112,
+      repo: 'telegraphic-dev/jean-ci',
+      pr_number: 103,
+      check_name: 'Code Review',
+      head_sha: 'sha103',
+      status: 'completed',
+      conclusion: 'failure',
+      manually_overridden: true,
+      override_reason: 'approved manually',
+      overridden_by: 'vlad',
+      created_at: FIXTURE_DATE,
+    } as any),
+    rollbackManualOverride: async () => {
+      calls.push('rollbackManualOverride');
+      return {} as any;
+    },
+    getInstallationOctokit: async () => ({ token: 'octokit' } as any),
+    getPRInfo: async () => ({
+      state: 'open',
+      draft: false,
+      head: { sha: 'sha103' },
+    } as any),
+    createPRReview: async () => {
+      calls.push('createPRReview');
+      throw new Error('GitHub review API exploded');
+    },
+    updateCheck: async () => {
+      calls.push('updateCheck');
+      return {} as any;
+    },
+    canCreateOverrideApproval: () => ({ ok: true } as const),
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.status, 502);
+  assert.match(result.error, /GitHub override failed/i);
+  assert.deepEqual(calls, ['createPRReview', 'rollbackManualOverride']);
 });
