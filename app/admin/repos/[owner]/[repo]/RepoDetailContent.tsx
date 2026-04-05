@@ -240,9 +240,11 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
   const [sessionChat, setSessionChat] = useState<FeatureSessionChatState | null>(null);
   const [sessionChatLoading, setSessionChatLoading] = useState(false);
+  const [sessionChatSending, setSessionChatSending] = useState(false);
   const [sessionChatInput, setSessionChatInput] = useState('');
   const [sessionChatError, setSessionChatError] = useState<string | null>(null);
   const sessionChatRequestSeq = useRef(0);
+  const sessionChatSendSeq = useRef(0);
 
   const checksPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.checks) || '1') || 1);
   const deploymentsPage = Math.max(1, Number(searchParams.get(SECTION_PAGE_PARAM.deployments) || '1') || 1);
@@ -357,12 +359,18 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
       setSessionChat(null);
       setSessionChatError(null);
       setSessionChatInput('');
+      setSessionChatLoading(false);
+      setSessionChatSending(false);
+      sessionChatRequestSeq.current += 1;
+      sessionChatSendSeq.current += 1;
       return;
     }
 
     if (sessions.length === 0) {
       setSelectedSessionKey(null);
       setSessionChat(null);
+      setSessionChatLoading(false);
+      setSessionChatSending(false);
       return;
     }
 
@@ -371,13 +379,15 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
 
     if (nextKey && nextKey !== selectedSessionKey) {
       setSelectedSessionKey(nextKey);
+      setSessionChat(null);
+      setSessionChatError(null);
       return;
     }
 
-    if (nextKey && !sessionChatLoading && (!sessionChat || sessionChat.sessionKey !== nextKey)) {
+    if (nextKey && (!sessionChat || sessionChat.sessionKey !== nextKey)) {
       void loadSessionChat(nextKey);
     }
-  }, [section, sessions, selectedSessionKey, sessionChat, sessionChatLoading, loadSessionChat]);
+  }, [section, sessions, selectedSessionKey, sessionChat, loadSessionChat]);
 
   if (loading) {
     return <div className="text-center py-12 text-[var(--text-muted)]">Loading...</div>;
@@ -524,7 +534,12 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         key={session.session_key}
                         type="button"
                         onClick={() => {
+                          sessionChatRequestSeq.current += 1;
+                          sessionChatSendSeq.current += 1;
+                          setSessionChatSending(false);
                           setSelectedSessionKey(session.session_key);
+                          setSessionChat(null);
+                          setSessionChatError(null);
                         }}
                         className={`w-full text-left p-4 flex flex-col gap-3 transition-colors ${active ? 'bg-[var(--bg-secondary)]' : 'hover:bg-[var(--bg-card-hover)]'}`}
                       >
@@ -609,7 +624,7 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                   value={sessionChatInput}
                   onChange={(e) => setSessionChatInput(e.target.value)}
                   placeholder={selectedSessionKey ? 'Tell the feature session what to do next…' : 'Select a session first'}
-                  disabled={!selectedSessionKey || sessionChatLoading}
+                  disabled={!selectedSessionKey || sessionChatSending}
                   rows={4}
                   className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] disabled:opacity-50"
                 />
@@ -617,22 +632,32 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                   <div className="text-xs text-[var(--text-muted)]">Messages are sent directly to the underlying OpenClaw session.</div>
                   <button
                     type="button"
-                    disabled={!selectedSessionKey || !sessionChatInput.trim() || sessionChatLoading}
+                    disabled={!selectedSessionKey || !sessionChatInput.trim() || sessionChatSending}
                     onClick={async () => {
                       if (!selectedSessionKey) return;
-                      setSessionChatLoading(true);
+                      const targetSessionKey = selectedSessionKey;
+                      const targetRequestSeq = sessionChatRequestSeq.current;
+                      const sendSeq = ++sessionChatSendSeq.current;
+                      setSessionChatSending(true);
                       setSessionChatError(null);
                       try {
                         const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
                           ? crypto.randomUUID()
                           : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                        const response = await fetch(`${repoApiBase}/sessions/${encodeURIComponent(selectedSessionKey)}`, {
+                        const response = await fetch(`${repoApiBase}/sessions/${encodeURIComponent(targetSessionKey)}`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ message: sessionChatInput, requestId }),
                         });
                         const payload = await response.json().catch(() => null);
-                        if (payload) {
+                        if (
+                          sendSeq !== sessionChatSendSeq.current
+                          || targetRequestSeq !== sessionChatRequestSeq.current
+                          || selectedSessionKey !== targetSessionKey
+                        ) {
+                          return;
+                        }
+                        if (payload && payload.sessionKey === targetSessionKey) {
                           setSessionChat(payload);
                         }
                         if (!response.ok) {
@@ -644,14 +669,27 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         }
                         await fetchData(checksPage, deploymentsPage, eventsPage);
                       } catch {
+                        if (
+                          sendSeq !== sessionChatSendSeq.current
+                          || targetRequestSeq !== sessionChatRequestSeq.current
+                          || selectedSessionKey !== targetSessionKey
+                        ) {
+                          return;
+                        }
                         setSessionChatError('Failed to send message.');
                       } finally {
-                        setSessionChatLoading(false);
+                        if (
+                          sendSeq === sessionChatSendSeq.current
+                          && targetRequestSeq === sessionChatRequestSeq.current
+                          && selectedSessionKey === targetSessionKey
+                        ) {
+                          setSessionChatSending(false);
+                        }
                       }
                     }}
                     className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                   >
-                    {sessionChatLoading ? 'Sending…' : 'Send'}
+                    {sessionChatSending ? 'Sending…' : 'Send'}
                   </button>
                 </div>
               </div>
