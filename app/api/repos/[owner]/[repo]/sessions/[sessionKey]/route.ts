@@ -5,6 +5,7 @@ import { getRepoFeatureSessionChat, sendRepoFeatureSessionChatMessage } from '@/
 
 const MAX_REQUEST_BYTES = 32 * 1024;
 const MAX_MESSAGE_LENGTH = 20_000;
+const MAX_REQUEST_ID_LENGTH = 256;
 
 type Params = { params: Promise<{ owner: string; repo: string; sessionKey: string }> };
 
@@ -91,6 +92,10 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   if (!requestId) {
     return NextResponse.json({ error: 'requestId is required' }, { status: 400 });
+  }
+
+  if (requestId.length > MAX_REQUEST_ID_LENGTH) {
+    return NextResponse.json({ error: `requestId exceeds ${MAX_REQUEST_ID_LENGTH} characters` }, { status: 400 });
   }
 
   try {

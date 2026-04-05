@@ -329,6 +329,61 @@ test('sendRepoFeatureSessionChatMessage waits by session key when runId is missi
   assert.equal(result.error, 'Timed out waiting for assistant reply');
 });
 
+test('sendRepoFeatureSessionChatMessage preserves running status even if transcript ends with an older assistant reply', async () => {
+  const deps: RepoFeatureSessionChatDeps = {
+    getRepoFeatureSessions: async () => ([{
+      session_key: REPO_SESSION_KEY,
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }]),
+    upsertRepoFeatureSession: async (record) => ({
+      id: 1,
+      session_key: REPO_SESSION_KEY,
+      repo_full_name: 'telegraphic-dev/jean-ci',
+      title: 'Feature chat',
+      branch_name: 'feat/chat',
+      status: 'active',
+      session_url: null,
+      pr_number: null,
+      pr_url: null,
+      last_activity_at: record.last_activity_at as Date,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }),
+    callGatewayRpc: async (method: string) => {
+      if (method === 'sessions.send') {
+        return { success: true, result: { runId: 'run-1', status: 'accepted' } };
+      }
+      if (method === 'agent.wait') {
+        return { success: true, result: { status: 'accepted' } };
+      }
+      if (method === 'sessions.get') {
+        return {
+          success: true,
+          result: {
+            messages: [
+              { role: 'user', content: 'older prompt' },
+              { role: 'assistant', content: 'older reply' },
+            ],
+          },
+        };
+      }
+      throw new Error(`unexpected method ${method}`);
+    },
+  };
+
+  const result = await sendRepoFeatureSessionChatMessage('telegraphic-dev/jean-ci', REPO_SESSION_KEY, 'please implement chat', 'request-1', deps);
+  assert.equal(result.runStatus, 'running');
+  assert.equal(result.error, 'Run still in progress: accepted');
+});
+
 test('repo feature session chat rejects session keys outside the repo namespace before gateway access', async () => {
   const deps: RepoFeatureSessionChatDeps = {
     getRepoFeatureSessions: async () => ([{

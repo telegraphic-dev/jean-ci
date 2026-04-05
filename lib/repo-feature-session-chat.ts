@@ -122,7 +122,11 @@ export async function sendRepoFeatureSessionChatMessage(
 
   const messages = normalizeMessages(transcriptResult.result?.messages || []);
   const inferredRunStatus = inferRunStatusFromMessages(messages);
-  const finalRunStatus = runStatus === 'idle' ? inferredRunStatus : runStatus;
+  const finalRunStatus = runStatus === 'idle'
+    ? inferredRunStatus
+    : runStatus === 'running' && inferredRunStatus === 'error'
+      ? inferredRunStatus
+      : runStatus;
 
   const now = new Date();
   await deps.upsertRepoFeatureSession({

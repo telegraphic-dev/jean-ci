@@ -676,17 +676,17 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
                         if (payload && payload.sessionKey === targetSessionKey) {
                           setSessionChat(payload);
                         }
-                        const acceptedSend = response.ok || payload?.runStatus === 'timeout';
+                        const acceptedSend = response.ok || response.status === 202 || payload?.runStatus === 'timeout';
                         if (acceptedSend) {
                           setSessionChatInput('');
                         }
-                        if (!response.ok) {
+                        if (response.status === 202 || payload?.runStatus === 'running') {
+                          setSessionChatError(null);
+                        } else if (!response.ok) {
                           const nextError = payload?.error
                             || (payload?.runStatus === 'timeout'
                               ? 'Assistant reply timed out.'
-                              : payload?.runStatus === 'running'
-                                ? 'Assistant is still working.'
-                                : 'Failed to send message.');
+                              : 'Failed to send message.');
                           setSessionChatError(nextError);
                         }
                         await fetchData(checksPage, deploymentsPage, eventsPage);
