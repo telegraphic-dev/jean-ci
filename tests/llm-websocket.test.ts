@@ -41,6 +41,9 @@ function isOperatorAdminMissingScopeError(result: { error?: string; errorDetails
   return haystack.includes('missing scope') && haystack.includes('operator.admin');
 }
 
+const REVIEW_AGENT_WAIT_SLICE_MS = 30_000;
+const REVIEW_AGENT_WAIT_TOTAL_MS = 180_000;
+
 async function callOpenClawResponsesViaWebSocketForTest(
   userMessage: string,
   metadata: { owner?: string; repo?: string; prNumber?: string | number; promptName?: string } | undefined,
@@ -83,30 +86,43 @@ async function callOpenClawResponsesViaWebSocketForTest(
       };
     }
 
-    const waitResult = await callGatewayRpc('agent.wait', {
-      runId,
-      timeoutMs: 30_000,
-    });
+    let remainingWaitBudgetMs = REVIEW_AGENT_WAIT_TOTAL_MS;
+    while (true) {
+      const waitTimeoutMs = Math.min(REVIEW_AGENT_WAIT_SLICE_MS, remainingWaitBudgetMs);
+      const waitResult = await callGatewayRpc('agent.wait', {
+        runId,
+        timeoutMs: waitTimeoutMs,
+      });
 
-    if (!waitResult.success) {
-      return {
-        success: false,
-        failure: classifyGatewayException(new Error(waitResult.error)),
-      };
-    }
+      if (!waitResult.success) {
+        return {
+          success: false,
+          failure: classifyGatewayException(new Error(waitResult.error)),
+        };
+      }
 
-    if (waitResult.result?.status === 'timeout') {
-      return {
-        success: false,
-        failure: { errorType: 'gateway', retryable: true, error: 'Timed out waiting for OpenClaw agent run to finish' },
-      };
-    }
+      if (waitResult.result?.status === 'error') {
+        return {
+          success: false,
+          failure: { errorType: 'unknown', retryable: false, error: waitResult.result.error || 'OpenClaw agent run failed' },
+        };
+      }
 
-    if (waitResult.result?.status === 'error') {
-      return {
-        success: false,
-        failure: { errorType: 'unknown', retryable: false, error: waitResult.result.error || 'OpenClaw agent run failed' },
-      };
+      if (waitResult.result?.status === 'ok' || waitResult.result?.status === 'completed') {
+        break;
+      }
+
+      remainingWaitBudgetMs -= waitTimeoutMs;
+      if (remainingWaitBudgetMs <= 0) {
+        return {
+          success: false,
+          failure: {
+            errorType: 'gateway',
+            retryable: true,
+            error: `Timed out waiting for OpenClaw agent run to finish after ${REVIEW_AGENT_WAIT_TOTAL_MS}ms`,
+          },
+        };
+      }
     }
 
     const transcriptResult = await callGatewayRpc('sessions.get', {
@@ -195,6 +211,52 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
   assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: 30000 });
   assert.deepEqual(calls[3]?.params, { key: expectedKey, limit: 50 });
   assert.deepEqual(calls[4]?.params, { key: expectedKey });
+});
+
+test('websocket LLM path keeps waiting across agent.wait timeouts before failing the review', async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const userMessage = 'Review this PR';
+  const metadata = { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 113, promptName: 'slow review.md' };
+  const expectedKey = 'main:jean-ci:telegraphic-dev:jean-ci:113:slow-review-md';
+  let waitCalls = 0;
+
+  const result = await callOpenClawResponsesViaWebSocketForTest(userMessage, metadata, async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'sessions.create') {
+      return { success: true, result: { key: expectedKey } };
+    }
+    if (method === 'sessions.send') {
+      return { success: true, result: { runId: 'run-slow', status: 'accepted', messageSeq: 1 } };
+    }
+    if (method === 'agent.wait') {
+      waitCalls += 1;
+      if (waitCalls < 3) {
+        return { success: true, result: { runId: 'run-slow', status: 'timeout' } };
+      }
+      return { success: true, result: { runId: 'run-slow', status: 'ok' } };
+    }
+    if (method === 'sessions.get') {
+      return { success: true, result: { messages: [{ role: 'assistant', content: 'Slow review complete' }] } };
+    }
+    if (method === 'sessions.delete') {
+      return { success: true, result: { deleted: true } };
+    }
+    throw new Error(`unexpected method: ${method}`);
+  });
+
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal(result.response, 'Slow review complete');
+  }
+  assert.equal(waitCalls, 3);
+  assert.deepEqual(
+    calls.filter((call) => call.method === 'agent.wait').map((call) => call.params),
+    [
+      { runId: 'run-slow', timeoutMs: 30000 },
+      { runId: 'run-slow', timeoutMs: 30000 },
+      { runId: 'run-slow', timeoutMs: 30000 },
+    ],
+  );
 });
 
 test('websocket LLM path still deletes the session when waiting fails', async () => {
