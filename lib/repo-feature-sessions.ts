@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { callGatewayRpc, deleteSession } from './openclaw-ws.ts';
 import { upsertRepoFeatureSession } from './db.ts';
 import { buildRepoSessionSeedPrompt } from './repo-feature-session-prompt.ts';
+import { buildGatewayChatSessionUrl, getGatewayChatBaseUrl } from './openclaw-chat-links.ts';
 
 export interface RepoFeatureSessionDeps {
   callGatewayRpc: typeof callGatewayRpc;
@@ -29,8 +30,7 @@ type GatewaySessionLike = Record<string, unknown>;
 
 export interface CreateFeatureSessionInput {
   repoFullName: string;
-  title: string;
-  branchName?: string | null;
+  initialIdea: string;
 }
 
 export async function listGatewayFeatureSessions(limit = 200): Promise<FeatureSessionSummary[]> {
@@ -75,7 +75,8 @@ export function normalizeGatewaySession(item: unknown): FeatureSessionSummary | 
     ['last_activity'],
     ['metadata', 'lastActivityAt'],
   ]);
-  const sessionUrl = pickNestedString(item, [['url'], ['deepLink'], ['sessionUrl'], ['metadata', 'url'], ['metadata', 'deepLink'], ['metadata', 'sessionUrl']]);
+  const sessionUrl = buildGatewayChatSessionUrl(key)
+    || pickNestedString(item, [['url'], ['deepLink'], ['sessionUrl'], ['metadata', 'url'], ['metadata', 'deepLink'], ['metadata', 'sessionUrl']]);
   const prUrl = pickNestedString(item, [['prUrl'], ['metadata', 'prUrl']]);
   const prNumber = pickOptionalNumber(item, [['prNumber'], ['metadata', 'prNumber']]);
 
@@ -145,14 +146,17 @@ export async function createRepoFeatureSession(
   deps: RepoFeatureSessionDeps = defaultRepoFeatureSessionDeps
 ): Promise<FeatureSessionSummary> {
   const repoFullName = input.repoFullName.trim();
-  const title = input.title.trim();
-  const branchName = input.branchName?.trim() || null;
+  const initialIdea = input.initialIdea.trim();
+  const title = deriveFeatureSessionTitle(initialIdea);
 
   if (!repoFullName || !repoFullName.includes('/')) {
     throw new Error('repoFullName must be in owner/repo format');
   }
-  if (!title) {
-    throw new Error('title is required');
+  if (!initialIdea) {
+    throw new Error('initialIdea is required');
+  }
+  if (!getGatewayChatBaseUrl()) {
+    throw new Error('OPENCLAW_GATEWAY_PUBLIC_URL is required to create feature sessions');
   }
 
   const requestedSessionKey = buildFeatureSessionKey(repoFullName);
@@ -167,16 +171,20 @@ export async function createRepoFeatureSession(
   }
 
   const sessionKey = resolveCreatedSessionKey(createResult.result, requestedSessionKey);
-  const sessionUrl = pickSessionUrl(createResult.result);
+  const sessionUrl = buildGatewayChatSessionUrl(sessionKey);
+
+  if (!sessionUrl) {
+    await cleanupFailedFeatureSessionCreate(sessionKey, deps);
+    throw new Error('OPENCLAW_GATEWAY_PUBLIC_URL is required to create feature sessions');
+  }
 
   try {
-    const seedPrompt = [
-      buildRepoSessionSeedPrompt(repoFullName),
-      '',
-      `Session title: ${title}`,
-      branchName ? `Suggested branch: ${branchName}` : null,
-      `Session key: ${sessionKey}`,
-    ].filter(Boolean).join('\n');
+    const seedPrompt = buildRepoSessionSeedPrompt({
+      repoFullName,
+      sessionKey,
+      sessionUrl,
+      initialIdea,
+    });
 
     const sendResult = await deps.callGatewayRpc('sessions.send', {
       key: sessionKey,
@@ -192,7 +200,7 @@ export async function createRepoFeatureSession(
       session_key: sessionKey,
       repo_full_name: repoFullName,
       title,
-      branch_name: branchName,
+      branch_name: null,
       status: 'active',
       session_url: sessionUrl,
       last_activity_at: now,
@@ -202,7 +210,7 @@ export async function createRepoFeatureSession(
       key: sessionKey,
       label,
       repoFullName,
-      branchName,
+      branchName: null,
       status: 'active',
       lastActivityAt: now.toISOString(),
       sessionUrl,
@@ -267,9 +275,10 @@ function resolveCreatedSessionKey(payload: unknown, fallbackKey: string): string
   return key || fallbackKey;
 }
 
-function pickSessionUrl(payload: unknown): string | null {
-  if (!isRecord(payload)) return null;
-  return pickNestedString(payload, [['url'], ['deepLink'], ['sessionUrl']]);
+function deriveFeatureSessionTitle(initialIdea: string): string {
+  const singleLine = initialIdea.replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= 96) return singleLine;
+  return `${singleLine.slice(0, 95).trimEnd()}…`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

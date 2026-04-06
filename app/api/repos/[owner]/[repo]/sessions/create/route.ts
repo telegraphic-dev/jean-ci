@@ -24,18 +24,20 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const body = await req.json().catch(() => null);
-  const title = typeof body?.title === 'string' ? body.title.trim() : '';
-  const branchName = typeof body?.branchName === 'string' ? body.branchName.trim() : '';
+  const initialIdea = typeof body?.initialIdea === 'string'
+    ? body.initialIdea.trim()
+    : typeof body?.title === 'string'
+      ? body.title.trim()
+      : '';
 
-  if (!title) {
-    return NextResponse.json({ error: 'title is required' }, { status: 400 });
+  if (!initialIdea) {
+    return NextResponse.json({ error: 'initialIdea is required' }, { status: 400 });
   }
 
   try {
     const session = await createRepoFeatureSession({
       repoFullName: fullName,
-      title,
-      branchName: branchName || null,
+      initialIdea,
     });
     return NextResponse.json(session, { status: 201 });
   } catch (error) {
