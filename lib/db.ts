@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { buildGatewayChatSessionUrl } from './openclaw-chat-links.ts';
 
 const { Pool } = pg;
 
@@ -1343,6 +1344,8 @@ export async function upsertRepoFeatureSession(data: {
   pr_url?: string | null;
   last_activity_at?: Date | string | null;
 }): Promise<RepoFeatureSession> {
+  const sessionUrl = buildGatewayChatSessionUrl(data.session_key) || data.session_url || null;
+
   const result = await pool.query(
     `INSERT INTO jean_ci_repo_feature_sessions
       (session_key, repo_full_name, title, branch_name, status, session_url, pr_number, pr_url, last_activity_at, updated_at)
@@ -1364,14 +1367,14 @@ export async function upsertRepoFeatureSession(data: {
       data.title,
       data.branch_name || null,
       data.status || 'active',
-      data.session_url || null,
+      sessionUrl,
       data.pr_number ?? null,
       data.pr_url || null,
       data.last_activity_at || null,
     ]
   );
 
-  return result.rows[0];
+  return hydrateRepoFeatureSessionLink(result.rows[0]);
 }
 
 export async function getRepoFeatureSessions(repoFullName: string): Promise<RepoFeatureSession[]> {
@@ -1381,7 +1384,7 @@ export async function getRepoFeatureSessions(repoFullName: string): Promise<Repo
      ORDER BY COALESCE(last_activity_at, updated_at, created_at) DESC`,
     [repoFullName]
   );
-  return result.rows;
+  return result.rows.map(hydrateRepoFeatureSessionLink);
 }
 
 export async function getAllRepoFeatureSessions(): Promise<RepoFeatureSession[]> {
@@ -1389,7 +1392,14 @@ export async function getAllRepoFeatureSessions(): Promise<RepoFeatureSession[]>
     `SELECT * FROM jean_ci_repo_feature_sessions
      ORDER BY repo_full_name, COALESCE(last_activity_at, updated_at, created_at) DESC`
   );
-  return result.rows;
+  return result.rows.map(hydrateRepoFeatureSessionLink);
+}
+
+function hydrateRepoFeatureSessionLink(session: RepoFeatureSession): RepoFeatureSession {
+  return {
+    ...session,
+    session_url: buildGatewayChatSessionUrl(session.session_key) || session.session_url || null,
+  };
 }
 
 export interface OpenPR {
