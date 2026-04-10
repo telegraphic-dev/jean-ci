@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyGatewayException } from '../lib/openclaw-gateway.ts';
+import { REVIEW_AGENT_WAIT_TIMEOUT_MS } from '../lib/openclaw-review-timeouts.ts';
 
 function normalizeSessionKeySegment(value: string | null | undefined, fallback: string): string {
   const normalized = (value || '')
@@ -85,7 +86,7 @@ async function callOpenClawResponsesViaWebSocketForTest(
 
     const waitResult = await callGatewayRpc('agent.wait', {
       runId,
-      timeoutMs: 30_000,
+      timeoutMs: REVIEW_AGENT_WAIT_TIMEOUT_MS,
     });
 
     if (!waitResult.success) {
@@ -192,7 +193,7 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
   assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.get', 'sessions.delete']);
   assert.deepEqual(calls[0]?.params, { key: expectedKey, label: `Jean CI Review · ${expectedKey}` });
   assert.deepEqual(calls[1]?.params, { key: expectedKey, message: `system prompt\n\n${userMessage}`, idempotencyKey: 'jean-ci-test' });
-  assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: 30000 });
+  assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: REVIEW_AGENT_WAIT_TIMEOUT_MS });
   assert.deepEqual(calls[3]?.params, { key: expectedKey, limit: 50 });
   assert.deepEqual(calls[4]?.params, { key: expectedKey });
 });
