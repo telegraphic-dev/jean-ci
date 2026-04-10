@@ -8,6 +8,7 @@ import {
   runWithExponentialRetry,
 } from './openclaw-gateway';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
+import { REVIEW_AGENT_WAIT_TIMEOUT_MS } from './openclaw-review-timeouts.ts';
 import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws';
 
 export const __internal = {
@@ -157,7 +158,7 @@ ${userMessage}`,
 
     const waitResult = await __internal.callGatewayRpc<{ runId?: string; status?: string; error?: string }>('agent.wait', {
       runId,
-      timeoutMs: 30_000,
+      timeoutMs: REVIEW_AGENT_WAIT_TIMEOUT_MS,
     });
 
     if (!waitResult.success) {
