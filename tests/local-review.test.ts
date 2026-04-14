@@ -47,6 +47,10 @@ await test('runLocalReview executes Code Review and git-backed custom checks thr
   ]);
   assert.equal(callOpenClawCalls.length, 2);
   assert.match(callOpenClawCalls[0]?.context || '', /# Pull Request: Local diff review/);
+  assert.match(callOpenClawCalls[0]?.context || '', /## Repository Context/);
+  assert.match(callOpenClawCalls[0]?.context || '', /Repository: telegraphic-dev\/jean-ci/);
+  assert.match(callOpenClawCalls[0]?.context || '', /Canonical local checkout path: \/home\/openclaw\/.openclaw\/workspace\/development\/projects\/telegraphic-dev\/jean-ci/);
+  assert.match(callOpenClawCalls[0]?.context || '', /do not assume the repo lives at the workspace root/i);
   assert.equal(callOpenClawCalls[0]?.metadata.headSha, 'abc123');
   assert.equal(callOpenClawCalls[1]?.metadata.promptName, 'api-openapi-parity');
   callOpenClawCalls.length = 0;
