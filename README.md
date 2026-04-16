@@ -310,6 +310,13 @@ Supported link formats inside the PR body/title/branch name:
 - `<!-- paperclip-issue-id:<issue-uuid> -->`
 - `<!-- paperclip-issue-id:<issue-id> -->`
 
+Identifier-based example:
+
+```text
+Branch name: chore/the-91-readme-smoke-example
+PR body: Paperclip issue: THE-91
+```
+
 When a PR is closed without merging, no Paperclip update is sent.
 
 ### Setup
