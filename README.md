@@ -304,8 +304,11 @@ If `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are set, jean-ci also watches mer
 
 Supported link formats inside the PR body/title/branch name:
 - `https://paperclip.../issues/<issue-uuid>`
+- `https://paperclip.../<company>/issues/<issue-id>`
 - `Paperclip issue: <issue-uuid>`
+- `Paperclip issue: <issue-id>` (for example `THE-88`)
 - `<!-- paperclip-issue-id:<issue-uuid> -->`
+- `<!-- paperclip-issue-id:<issue-id> -->`
 
 When a PR is closed without merging, no Paperclip update is sent.
 
