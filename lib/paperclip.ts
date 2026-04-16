@@ -6,12 +6,36 @@ const PAPERCLIP_COMPANY_ID = process.env.PAPERCLIP_COMPANY_ID;
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/ig;
 const UUID_EXACT_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PAPERCLIP_URL_ISSUE_RE = /https?:\/\/[^\s]*paperclip[^\s]*\/issues\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/ig;
-const PAPERCLIP_MARKER_RE = /paperclip(?:[-_ ]issue(?:[-_ ]id)?)?\s*[:#]?\s*([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/ig;
-const PAPERCLIP_HTML_COMMENT_RE = /<!--\s*paperclip-issue-id\s*:\s*([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\s*-->/ig;
+const ISSUE_IDENTIFIER_EXACT_RE = /^([a-z][a-z0-9]*)-(\d+)$/i;
+const PAPERCLIP_ISSUE_REFERENCE_SOURCE = '([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[a-z][a-z0-9]*-\\d+)';
+const PAPERCLIP_URL_ISSUE_RE = new RegExp(
+  `https?:\\/\\/[^\\s]*paperclip[^\\s]*\\/(?:[a-z][a-z0-9]*\\/)?issues\\/${PAPERCLIP_ISSUE_REFERENCE_SOURCE}`,
+  'ig',
+);
+const PAPERCLIP_MARKER_RE = new RegExp(
+  `paperclip(?:[-_ ]issue(?:[-_ ]id)?)?\\s*[:#]?\\s*${PAPERCLIP_ISSUE_REFERENCE_SOURCE}`,
+  'ig',
+);
+const PAPERCLIP_HTML_COMMENT_RE = new RegExp(
+  `<!--\\s*paperclip-issue-id\\s*:\\s*${PAPERCLIP_ISSUE_REFERENCE_SOURCE}\\s*-->`,
+  'ig',
+);
+
+function normalizeIssueReference(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  if (UUID_EXACT_RE.test(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+
+  const identifierMatch = trimmed.match(ISSUE_IDENTIFIER_EXACT_RE);
+  if (!identifierMatch) return null;
+  return `${identifierMatch[1].toUpperCase()}-${identifierMatch[2]}`;
+}
 
 function collectMatches(regex: RegExp, input: string): string[] {
-  return Array.from(input.matchAll(regex), match => match[1]?.toLowerCase()).filter(Boolean) as string[];
+  return Array.from(input.matchAll(regex), match => normalizeIssueReference(match[1])).filter(Boolean) as string[];
 }
 
 export function extractPaperclipIssueIds(...inputs: Array<string | null | undefined>): string[] {
