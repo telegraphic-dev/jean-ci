@@ -302,7 +302,7 @@ jean-ci can automatically deploy to Coolify when new container images are publis
 
 If `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are set, jean-ci also watches merged GitHub pull requests and marks linked Paperclip issues as `done`.
 
-Supported link formats inside the PR body/title/branch name:
+Supported link formats inside the PR body/title:
 - `https://paperclip.../issues/<issue-uuid>`
 - `https://paperclip.../<company>/issues/<issue-id>`
 - `Paperclip issue: <issue-uuid>`
@@ -313,8 +313,8 @@ Supported link formats inside the PR body/title/branch name:
 Identifier-based example:
 
 ```text
-Branch name: chore/the-91-readme-smoke-example
 PR body: Paperclip issue: THE-91
+PR body: https://paperclip.telegraphic.app/THE/issues/THE-91
 ```
 
 When a PR is closed without merging, no Paperclip update is sent.
