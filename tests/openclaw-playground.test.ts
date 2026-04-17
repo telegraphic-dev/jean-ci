@@ -91,7 +91,7 @@ test('runGatewayPlaygroundProbe uses only session RPC methods for chat probe', a
         callGatewayRpc: async (method, params, authOverrides) => {
           calls.push({ method, params, authOverrides });
           if (method === 'sessions.create') {
-            return { success: true as const, result: { key: 'qa:gateway-playground' } };
+            return { success: true as const, result: { key: 'agent:qa:gateway-playground' } };
           }
           if (method === 'sessions.send') {
             return { success: true as const, result: { runId: 'run-1', status: 'accepted', messageSeq: 1 } };
@@ -110,16 +110,16 @@ test('runGatewayPlaygroundProbe uses only session RPC methods for chat probe', a
     );
 
     assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'sessions.get']);
-    assert.deepEqual(calls[0]?.params, { key: 'qa:gateway-playground', agentId: 'qa', label: 'Gateway Playground' });
-    assert.deepEqual(calls[1]?.params, { key: 'qa:gateway-playground', message: 'Say OK', idempotencyKey: 'idem-1' });
-    assert.deepEqual(calls[2]?.params, { key: 'qa:gateway-playground', limit: 10 });
+    assert.deepEqual(calls[0]?.params, { key: 'gateway-playground', agentId: 'qa', label: 'Gateway Playground' });
+    assert.deepEqual(calls[1]?.params, { key: 'agent:qa:gateway-playground', message: 'Say OK', idempotencyKey: 'idem-1' });
+    assert.deepEqual(calls[2]?.params, { key: 'agent:qa:gateway-playground', limit: 10 });
     assert.deepEqual(calls[1]?.authOverrides, { role: 'operator', scopes: ['operator.write'] });
 
     assert.equal(result.ok, true);
     assert.equal(result.mode, 'chat_send');
     assert.equal(result.latencyMs, 9);
     assert.deepEqual(result.recommendedScopes, ['operator.write']);
-    assert.equal(result.sessionKey, 'qa:gateway-playground');
+    assert.equal(result.sessionKey, 'agent:qa:gateway-playground');
     assert.deepEqual(result.result, { messages: [{ role: 'assistant', content: 'OK' }] });
   });
 });
