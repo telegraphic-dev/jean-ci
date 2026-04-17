@@ -4,6 +4,7 @@ import {
   buildFailedChecksComment,
   buildFailedChecksNotificationMarker,
   extractPaperclipIssueIds,
+  issueMatchesPullRequestContext,
   resolvePaperclipCompanyId,
 } from '../lib/paperclip.ts';
 
@@ -89,6 +90,22 @@ test('buildFailedChecksComment includes owner mention when provided', () => {
 
   assert.ok(comment.includes('@Founding Engineer checks are complete and failures need follow-up.'));
   assert.ok(comment.includes(marker));
+});
+
+test('issueMatchesPullRequestContext falls back to source PR URL in issue description', () => {
+  const issue = {
+    project: {
+      primaryWorkspace: {
+        repoUrl: 'https://github.com/telegraphic-dev/jean-ci.git',
+      },
+      workspaces: [],
+    },
+    description: `## Source\nhttps://github.com/telegraphic-dev/openclaw-mentor/pull/183\n`,
+  };
+
+  assert.equal(issueMatchesPullRequestContext(issue, 'telegraphic-dev/openclaw-mentor', 183), true);
+  assert.equal(issueMatchesPullRequestContext(issue, 'telegraphic-dev/openclaw-mentor', 184), false);
+  assert.equal(issueMatchesPullRequestContext(issue, 'telegraphic-dev/jean-ci', 183), true);
 });
 
 test('resolvePaperclipCompanyId prefers first valid UUID and ignores invalid values', () => {
