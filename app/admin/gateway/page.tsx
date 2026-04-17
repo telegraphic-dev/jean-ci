@@ -57,7 +57,7 @@ export default function GatewayPlaygroundPage() {
   const [selectedMode, setSelectedMode] = useState<ProbeMode>('chat_send');
   const [selectedRole, setSelectedRole] = useState('operator');
   const [selectedScopes, setSelectedScopes] = useState<string[]>(['operator.write']);
-  const [chatSessionKey, setChatSessionKey] = useState('main:gateway-playground');
+  const [chatSessionKey, setChatSessionKey] = useState('');
 
   useEffect(() => {
     void loadOperations();
@@ -304,7 +304,7 @@ export default function GatewayPlaygroundPage() {
             value={chatSessionKey}
             onChange={(event) => setChatSessionKey(event.target.value)}
             className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-mono"
-            placeholder="main:gateway-playground"
+            placeholder={`${process.env.NEXT_PUBLIC_OPENCLAW_AGENT_ID || 'main'}:gateway-playground`}
           />
           <textarea
             value={chatInput}

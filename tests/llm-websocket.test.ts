@@ -13,13 +13,16 @@ function normalizeSessionKeySegment(value: string | null | undefined, fallback: 
   return normalized || fallback;
 }
 
-function buildReviewSessionKey(metadata: {
-  owner?: string;
-  repo?: string;
-  prNumber?: string | number;
-  promptName?: string;
-} = {}): string {
-  return `main:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}`;
+function buildReviewSessionKey(
+  metadata: {
+    owner?: string;
+    repo?: string;
+    prNumber?: string | number;
+    promptName?: string;
+  } = {},
+  agentId = 'main',
+): string {
+  return `${agentId}:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}`;
 }
 
 function buildReviewSessionLabel(sessionKey: string): string {
@@ -47,12 +50,14 @@ async function callOpenClawResponsesViaWebSocketForTest(
   metadata: { owner?: string; repo?: string; prNumber?: string | number; promptName?: string } | undefined,
   callGatewayRpc: (method: string, params: Record<string, unknown>) => Promise<{ success: true; result: any } | { success: false; error: string; errorDetails?: unknown }>,
   logger: Pick<typeof console, 'warn'> = console,
+  agentId = 'main',
 ): Promise<{ success: true; response: string } | { success: false; failure: ReturnType<typeof classifyGatewayException> }> {
-  const sessionKey = buildReviewSessionKey(metadata);
+  const sessionKey = buildReviewSessionKey(metadata, agentId);
 
   try {
     const createResult = await callGatewayRpc('sessions.create', {
       key: sessionKey,
+      agentId,
       label: buildReviewSessionLabel(sessionKey),
     });
 
@@ -191,11 +196,42 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
     assert.equal(result.response, 'Review complete');
   }
   assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.get', 'sessions.delete']);
-  assert.deepEqual(calls[0]?.params, { key: expectedKey, label: `Jean CI Review · ${expectedKey}` });
+  assert.deepEqual(calls[0]?.params, { key: expectedKey, agentId: 'main', label: `Jean CI Review · ${expectedKey}` });
   assert.deepEqual(calls[1]?.params, { key: expectedKey, message: `system prompt\n\n${userMessage}`, idempotencyKey: 'jean-ci-test' });
   assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: REVIEW_AGENT_WAIT_TIMEOUT_MS });
   assert.deepEqual(calls[3]?.params, { key: expectedKey, limit: 50 });
   assert.deepEqual(calls[4]?.params, { key: expectedKey });
+});
+
+test('websocket LLM path can target a non-main agent', async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const metadata = { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 999, promptName: 'review' };
+  const expectedKey = 'qa:jean-ci:telegraphic-dev:jean-ci:999:review';
+
+  const result = await callOpenClawResponsesViaWebSocketForTest('Review this PR', metadata, async (method, params) => {
+    calls.push({ method, params });
+    if (method === 'sessions.create') {
+      return { success: true, result: { key: expectedKey } };
+    }
+    if (method === 'sessions.send') {
+      return { success: true, result: { runId: 'run-qa', status: 'accepted', messageSeq: 1 } };
+    }
+    if (method === 'agent.wait') {
+      return { success: true, result: { runId: 'run-qa', status: 'ok' } };
+    }
+    if (method === 'sessions.get') {
+      return { success: true, result: { messages: [{ role: 'assistant', content: 'QA review complete' }] } };
+    }
+    if (method === 'sessions.delete') {
+      return { success: true, result: { deleted: true } };
+    }
+    throw new Error(`unexpected method: ${method}`);
+  }, console, 'qa');
+
+  assert.equal(result.success, true);
+  assert.deepEqual(calls[0]?.params, { key: expectedKey, agentId: 'qa', label: `Jean CI Review · ${expectedKey}` });
+  assert.deepEqual(calls[1]?.params, { key: expectedKey, message: 'system prompt\n\nReview this PR', idempotencyKey: 'jean-ci-test' });
+  assert.deepEqual(calls.at(-1)?.params, { key: expectedKey });
 });
 
 test('websocket LLM path still deletes the session when waiting fails', async () => {
