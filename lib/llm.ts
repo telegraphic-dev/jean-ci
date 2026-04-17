@@ -9,6 +9,7 @@ import {
 import type { OpenClawGatewayFailure } from './openclaw-gateway.ts';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws.ts';
+import { getOpenClawAgentId, resolveOpenClawModel } from './openclaw-agent.ts';
 
 const REVIEW_AGENT_WAIT_SLICE_MS = 30_000;
 // Recent production runs are timing out at the 3-minute ceiling, then getting
@@ -41,7 +42,13 @@ export interface ReviewSessionMetadata {
 }
 
 function buildReviewSessionKey(metadata: ReviewSessionMetadata = {}): string {
-  return `main:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}:${normalizeSessionKeySegment(metadata.headSha, 'unknown-sha')}`;
+  return `jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}:${normalizeSessionKeySegment(metadata.headSha, 'unknown-sha')}`;
+}
+
+function resolveCreatedSessionKey(payload: unknown, fallbackKey: string): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallbackKey;
+  const key = (payload as { key?: unknown }).key;
+  return typeof key === 'string' && key.trim() ? key.trim() : fallbackKey;
 }
 
 function buildReviewSessionLabel(sessionKey: string): string {
@@ -122,13 +129,18 @@ async function callOpenClawResponsesViaWebSocket(
   userMessage: string,
   metadata: ReviewSessionMetadata = {},
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
-  const sessionKey = buildReviewSessionKey(metadata);
+  const agentId = getOpenClawAgentId();
+  const requestedSessionKey = buildReviewSessionKey(metadata);
+  let sessionKey = requestedSessionKey;
 
   try {
     const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
-      key: sessionKey,
-      label: buildReviewSessionLabel(sessionKey),
+      key: requestedSessionKey,
+      agentId,
+      label: buildReviewSessionLabel(requestedSessionKey),
     });
+
+    sessionKey = resolveCreatedSessionKey(createResult.success ? createResult.result : undefined, requestedSessionKey);
 
     if (!createResult.success) {
       const detailBlob = createResult.errorDetails ? JSON.stringify({ errorDetails: createResult.errorDetails }) : '';
@@ -270,6 +282,7 @@ async function callOpenClawResponses(
   maxAttempts: number,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
   const url = `${gatewayUrl}/v1/responses`;
+  const agentId = getOpenClawAgentId();
 
   try {
     const response = await fetch(url, {
@@ -277,10 +290,10 @@ async function callOpenClawResponses(
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${gatewayToken}`,
-        'x-openclaw-agent-id': 'main',
+        'x-openclaw-agent-id': agentId,
       },
       body: JSON.stringify({
-        model: process.env.OPENCLAW_RESPONSES_MODEL || 'openclaw',
+        model: resolveOpenClawModel(process.env.OPENCLAW_RESPONSES_MODEL, agentId),
         input: [
           { type: 'message', role: 'developer', content: SYSTEM_PROMPT },
           { type: 'message', role: 'user', content: userMessage },
@@ -345,6 +358,7 @@ async function callOpenClawChat(
   maxAttempts: number,
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
   const url = `${gatewayUrl}/v1/chat/completions`;
+  const agentId = getOpenClawAgentId();
 
   try {
     const response = await fetch(url, {
@@ -352,9 +366,10 @@ async function callOpenClawChat(
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${gatewayToken}`,
+        'x-openclaw-agent-id': agentId,
       },
       body: JSON.stringify({
-        model: process.env.OPENCLAW_CHAT_MODEL || 'openclaw',
+        model: resolveOpenClawModel(process.env.OPENCLAW_CHAT_MODEL, agentId),
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userMessage },

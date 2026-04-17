@@ -3,6 +3,7 @@ import { callGatewayRpc, deleteSession } from './openclaw-ws.ts';
 import { upsertRepoFeatureSession } from './db.ts';
 import { buildRepoSessionSeedPrompt } from './repo-feature-session-prompt.ts';
 import { buildGatewayChatSessionUrl, getGatewayChatBaseUrl } from './openclaw-chat-links.ts';
+import { getOpenClawAgentId } from './openclaw-agent.ts';
 
 export interface RepoFeatureSessionDeps {
   callGatewayRpc: typeof callGatewayRpc;
@@ -161,9 +162,11 @@ export async function createRepoFeatureSession(
 
   const requestedSessionKey = buildFeatureSessionKey(repoFullName);
   const label = `${repoFullName} · ${title}`;
+  const agentId = getOpenClawAgentId();
 
   const createResult = await deps.callGatewayRpc<{ key?: string; url?: string; deepLink?: string; sessionUrl?: string }>('sessions.create', {
     key: requestedSessionKey,
+    agentId,
     label,
   });
   if (!createResult.success) {
@@ -251,18 +254,20 @@ export function buildLegacyFeatureSessionKeyPrefix(repoFullName: string): string
   return `main:jean-ci:${repoSlug}:feature:`;
 }
 
-export function isRepoFeatureSessionKeyForRepo(repoFullName: string, sessionKey: string): boolean {
-  const canonicalPrefix = buildFeatureSessionKeyPrefix(repoFullName);
-  const legacyPrefix = buildLegacyFeatureSessionKeyPrefix(repoFullName);
-  const agentCanonicalPrefix = `agent:main:${canonicalPrefix}`;
-  const agentLegacyPrefix = `agent:main:${legacyPrefix}`;
+export function buildAgentFeatureSessionKeyPrefix(repoFullName: string, agentId = getOpenClawAgentId()): string {
+  const repoSlug = repoFullName.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return `${agentId}:jean-ci:${repoSlug}:feature:`;
+}
 
-  return [
-    canonicalPrefix,
-    legacyPrefix,
-    agentCanonicalPrefix,
-    agentLegacyPrefix,
-  ].some((prefix) => sessionKey.startsWith(prefix));
+export function isRepoFeatureSessionKeyForRepo(repoFullName: string, sessionKey: string): boolean {
+  const prefixes = [
+    buildFeatureSessionKeyPrefix(repoFullName),
+    buildLegacyFeatureSessionKeyPrefix(repoFullName),
+    buildAgentFeatureSessionKeyPrefix(repoFullName),
+  ];
+  const normalizedSessionKey = sessionKey.replace(/^agent:[^:]+:/, '');
+
+  return prefixes.some((prefix) => sessionKey.startsWith(prefix) || normalizedSessionKey.startsWith(prefix));
 }
 
 function buildFeatureSessionKey(repoFullName: string): string {

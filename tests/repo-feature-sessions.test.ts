@@ -16,6 +16,17 @@ async function withGatewayPublicUrl(fn: () => Promise<void> | void) {
   }
 }
 
+async function withOpenClawAgentId(agentId: string, fn: () => Promise<void> | void) {
+  const original = process.env.OPENCLAW_AGENT_ID;
+  process.env.OPENCLAW_AGENT_ID = agentId;
+  try {
+    await fn();
+  } finally {
+    if (original == null) delete process.env.OPENCLAW_AGENT_ID;
+    else process.env.OPENCLAW_AGENT_ID = original;
+  }
+}
+
 test('buildRepoSessionSeedPrompt binds the session to a repository and concrete PR backlink rules', () => {
   const prompt = buildRepoSessionSeedPrompt({
     repoFullName: 'telegraphic-dev/jean-ci',
@@ -193,39 +204,46 @@ test('createRepoFeatureSession returns and persists the canonical key from sessi
 
 test('createRepoFeatureSession requests repo-bound feature key without duplicate agent namespace segment', async () => {
   await withGatewayPublicUrl(async () => {
-    const rpcCalls: Array<{ method: string; payload: unknown }> = [];
-    const deps: RepoFeatureSessionDeps = {
-      callGatewayRpc: async (method: string, payload?: unknown) => {
-        rpcCalls.push({ method, payload });
+    await withOpenClawAgentId('qa', async () => {
+      const rpcCalls: Array<{ method: string; payload: unknown }> = [];
+      const deps: RepoFeatureSessionDeps = {
+        callGatewayRpc: async (method: string, payload?: unknown) => {
+          rpcCalls.push({ method, payload });
 
-        if (method === 'sessions.create') {
-          return { success: true, result: { key: 'created-key' } };
-        }
-        if (method === 'sessions.send') {
-          return { success: true, result: { ok: true } };
-        }
+          if (method === 'sessions.create') {
+            return { success: true, result: { key: 'qa:jean-ci:telegraphic-dev-jean-ci:feature:created-key' } };
+          }
+          if (method === 'sessions.send') {
+            return { success: true, result: { ok: true } };
+          }
 
-        throw new Error(`unexpected rpc method: ${method}`);
-      },
-      upsertRepoFeatureSession: async () => {},
-    };
+          throw new Error(`unexpected rpc method: ${method}`);
+        },
+        upsertRepoFeatureSession: async () => {},
+      };
 
-    await createRepoFeatureSession({
-      repoFullName: 'telegraphic-dev/jean-ci',
-      initialIdea: 'Session key format test',
-    }, deps);
+      await createRepoFeatureSession({
+        repoFullName: 'telegraphic-dev/jean-ci',
+        initialIdea: 'Session key format test',
+      }, deps);
 
-    const createPayload = (rpcCalls[0]?.payload as { key?: string }) || {};
-    assert.match(createPayload.key || '', /^jean-ci:telegraphic-dev-jean-ci:feature:[a-f0-9-]{36}$/);
+      const createPayload = (rpcCalls[0]?.payload as { key?: string; agentId?: string }) || {};
+      assert.match(createPayload.key || '', /^jean-ci:telegraphic-dev-jean-ci:feature:[a-f0-9-]{36}$/);
+      assert.equal(createPayload.agentId, 'qa');
+    });
   });
 });
 
-test('isRepoFeatureSessionKeyForRepo accepts canonical, legacy, and gateway-prefixed key formats', () => {
+test('isRepoFeatureSessionKeyForRepo accepts canonical, legacy, and gateway-prefixed key formats', async () => {
   const repo = 'telegraphic-dev/jean-ci';
 
-  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
-  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
-  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
-  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
-  assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean:feature:abc'), false);
+  await withOpenClawAgentId('qa', async () => {
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'qa:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:main:main:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'agent:qa:jean-ci:telegraphic-dev-jean-ci:feature:abc'), true);
+    assert.equal(isRepoFeatureSessionKeyForRepo(repo, 'jean-ci:telegraphic-dev-jean:feature:abc'), false);
+  });
 });
