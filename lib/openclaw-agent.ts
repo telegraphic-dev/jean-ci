@@ -9,6 +9,3 @@ export function resolveOpenClawModel(configuredModel: string | undefined, agentI
   return agentId === 'main' ? 'openclaw' : `openclaw/${agentId}`;
 }
 
-export function buildAgentSessionKey(keySuffix: string, agentId = getOpenClawAgentId()): string {
-  return `${agentId}:${keySuffix.replace(/^:+/, '')}`;
-}

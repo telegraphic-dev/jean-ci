@@ -35,8 +35,14 @@ export interface ReviewSessionMetadata {
   headSha?: string;
 }
 
-function buildReviewSessionKey(metadata: ReviewSessionMetadata = {}, agentId = getOpenClawAgentId()): string {
-  return `${agentId}:jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}:${normalizeSessionKeySegment(metadata.headSha, 'unknown-sha')}`;
+function buildReviewSessionKey(metadata: ReviewSessionMetadata = {}): string {
+  return `jean-ci:${normalizeSessionKeySegment(metadata.owner, 'unknown-org')}:${normalizeSessionKeySegment(metadata.repo, 'unknown-repo')}:${normalizeSessionKeySegment(metadata.prNumber?.toString(), 'unknown-pr')}:${normalizeSessionKeySegment(metadata.promptName, 'review')}:${normalizeSessionKeySegment(metadata.headSha, 'unknown-sha')}`;
+}
+
+function resolveCreatedSessionKey(payload: unknown, fallbackKey: string): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallbackKey;
+  const key = (payload as { key?: unknown }).key;
+  return typeof key === 'string' && key.trim() ? key.trim() : fallbackKey;
 }
 
 function buildReviewSessionLabel(sessionKey: string): string {
@@ -118,14 +124,17 @@ async function callOpenClawResponsesViaWebSocket(
   metadata: ReviewSessionMetadata = {},
 ): Promise<{ success: true; response: string } | { success: false; failure: OpenClawGatewayFailure }> {
   const agentId = getOpenClawAgentId();
-  const sessionKey = buildReviewSessionKey(metadata, agentId);
+  const requestedSessionKey = buildReviewSessionKey(metadata);
+  let sessionKey = requestedSessionKey;
 
   try {
     const createResult = await __internal.callGatewayRpc<{ key?: string }>('sessions.create', {
-      key: sessionKey,
+      key: requestedSessionKey,
       agentId,
-      label: buildReviewSessionLabel(sessionKey),
+      label: buildReviewSessionLabel(requestedSessionKey),
     });
+
+    sessionKey = resolveCreatedSessionKey(createResult.success ? createResult.result : undefined, requestedSessionKey);
 
     if (!createResult.success) {
       const detailBlob = createResult.errorDetails ? JSON.stringify({ errorDetails: createResult.errorDetails }) : '';

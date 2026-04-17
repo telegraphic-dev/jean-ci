@@ -304,7 +304,7 @@ export default function GatewayPlaygroundPage() {
             value={chatSessionKey}
             onChange={(event) => setChatSessionKey(event.target.value)}
             className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-mono"
-            placeholder={`${process.env.NEXT_PUBLIC_OPENCLAW_AGENT_ID || 'main'}:gateway-playground`}
+            placeholder="gateway-playground"
           />
           <textarea
             value={chatInput}
