@@ -1,4 +1,5 @@
 import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
+import { buildReviewContext } from './review-context.ts';
 import type { ReviewSessionMetadata } from './llm.ts';
 
 export interface LocalReviewCheckInput {
@@ -72,36 +73,6 @@ const DIFF_LLM_LIMIT = parseInt(process.env.DIFF_LLM_LIMIT || '200000', 10);
 const LOCAL_REVIEW_MAX_DIFF = parseInt(process.env.LOCAL_REVIEW_MAX_DIFF || `${DIFF_LLM_LIMIT}`, 10);
 const LOCAL_REVIEW_MAX_CHECKS = parseInt(process.env.LOCAL_REVIEW_MAX_CHECKS || '20', 10);
 
-function truncateDiff(diff: string, limit: number): string {
-  if (diff.length <= limit) {
-    return diff;
-  }
-
-  const truncated = diff.substring(0, limit);
-  const remaining = diff.length - limit;
-  const remainingKB = Math.round(remaining / 1024);
-  const lastFileStart = truncated.lastIndexOf('\ndiff --git');
-  const cutPoint = lastFileStart > limit * 0.8 ? lastFileStart : limit;
-
-  return truncated.substring(0, cutPoint) +
-    `\n\n... [truncated: ${remainingKB}KB remaining, ${diff.split('\ndiff --git').length - truncated.substring(0, cutPoint).split('\ndiff --git').length} files not shown]`;
-}
-
-function buildReviewContext(
-  input: Pick<LocalReviewRequest, 'title' | 'body' | 'diff'>,
-): string {
-  return [
-    `# Pull Request: ${input.title?.trim() || 'Local review'}`,
-    '',
-    '## Description',
-    input.body?.trim() || 'No description provided',
-    '',
-    '## Diff',
-    '```diff',
-    truncateDiff(input.diff, DIFF_LLM_LIMIT),
-    '```',
-  ].join('\n');
-}
 
 function normalizeChecks(userPrompt: string, inputChecks: GitBackedCheckInput[] = []): PreparedCheck[] {
   return [
@@ -243,7 +214,15 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
     throw new Error(`too many checks requested (max ${LOCAL_REVIEW_MAX_CHECKS})`);
   }
 
-  const reviewContext = buildReviewContext(input);
+  const [owner, repoName] = repo.split('/');
+  const reviewContext = buildReviewContext({
+    title: input.title,
+    body: input.body,
+    diff: input.diff,
+    diffLimit: DIFF_LLM_LIMIT,
+    owner,
+    repo: repoName,
+  });
   const checks: LocalReviewCheckResult[] = [];
   const validationFailures: LocalReviewValidationFailure[] = [];
   const executionFailures: LocalReviewExecutionFailure[] = [];

@@ -139,6 +139,7 @@ NEXT_PUBLIC_BASE_URL=https://jean-ci.example.com
 # OpenClaw Gateway
 OPENCLAW_GATEWAY_URL=https://openclaw.example.com
 OPENCLAW_GATEWAY_TOKEN=your_gateway_token
+OPENCLAW_GATEWAY_PUBLIC_URL=https://openclaw.example.com
 # Optional but recommended: use a dedicated jean-ci operator/device token,
 # not a personal token. If the gateway returns pairing/token-drift auth details,
 # jean-ci now surfaces actionable recovery guidance in logs/errors.
@@ -301,10 +302,20 @@ jean-ci can automatically deploy to Coolify when new container images are publis
 
 If `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are set, jean-ci also watches merged GitHub pull requests and marks linked Paperclip issues as `done`.
 
-Supported link formats inside the PR body/title/branch name:
+Supported link formats inside the PR body/title:
 - `https://paperclip.../issues/<issue-uuid>`
+- `https://paperclip.../<company>/issues/<issue-id>`
 - `Paperclip issue: <issue-uuid>`
+- `Paperclip issue: <issue-id>` (for example `THE-88`)
 - `<!-- paperclip-issue-id:<issue-uuid> -->`
+- `<!-- paperclip-issue-id:<issue-id> -->`
+
+Identifier-based example:
+
+```text
+PR body: Paperclip issue: THE-91
+PR body: https://paperclip.telegraphic.app/THE/issues/THE-91
+```
 
 When a PR is closed without merging, no Paperclip update is sent.
 
@@ -402,9 +413,12 @@ Key points:
 The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
 - URL: `OPENCLAW_GATEWAY_URL=https://openclaw.example.com`
 - Auth: Bearer token via `OPENCLAW_GATEWAY_TOKEN`
+- Public chat URL base: `OPENCLAW_GATEWAY_PUBLIC_URL=https://openclaw.example.com`
 - Recommendation: mint a dedicated jean-ci token/device identity instead of reusing a human operator token
 
 If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
+
+Feature sessions use `OPENCLAW_GATEWAY_PUBLIC_URL` to build browser links like `https://openclaw.example.com/chat?session=agent%3Amain%3A...` so users can continue the real conversation in the gateway UI.
 
 ### Gateway auth recovery
 

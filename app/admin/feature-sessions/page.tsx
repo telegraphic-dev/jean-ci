@@ -122,7 +122,7 @@ export default function FeatureSessionsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold">Feature Sessions ({filtered.length})</h1>
-          <p className="text-[var(--text-secondary)] mt-1">Global overview of repo-bound feature sessions</p>
+          <p className="text-[var(--text-secondary)] mt-1">Global overview of repo-bound gateway chats</p>
         </div>
         <input
           type="text"
@@ -168,7 +168,7 @@ export default function FeatureSessionsPage() {
                   <td className="py-3 px-4 text-[var(--text-muted)]">{formatRelativeTime(session.last_activity_at || session.updated_at || session.created_at)}</td>
                   <td className="py-3 px-4">
                     <div className="flex items-center justify-end gap-3">
-                      {session.session_url && <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">Session</a>}
+                      {session.session_url && <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">Gateway</a>}
                       {session.pr_url && <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">PR</a>}
                     </div>
                   </td>

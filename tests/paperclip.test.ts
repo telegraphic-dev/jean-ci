@@ -18,6 +18,26 @@ test('extractPaperclipIssueIds parses supported marker formats', () => {
   assert.deepEqual(ids, [issueId]);
 });
 
+test('extractPaperclipIssueIds parses identifier references and company-prefixed issue URLs', () => {
+  const ids = extractPaperclipIssueIds(
+    'Paperclip issue: THE-88',
+    '<!-- paperclip-issue-id:the-88 -->',
+    'https://paperclip.telegraphic.app/THE/issues/the-88',
+  );
+
+  assert.deepEqual(ids, ['THE-88']);
+});
+
+test('extractPaperclipIssueIds supports mixed UUID and identifier references', () => {
+  const issueId = '123e4567-e89b-12d3-a456-426614174000';
+  const ids = extractPaperclipIssueIds(
+    `Paperclip issue: ${issueId}`,
+    'Paperclip issue: the-88',
+  );
+
+  assert.deepEqual(ids, [issueId, 'THE-88']);
+});
+
 test('buildFailedChecksNotificationMarker is deterministic', () => {
   const marker = buildFailedChecksNotificationMarker('owner/repo', 42, 'abc123');
   assert.equal(

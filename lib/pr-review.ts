@@ -4,6 +4,7 @@ import { callOpenClaw } from './llm';
 import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output';
 import { APP_BASE_URL } from './config';
 import { buildExecutionFailureOutcome } from './review-failure';
+import { buildReviewContext, truncateReviewDiff } from './review-context';
 
 const BASE_URL = APP_BASE_URL;
 
@@ -18,42 +19,6 @@ interface ReviewCheck {
   isGlobal: boolean;
 }
 
-/**
- * Truncate diff with informative message about what was cut
- */
-function truncateDiff(diff: string, limit: number): string {
-  if (diff.length <= limit) {
-    return diff;
-  }
-
-  const truncated = diff.substring(0, limit);
-  const remaining = diff.length - limit;
-  const remainingKB = Math.round(remaining / 1024);
-
-  // Try to cut at a file boundary for cleaner output
-  const lastFileStart = truncated.lastIndexOf('\ndiff --git');
-  const cutPoint = lastFileStart > limit * 0.8 ? lastFileStart : limit;
-
-  return truncated.substring(0, cutPoint) +
-    `\n\n... [truncated: ${remainingKB}KB remaining, ${diff.split('\ndiff --git').length - truncated.substring(0, cutPoint).split('\ndiff --git').length} files not shown]`;
-}
-
-function buildReviewContext(
-  prInfo: { title: string; body?: string | null },
-  diff: string,
-): string {
-  return [
-    `# Pull Request: ${prInfo.title}`,
-    '',
-    '## Description',
-    prInfo.body?.trim() || 'No description provided',
-    '',
-    '## Diff',
-    '```diff',
-    truncateDiff(diff, DIFF_LLM_LIMIT),
-    '```',
-  ].join('\n');
-}
 
 function getConclusionForVerdict(verdict: 'PASS' | 'FAIL'): 'success' | 'failure' {
   return verdict === 'PASS' ? 'success' : 'failure';
@@ -124,8 +89,15 @@ export async function runPRReview(installationId: number, owner: string, repo: s
 
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
-  const diffPreview = truncateDiff(diff, DIFF_PREVIEW_LIMIT);
-  const reviewContext = buildReviewContext(prInfo, diff);
+  const diffPreview = truncateReviewDiff(diff, DIFF_PREVIEW_LIMIT);
+  const reviewContext = buildReviewContext({
+    title: prInfo.title,
+    body: prInfo.body,
+    diff,
+    diffLimit: DIFF_LLM_LIMIT,
+    owner,
+    repo,
+  });
 
   // Create ALL checks as pending first, storing in DB
   const checkRuns = [];

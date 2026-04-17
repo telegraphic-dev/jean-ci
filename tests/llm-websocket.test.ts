@@ -208,7 +208,7 @@ test('websocket LLM path waits for the run, returns transcript text, and deletes
   assert.deepEqual(calls.map((call) => call.method), ['sessions.create', 'sessions.send', 'agent.wait', 'sessions.get', 'sessions.delete']);
   assert.deepEqual(calls[0]?.params, { key: expectedKey, label: `Jean CI Review · ${expectedKey}` });
   assert.deepEqual(calls[1]?.params, { key: expectedKey, message: `system prompt\n\n${userMessage}`, idempotencyKey: 'jean-ci-test' });
-  assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: 30000 });
+  assert.deepEqual(calls[2]?.params, { runId: 'run-1', timeoutMs: REVIEW_AGENT_WAIT_SLICE_MS });
   assert.deepEqual(calls[3]?.params, { key: expectedKey, limit: 50 });
   assert.deepEqual(calls[4]?.params, { key: expectedKey });
 });

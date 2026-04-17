@@ -9,9 +9,9 @@ import {
   normalizeWebSocketUrl,
 } from '@telegraphic-dev/openclaw-gateway-client';
 import { getJsonState, setJsonState } from './db.ts';
+import { GATEWAY_RPC_REQUEST_TIMEOUT_MS } from './openclaw-review-timeouts.ts';
 
 const CONNECT_TIMEOUT_MS = 10_000;
-const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_CHALLENGE_TIMEOUT_MS = 3_000;
 const ROLE = 'operator';
 const SCOPES = [...DEFAULT_SCOPES] as const;
@@ -147,7 +147,7 @@ function buildGatewayClient(authOverrides: { role?: string; scopes?: string[] } 
     },
     connectTimeoutMs: CONNECT_TIMEOUT_MS,
     challengeTimeoutMs: CONNECT_CHALLENGE_TIMEOUT_MS,
-    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    requestTimeoutMs: GATEWAY_RPC_REQUEST_TIMEOUT_MS,
     logger: {
       debug: logWs as LoggerFn,
       info: logWs as LoggerFn,
