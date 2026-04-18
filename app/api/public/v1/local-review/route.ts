@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requirePublicApiToken } from '@/lib/public-api';
-import { runLocalReview } from '@/lib/local-review';
+import { enqueueLocalReviewRun, getLocalReviewRunStatus } from '@/lib/local-review-runs';
 
 interface LocalReviewRequestBody {
   repo?: string;
@@ -13,32 +13,71 @@ interface LocalReviewRequestBody {
 }
 
 const MAX_BODY_BYTES = parseInt(process.env.LOCAL_REVIEW_MAX_BODY_BYTES || '262144', 10);
-const GENERIC_SERVER_ERROR = 'Local review failed';
 
 function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
-function serverError(message: string = GENERIC_SERVER_ERROR) {
-  return NextResponse.json({ error: message }, { status: 500 });
-}
-
-function isClientValidationError(message: string): boolean {
-  return [
-    'repo is required',
-    'repo must be in owner/repo format',
-    'diff is required',
-    'headSha or ref is required',
-    'headSha/ref contains invalid characters',
-    'No checks selected',
-    'too many checks requested',
-    'unknown selectedChecks',
-  ].some((prefix) => message === prefix || message.startsWith(`${prefix} (`) || message.startsWith(`${prefix}:`));
+function notFound(message = 'Run not found') {
+  return NextResponse.json({ error: message }, { status: 404 });
 }
 
 function hasOnlyAllowedKeys(body: Record<string, unknown>): boolean {
   const allowedKeys = new Set(['repo', 'title', 'body', 'diff', 'selectedChecks', 'headSha', 'ref']);
   return Object.keys(body).every((key) => allowedKeys.has(key));
+}
+
+function parseAndValidateBody(rawBody: string): LocalReviewRequestBody | { error: string } {
+  let body: LocalReviewRequestBody;
+  try {
+    body = JSON.parse(rawBody) as LocalReviewRequestBody;
+  } catch {
+    return { error: 'Request body must be valid JSON' };
+  }
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { error: 'Request body must be a JSON object' };
+  }
+
+  if (!hasOnlyAllowedKeys(body as Record<string, unknown>)) {
+    return { error: 'Request body contains unknown fields' };
+  }
+
+  if (typeof body.repo !== 'string' || body.repo.trim().length === 0) {
+    return { error: 'repo is required' };
+  }
+
+  if (typeof body.diff !== 'string' || body.diff.trim().length === 0) {
+    return { error: 'diff is required' };
+  }
+
+  const headSha = typeof body.headSha === 'string' ? body.headSha.trim() : '';
+  const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
+  if (!headSha && !ref) {
+    return { error: 'headSha or ref is required' };
+  }
+
+  if (body.selectedChecks != null && !Array.isArray(body.selectedChecks)) {
+    return { error: 'selectedChecks must be an array' };
+  }
+
+  const selectedChecks = Array.isArray(body.selectedChecks)
+    ? body.selectedChecks.map((name) => (typeof name === 'string' ? name.trim() : '__invalid__'))
+    : undefined;
+
+  if (selectedChecks && selectedChecks.some((name) => !name || name === '__invalid__')) {
+    return { error: 'selectedChecks must contain only non-empty strings' };
+  }
+
+  return {
+    repo: body.repo.trim(),
+    title: typeof body.title === 'string' ? body.title : null,
+    body: typeof body.body === 'string' ? body.body : null,
+    diff: body.diff,
+    selectedChecks,
+    headSha: headSha || null,
+    ref: ref || null,
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -64,61 +103,39 @@ export async function POST(req: NextRequest) {
     return badRequest(`Request body too large (max ${MAX_BODY_BYTES} bytes)`);
   }
 
-  let body: LocalReviewRequestBody;
-  try {
-    body = JSON.parse(rawBody) as LocalReviewRequestBody;
-  } catch {
-    return badRequest('Request body must be valid JSON');
+  const parsed = parseAndValidateBody(rawBody);
+  if ('error' in parsed) {
+    return badRequest(parsed.error);
   }
 
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return badRequest('Request body must be a JSON object');
+  const { runId } = await enqueueLocalReviewRun(parsed);
+
+  return NextResponse.json(
+    {
+      runId,
+      status: 'queued',
+      pollUrl: `/api/public/v1/local-review/${runId}`,
+    },
+    { status: 202 }
+  );
+}
+
+export async function GET(req: NextRequest) {
+  const auth = await requirePublicApiToken(req);
+  if (!auth.authorized) {
+    return auth.response;
   }
 
-  if (!hasOnlyAllowedKeys(body as Record<string, unknown>)) {
-    return badRequest('Request body contains unknown fields');
+  const url = new URL(req.url);
+  const runId = (url.searchParams.get('runId') || '').trim();
+  if (!runId) {
+    return badRequest('runId is required');
   }
 
-  if (typeof body.repo !== 'string' || body.repo.trim().length === 0) {
-    return badRequest('repo is required');
+  const status = await getLocalReviewRunStatus(runId);
+  if (!status) {
+    return notFound();
   }
 
-  if (typeof body.diff !== 'string' || body.diff.trim().length === 0) {
-    return badRequest('diff is required');
-  }
-
-  const headSha = typeof body.headSha === 'string' ? body.headSha.trim() : '';
-  const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
-  if (!headSha && !ref) {
-    return badRequest('headSha or ref is required');
-  }
-
-  if (body.selectedChecks != null && !Array.isArray(body.selectedChecks)) {
-    return badRequest('selectedChecks must be an array');
-  }
-
-  const selectedChecks = Array.isArray(body.selectedChecks)
-    ? body.selectedChecks.map((name) => (typeof name === 'string' ? name.trim() : '__invalid__'))
-    : undefined;
-
-  if (selectedChecks && selectedChecks.some((name) => !name || name === '__invalid__')) {
-    return badRequest('selectedChecks must contain only non-empty strings');
-  }
-
-  try {
-    const result = await runLocalReview({
-      repo: body.repo,
-      title: typeof body.title === 'string' ? body.title : null,
-      body: typeof body.body === 'string' ? body.body : null,
-      diff: body.diff,
-      selectedChecks,
-      headSha: headSha || null,
-      ref: ref || null,
-    });
-
-    return NextResponse.json(result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : GENERIC_SERVER_ERROR;
-    return isClientValidationError(message) ? badRequest(message) : serverError();
-  }
+  return NextResponse.json(status);
 }

@@ -208,6 +208,25 @@ export async function initDatabase() {
         value JSONB NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS jean_ci_local_review_runs (
+        id SERIAL PRIMARY KEY,
+        run_id TEXT UNIQUE NOT NULL,
+        repo TEXT NOT NULL,
+        head_sha TEXT,
+        ref TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        request_payload JSONB NOT NULL,
+        result_payload JSONB,
+        error_message TEXT,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_local_review_runs_status ON jean_ci_local_review_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_local_review_runs_repo ON jean_ci_local_review_runs(repo);
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -315,6 +334,78 @@ export async function setJsonState(key: string, value: unknown): Promise<void> {
      VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP)
      ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, updated_at = CURRENT_TIMESTAMP`,
     [key, JSON.stringify(value)],
+  );
+}
+
+export interface LocalReviewRunRecord {
+  id: number;
+  run_id: string;
+  repo: string;
+  head_sha: string | null;
+  ref: string | null;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  request_payload: unknown;
+  result_payload: unknown | null;
+  error_message: string | null;
+  started_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export async function createLocalReviewRun(data: {
+  runId: string;
+  repo: string;
+  headSha?: string | null;
+  ref?: string | null;
+  requestPayload: unknown;
+}): Promise<LocalReviewRunRecord> {
+  const result = await pool.query(
+    `INSERT INTO jean_ci_local_review_runs
+      (run_id, repo, head_sha, ref, status, request_payload, updated_at)
+     VALUES ($1, $2, $3, $4, 'queued', $5::jsonb, CURRENT_TIMESTAMP)
+     RETURNING *`,
+    [data.runId, data.repo, data.headSha || null, data.ref || null, JSON.stringify(data.requestPayload)]
+  );
+
+  return result.rows[0];
+}
+
+export async function getLocalReviewRun(runId: string): Promise<LocalReviewRunRecord | null> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_local_review_runs WHERE run_id = $1`,
+    [runId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateLocalReviewRun(
+  runId: string,
+  data: {
+    status?: 'queued' | 'running' | 'completed' | 'failed';
+    resultPayload?: unknown;
+    errorMessage?: string | null;
+    startedAt?: Date | null;
+    completedAt?: Date | null;
+  }
+): Promise<void> {
+  await pool.query(
+    `UPDATE jean_ci_local_review_runs SET
+      status = COALESCE($2, status),
+      result_payload = CASE WHEN $3::text IS NULL THEN result_payload ELSE $3::jsonb END,
+      error_message = CASE WHEN $4::text IS NULL THEN error_message ELSE $4 END,
+      started_at = COALESCE($5, started_at),
+      completed_at = COALESCE($6, completed_at),
+      updated_at = CURRENT_TIMESTAMP
+     WHERE run_id = $1`,
+    [
+      runId,
+      data.status,
+      data.resultPayload === undefined ? null : JSON.stringify(data.resultPayload),
+      data.errorMessage === undefined ? null : data.errorMessage,
+      data.startedAt || null,
+      data.completedAt || null,
+    ]
   );
 }
 
