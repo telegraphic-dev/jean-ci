@@ -1,10 +1,10 @@
-import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db';
-import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github';
-import { callOpenClaw } from './llm';
-import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output';
-import { APP_BASE_URL } from './config';
-import { buildExecutionFailureOutcome } from './review-failure';
-import { buildReviewContext, truncateReviewDiff } from './review-context';
+import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db.ts';
+import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
+import { callOpenClaw } from './llm.ts';
+import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
+import { APP_BASE_URL } from './config.ts';
+import { buildExecutionFailureOutcome } from './review-failure.ts';
+import { buildReviewContext, truncateReviewDiff } from './review-context.ts';
 
 const BASE_URL = APP_BASE_URL;
 

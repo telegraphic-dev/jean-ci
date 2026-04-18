@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getLatestCheckRunIdByGithubCheckId } from './db.ts';
 import { runPRReview } from './pr-review.ts';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github.ts';
@@ -7,6 +8,7 @@ import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIss
 import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite.ts';
 import { APP_BASE_URL } from './config.ts';
 import { buildIssueCommentNotification, buildPullRequestReviewCommentNotification, buildPullRequestReviewNotification } from './review-feedback.ts';
+import { callGatewayRpc } from './openclaw-ws.ts';
 
 const REVIEW_TRIGGER_REGEX = /(^|\s)\/review(\s|$)/i;
 const MENTION_TRIGGER = '@jean-ci review';
@@ -19,13 +21,13 @@ const FAILING_CHECK_CONCLUSIONS = new Set([
   'timed_out',
 ]);
 
+type NotificationDeps = {
+  notifyOpenClawSession?: typeof notifyOpenClawSession;
+};
+
 function enqueuePRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string) {
   runPRReview(installationId, owner, repo, prNumber, headSha)
     .catch(err => console.error('PR review error:', err));
-}
-
-function getOpenClawGatewayUrl(): string {
-  return process.env.OPENCLAW_GATEWAY_URL || '';
 }
 
 function getOpenClawGatewayToken(): string {
@@ -37,24 +39,14 @@ function isOpenClawNotificationEnabled(): boolean {
 }
 
 async function notifyOpenClawSession(sessionKey: string, message: string): Promise<void> {
-  const gatewayUrl = getOpenClawGatewayUrl();
-  const gatewayToken = getOpenClawGatewayToken();
-
-  const response = await fetch(`${gatewayUrl}/api/send`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${gatewayToken}`,
-    },
-    body: JSON.stringify({
-      sessionKey,
-      message,
-    }),
+  const result = await callGatewayRpc<{ runId?: string; status?: string; messageSeq?: number }>('sessions.send', {
+    key: sessionKey,
+    message,
+    idempotencyKey: `webhook-notify-${randomUUID()}`,
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`${response.status} ${error}`.trim());
+  if (!result.success) {
+    throw new Error(result.error);
   }
 }
 
@@ -155,7 +147,7 @@ export async function handlePullRequest(payload: any) {
   enqueuePRReview(installation.id, owner, repoName, prNumber, headSha);
 }
 
-export async function handleIssueComment(payload: any) {
+export async function handleIssueComment(payload: any, deps: NotificationDeps = {}) {
   const { action, issue, comment, repository, installation } = payload;
 
   if (action !== 'created' || !issue?.pull_request) {
@@ -202,6 +194,8 @@ export async function handleIssueComment(payload: any) {
     return;
   }
 
+  const sendNotification = deps.notifyOpenClawSession || notifyOpenClawSession;
+
   const notification = buildIssueCommentNotification(payload);
   if (!notification) {
     console.log(`PR #${issue.number} has no oc-session comment, skipping issue_comment notification`);
@@ -211,7 +205,7 @@ export async function handleIssueComment(payload: any) {
   console.log(`📢 Notifying session ${notification.sessionKey} about automation issue comment on PR #${issue.number}`);
 
   try {
-    await notifyOpenClawSession(notification.sessionKey, notification.message);
+    await sendNotification(notification.sessionKey, notification.message);
     console.log(`✅ Notification sent to session ${notification.sessionKey}`);
   } catch (error: any) {
     console.error(`Error notifying OpenClaw: ${error.message}`);
@@ -380,17 +374,19 @@ export async function handleCheckSuite(payload: any) {
   }
 }
 
-export async function handlePullRequestReview(payload: any) {
+export async function handlePullRequestReview(payload: any, deps: NotificationDeps = {}) {
   const { action, pull_request } = payload;
 
   if (action !== 'submitted') {
     return;
   }
 
-  if (!isOpenClawNotificationEnabled() || !getOpenClawGatewayUrl() || !getOpenClawGatewayToken()) {
+  if (!isOpenClawNotificationEnabled() || !process.env.OPENCLAW_GATEWAY_URL || !getOpenClawGatewayToken()) {
     console.log('OpenClaw notification disabled or not configured');
     return;
   }
+
+  const sendNotification = deps.notifyOpenClawSession || notifyOpenClawSession;
 
   const notification = buildPullRequestReviewNotification(payload);
   if (!notification) {
@@ -401,24 +397,26 @@ export async function handlePullRequestReview(payload: any) {
   console.log(`📢 Notifying session ${notification.sessionKey} about review feedback on PR #${pull_request.number}`);
 
   try {
-    await notifyOpenClawSession(notification.sessionKey, notification.message);
+    await sendNotification(notification.sessionKey, notification.message);
     console.log(`✅ Notification sent to session ${notification.sessionKey}`);
   } catch (error: any) {
     console.error(`Error notifying OpenClaw: ${error.message}`);
   }
 }
 
-export async function handlePullRequestReviewComment(payload: any) {
+export async function handlePullRequestReviewComment(payload: any, deps: NotificationDeps = {}) {
   const { action, pull_request } = payload;
 
   if (action !== 'created') {
     return;
   }
 
-  if (!isOpenClawNotificationEnabled() || !getOpenClawGatewayUrl() || !getOpenClawGatewayToken()) {
+  if (!isOpenClawNotificationEnabled() || !process.env.OPENCLAW_GATEWAY_URL || !getOpenClawGatewayToken()) {
     console.log('OpenClaw notification disabled or not configured');
     return;
   }
+
+  const sendNotification = deps.notifyOpenClawSession || notifyOpenClawSession;
 
   const notification = buildPullRequestReviewCommentNotification(payload);
   if (!notification) {
@@ -429,7 +427,7 @@ export async function handlePullRequestReviewComment(payload: any) {
   console.log(`📢 Notifying session ${notification.sessionKey} about automation review comment on PR #${pull_request.number}`);
 
   try {
-    await notifyOpenClawSession(notification.sessionKey, notification.message);
+    await sendNotification(notification.sessionKey, notification.message);
     console.log(`✅ Notification sent to session ${notification.sessionKey}`);
   } catch (error: any) {
     console.error(`Error notifying OpenClaw: ${error.message}`);

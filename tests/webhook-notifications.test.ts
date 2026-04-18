@@ -8,6 +8,17 @@ import {
   isJeanGitHubActor,
   shouldForwardPullRequestReview,
 } from '../lib/review-feedback.ts';
+import { handleIssueComment as handleIssueCommentEvent, handlePullRequestReview as handlePullRequestReviewEvent } from '../lib/webhook-handlers.ts';
+
+const originalNotifyFlag = process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED;
+const originalGatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
+const originalGatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+
+test.afterEach(() => {
+  process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = originalNotifyFlag;
+  process.env.OPENCLAW_GATEWAY_URL = originalGatewayUrl;
+  process.env.OPENCLAW_GATEWAY_TOKEN = originalGatewayToken;
+});
 
 test('isAutomationActor detects bot and app-backed actors', () => {
   assert.equal(isAutomationActor({ login: 'copilot-pull-request-reviewer', type: 'Bot' }), true);
@@ -164,4 +175,69 @@ test('buildPullRequestReviewNotification skips jean-ci authored reviews', () => 
   });
 
   assert.equal(notification, null);
+});
+
+test('handlePullRequestReview sends notifications through the injected session RPC path', async () => {
+  process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = 'true';
+  process.env.OPENCLAW_GATEWAY_URL = 'ws://gateway.example.test';
+  process.env.OPENCLAW_GATEWAY_TOKEN = 'secret';
+
+  const sent: Array<{ sessionKey: string; message: string }> = [];
+  await handlePullRequestReviewEvent({
+    action: 'submitted',
+    repository: { full_name: 'telegraphic-dev/openclaw-mentor' },
+    pull_request: {
+      number: 184,
+      title: 'Add publications',
+      html_url: 'https://github.com/telegraphic-dev/openclaw-mentor/pull/184',
+      body: '<!-- oc-session:telegram:48102236 -->\n\nPR body',
+    },
+    review: {
+      state: 'commented',
+      body: 'Codex has a suggestion.',
+      html_url: 'https://github.com/telegraphic-dev/openclaw-mentor/pull/184#pullrequestreview-2',
+      user: { login: 'chatgpt-codex-connector', type: 'Bot' },
+    },
+  }, {
+    notifyOpenClawSession: async (sessionKey, message) => {
+      sent.push({ sessionKey, message });
+    },
+  });
+
+  assert.deepEqual(sent.map(({ sessionKey }) => sessionKey), ['telegram:48102236']);
+  assert.match(sent[0]?.message || '', /External PR Review/);
+  assert.match(sent[0]?.message || '', /Codex has a suggestion\./);
+});
+
+test('handleIssueComment sends automation PR comments through the injected session RPC path', async () => {
+  process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = 'true';
+  process.env.OPENCLAW_GATEWAY_URL = 'ws://gateway.example.test';
+  process.env.OPENCLAW_GATEWAY_TOKEN = 'secret';
+
+  const sent: Array<{ sessionKey: string; message: string }> = [];
+  await handleIssueCommentEvent({
+    action: 'created',
+    repository: { full_name: 'telegraphic-dev/openclaw-mentor' },
+    issue: {
+      number: 184,
+      title: 'Add publications',
+      html_url: 'https://github.com/telegraphic-dev/openclaw-mentor/pull/184',
+      body: '<!-- oc-session:telegram:48102236 -->\n\nPR body',
+      pull_request: { url: 'https://api.github.com/repos/telegraphic-dev/openclaw-mentor/pulls/184' },
+    },
+    comment: {
+      body: 'GitHub app suggestion summary.',
+      html_url: 'https://github.com/telegraphic-dev/openclaw-mentor/pull/184#issuecomment-2',
+      user: { login: 'some-human-login', type: 'User' },
+      performed_via_github_app: { slug: 'copilot' },
+    },
+  }, {
+    notifyOpenClawSession: async (sessionKey, message) => {
+      sent.push({ sessionKey, message });
+    },
+  });
+
+  assert.deepEqual(sent.map(({ sessionKey }) => sessionKey), ['telegram:48102236']);
+  assert.match(sent[0]?.message || '', /External PR Comment/);
+  assert.match(sent[0]?.message || '', /GitHub app suggestion summary\./);
 });
