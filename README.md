@@ -140,6 +140,7 @@ NEXT_PUBLIC_BASE_URL=https://jean-ci.example.com
 OPENCLAW_GATEWAY_URL=https://openclaw.example.com
 OPENCLAW_GATEWAY_TOKEN=your_gateway_token
 OPENCLAW_GATEWAY_PUBLIC_URL=https://openclaw.example.com
+OPENCLAW_AGENT_ID=qa
 # Optional but recommended: use a dedicated jean-ci operator/device token,
 # not a personal token. If the gateway returns pairing/token-drift auth details,
 # jean-ci now surfaces actionable recovery guidance in logs/errors.
@@ -414,11 +415,12 @@ The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
 - URL: `OPENCLAW_GATEWAY_URL=https://openclaw.example.com`
 - Auth: Bearer token via `OPENCLAW_GATEWAY_TOKEN`
 - Public chat URL base: `OPENCLAW_GATEWAY_PUBLIC_URL=https://openclaw.example.com`
+- Agent routing: `OPENCLAW_AGENT_ID=qa`
 - Recommendation: mint a dedicated jean-ci token/device identity instead of reusing a human operator token
 
 If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
 
-Feature sessions use `OPENCLAW_GATEWAY_PUBLIC_URL` to build browser links like `https://openclaw.example.com/chat?session=agent%3Amain%3A...` so users can continue the real conversation in the gateway UI.
+Feature sessions use `OPENCLAW_GATEWAY_PUBLIC_URL` to build browser links like `https://openclaw.example.com/chat?session=agent%3Aqa%3A...` so users can continue the real conversation in the gateway UI.
 
 ### Gateway auth recovery
 

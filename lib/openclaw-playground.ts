@@ -1,4 +1,5 @@
 import { callGatewayRpc } from './openclaw-ws.ts';
+import { getOpenClawAgentId } from './openclaw-agent.ts';
 
 export const GATEWAY_METHOD_SCOPE_GROUPS = {
   'operator.approvals': [
@@ -292,10 +293,11 @@ export async function runGatewayPlaygroundProbe(
     };
   }
 
-  const sessionKey = (input.sessionKey || '').trim() || 'main:gateway-playground';
+  const requestedSessionKey = (input.sessionKey || '').trim() || 'gateway-playground';
 
   const createResult = await gatewayRpc('sessions.create', {
-    key: sessionKey,
+    key: requestedSessionKey,
+    ...(input.sessionKey?.trim() ? {} : { agentId: getOpenClawAgentId() }),
     label: 'Gateway Playground',
   }, {
     role: privileges.role,
@@ -311,11 +313,16 @@ export async function runGatewayPlaygroundProbe(
       selectedScopes: privileges.scopes,
       recommendedRole: privileges.recommendedRole,
       recommendedScopes: privileges.recommendedScopes,
-      sessionKey,
+      sessionKey: requestedSessionKey,
       error: createResult.error,
       errorDetails: createResult.errorDetails,
     };
   }
+
+  const createdKey = (createResult.result as { key?: unknown } | undefined)?.key;
+  const sessionKey = typeof createdKey === 'string' && createdKey.trim()
+    ? createdKey.trim()
+    : requestedSessionKey;
 
   const sendResult = await gatewayRpc('sessions.send', {
     key: sessionKey,
