@@ -101,8 +101,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: '/admin/prompt', label: 'Prompt', icon: '📝' },
   ];
 
-  const userLogin = user.login;
-  const userAvatar = user.avatar;
+  const userLogin = user?.login ?? 'GitHub user';
+  const userAvatar = user?.avatar ?? '';
 
   const isActive = (href: string) => {
     if (href === '/admin') return pathname === '/admin';
