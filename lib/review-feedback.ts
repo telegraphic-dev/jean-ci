@@ -151,7 +151,8 @@ export function buildIssueCommentNotification(payload: any): { sessionKey: strin
   }
 
   const actorLogin = comment?.user?.login || payload?.sender?.login;
-  if (isJeanGitHubActor(actorLogin) || !isAutomationActor(comment?.user, payload?.performed_via_github_app)) {
+  const performedViaApp = comment?.performed_via_github_app || payload?.performed_via_github_app;
+  if (isJeanGitHubActor(actorLogin) || !isAutomationActor(comment?.user, performedViaApp)) {
     return null;
   }
 

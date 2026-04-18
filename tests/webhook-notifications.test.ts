@@ -121,6 +121,31 @@ test('buildIssueCommentNotification forwards PR issue comments from automation b
   assert.match(notification?.message || '', /Automated suggestion summary\./);
 });
 
+test('buildIssueCommentNotification forwards app-attributed PR comments even from non-bot users', () => {
+  const notification = buildIssueCommentNotification({
+    action: 'created',
+    repository: { full_name: 'telegraphic-dev/openclaw-mentor' },
+    issue: {
+      number: 184,
+      title: 'Add publications',
+      html_url: 'https://github.com/telegraphic-dev/openclaw-mentor/pull/184',
+      body: '<!-- oc-session:telegram:48102236 -->\n\nPR body',
+      pull_request: { url: 'https://api.github.com/repos/telegraphic-dev/openclaw-mentor/pulls/184' },
+    },
+    comment: {
+      body: 'GitHub app suggestion summary.',
+      html_url: 'https://github.com/telegraphic-dev/openclaw-mentor/pull/184#issuecomment-2',
+      user: { login: 'some-human-login', type: 'User' },
+      performed_via_github_app: { slug: 'copilot' },
+    },
+  });
+
+  assert.equal(notification?.sessionKey, 'telegram:48102236');
+  assert.match(notification?.message || '', /External PR Comment/);
+  assert.match(notification?.message || '', /some-human-login/);
+  assert.match(notification?.message || '', /GitHub app suggestion summary\./);
+});
+
 test('buildPullRequestReviewNotification skips jean-ci authored reviews', () => {
   const notification = buildPullRequestReviewNotification({
     action: 'submitted',
