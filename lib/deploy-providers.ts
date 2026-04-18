@@ -1,15 +1,15 @@
-import { APP_BASE_URL, COOLIFY_DASHBOARD_URL, buildRepoAppUrl } from './config';
-import { getCoolifyAppDetails, triggerCoolifyDeploy } from './coolify';
+import { APP_BASE_URL, COOLIFY_DASHBOARD_URL, buildRepoAppUrl } from './config.ts';
+import { getCoolifyAppDetails, triggerCoolifyDeploy } from './coolify.ts';
 import {
   type DeploymentConfigFile,
   type DeploymentTarget,
   findMatchingDeployment,
   parseDeploymentConfig,
   validateDeploymentTarget,
-} from './deploy-provider-config';
+} from './deploy-provider-config.ts';
 
-export { findMatchingDeployment, validateDeploymentTarget } from './deploy-provider-config';
-export type { DeploymentConfigFile, DeploymentTarget } from './deploy-provider-config';
+export { findMatchingDeployment, validateDeploymentTarget } from './deploy-provider-config.ts';
+export type { DeploymentConfigFile, DeploymentTarget } from './deploy-provider-config.ts';
 
 export interface DeployContext {
   owner: string;
