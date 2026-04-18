@@ -1,19 +1,13 @@
-import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getLatestCheckRunIdByGithubCheckId } from './db';
-import { runPRReview } from './pr-review';
-import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github';
-import { registerPendingDeployment } from './coolify';
-import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers';
-import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip';
-import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite';
-import { APP_BASE_URL } from './config';
+import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getLatestCheckRunIdByGithubCheckId } from './db.ts';
+import { runPRReview } from './pr-review.ts';
+import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github.ts';
+import { registerPendingDeployment } from './coolify.ts';
+import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers.ts';
+import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip.ts';
+import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite.ts';
+import { APP_BASE_URL } from './config.ts';
+import { buildIssueCommentNotification, buildPullRequestReviewCommentNotification, buildPullRequestReviewNotification } from './review-feedback.ts';
 
-// OpenClaw notification config
-const OPENCLAW_GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL;
-const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN;
-const OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED = process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED === 'true';
-
-// Regex to extract session key from PR body: <!-- oc-session:key -->
-const SESSION_REGEX = /<!--\s*oc-session:([^\s]+)\s*-->/;
 const REVIEW_TRIGGER_REGEX = /(^|\s)\/review(\s|$)/i;
 const MENTION_TRIGGER = '@jean-ci review';
 const FAILING_CHECK_CONCLUSIONS = new Set([
@@ -28,6 +22,40 @@ const FAILING_CHECK_CONCLUSIONS = new Set([
 function enqueuePRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string) {
   runPRReview(installationId, owner, repo, prNumber, headSha)
     .catch(err => console.error('PR review error:', err));
+}
+
+function getOpenClawGatewayUrl(): string {
+  return process.env.OPENCLAW_GATEWAY_URL || '';
+}
+
+function getOpenClawGatewayToken(): string {
+  return process.env.OPENCLAW_GATEWAY_TOKEN || '';
+}
+
+function isOpenClawNotificationEnabled(): boolean {
+  return process.env.OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED === 'true';
+}
+
+async function notifyOpenClawSession(sessionKey: string, message: string): Promise<void> {
+  const gatewayUrl = getOpenClawGatewayUrl();
+  const gatewayToken = getOpenClawGatewayToken();
+
+  const response = await fetch(`${gatewayUrl}/api/send`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${gatewayToken}`,
+    },
+    body: JSON.stringify({
+      sessionKey,
+      message,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`${response.status} ${error}`.trim());
+  }
 }
 
 export async function handlePullRequest(payload: any) {
@@ -135,41 +163,59 @@ export async function handleIssueComment(payload: any) {
   }
 
   const body = (comment?.body || '').toLowerCase();
-  if (!REVIEW_TRIGGER_REGEX.test(body) && !body.includes(MENTION_TRIGGER)) {
+  if (REVIEW_TRIGGER_REGEX.test(body) || body.includes(MENTION_TRIGGER)) {
+    if (!installation?.id) {
+      console.log('issue_comment missing installation id, skipping review trigger');
+      return;
+    }
+
+    const repo = repository.full_name;
+    await upsertRepo(repo, installation.id, false);
+    const repoConfig = await getRepo(repo);
+    if (!repoConfig?.pr_review_enabled) {
+      return;
+    }
+
+    const [owner, repoName] = repo.split('/');
+    const prNumber = issue.number;
+
+    const octokit = await getInstallationOctokit(installation.id);
+    const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+      owner,
+      repo: repoName,
+      pull_number: prNumber,
+    });
+
+    await upsertPRReviewState({
+      repo,
+      pr_number: prNumber,
+      last_reviewed_sha: pr.head.sha,
+      is_draft: !!pr.draft,
+      draft_reviewed: !!pr.draft,
+    });
+
+    enqueuePRReview(installation.id, owner, repoName, prNumber, pr.head.sha);
     return;
   }
 
-  if (!installation?.id) {
-    console.log('issue_comment missing installation id, skipping review trigger');
+  if (!isOpenClawNotificationEnabled()) {
     return;
   }
 
-  const repo = repository.full_name;
-  await upsertRepo(repo, installation.id, false);
-  const repoConfig = await getRepo(repo);
-  if (!repoConfig?.pr_review_enabled) {
+  const notification = buildIssueCommentNotification(payload);
+  if (!notification) {
+    console.log(`PR #${issue.number} has no oc-session comment, skipping issue_comment notification`);
     return;
   }
 
-  const [owner, repoName] = repo.split('/');
-  const prNumber = issue.number;
+  console.log(`📢 Notifying session ${notification.sessionKey} about automation issue comment on PR #${issue.number}`);
 
-  const octokit = await getInstallationOctokit(installation.id);
-  const { data: pr } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-    owner,
-    repo: repoName,
-    pull_number: prNumber,
-  });
-
-  await upsertPRReviewState({
-    repo,
-    pr_number: prNumber,
-    last_reviewed_sha: pr.head.sha,
-    is_draft: !!pr.draft,
-    draft_reviewed: !!pr.draft,
-  });
-
-  enqueuePRReview(installation.id, owner, repoName, prNumber, pr.head.sha);
+  try {
+    await notifyOpenClawSession(notification.sessionKey, notification.message);
+    console.log(`✅ Notification sent to session ${notification.sessionKey}`);
+  } catch (error: any) {
+    console.error(`Error notifying OpenClaw: ${error.message}`);
+  }
 }
 
 function getFailedCheckRuns(checkRuns: any[]): any[] {
@@ -335,61 +381,56 @@ export async function handleCheckSuite(payload: any) {
 }
 
 export async function handlePullRequestReview(payload: any) {
-  const { action, review, pull_request, repository } = payload;
-  
-  // Only handle submitted reviews that request changes
-  if (action !== 'submitted' || review.state !== 'changes_requested') {
+  const { action, pull_request } = payload;
+
+  if (action !== 'submitted') {
     return;
   }
-  
-  // Check if notifications are enabled
-  if (!OPENCLAW_NOTIFY_ON_CHANGES_REQUESTED || !OPENCLAW_GATEWAY_URL || !OPENCLAW_GATEWAY_TOKEN) {
+
+  if (!isOpenClawNotificationEnabled() || !getOpenClawGatewayUrl() || !getOpenClawGatewayToken()) {
     console.log('OpenClaw notification disabled or not configured');
     return;
   }
-  
-  // Extract session key from PR body (hidden comment)
-  const prBody = pull_request.body || '';
-  const match = prBody.match(SESSION_REGEX);
-  
-  if (!match) {
+
+  const notification = buildPullRequestReviewNotification(payload);
+  if (!notification) {
     console.log(`PR #${pull_request.number} has no oc-session comment, skipping notification`);
     return;
   }
-  
-  const sessionKey = match[1];
-  console.log(`📢 Notifying session ${sessionKey} about changes requested on PR #${pull_request.number}`);
-  
-  const message = `🔧 **PR Review: Changes Requested**
 
-**PR:** ${repository.full_name}#${pull_request.number} - ${pull_request.title}
-**Reviewer:** ${review.user?.login}
-**URL:** ${pull_request.html_url}
-
-**Feedback:**
-${review.body || 'No specific feedback provided.'}
-
-Please address the requested changes and push a fix.`;
+  console.log(`📢 Notifying session ${notification.sessionKey} about review feedback on PR #${pull_request.number}`);
 
   try {
-    const response = await fetch(`${OPENCLAW_GATEWAY_URL}/api/send`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
-      },
-      body: JSON.stringify({
-        sessionKey,
-        message,
-      }),
-    });
-    
-    if (!response.ok) {
-      const error = await response.text();
-      console.error(`Failed to notify OpenClaw: ${response.status} ${error}`);
-    } else {
-      console.log(`✅ Notification sent to session ${sessionKey}`);
-    }
+    await notifyOpenClawSession(notification.sessionKey, notification.message);
+    console.log(`✅ Notification sent to session ${notification.sessionKey}`);
+  } catch (error: any) {
+    console.error(`Error notifying OpenClaw: ${error.message}`);
+  }
+}
+
+export async function handlePullRequestReviewComment(payload: any) {
+  const { action, pull_request } = payload;
+
+  if (action !== 'created') {
+    return;
+  }
+
+  if (!isOpenClawNotificationEnabled() || !getOpenClawGatewayUrl() || !getOpenClawGatewayToken()) {
+    console.log('OpenClaw notification disabled or not configured');
+    return;
+  }
+
+  const notification = buildPullRequestReviewCommentNotification(payload);
+  if (!notification) {
+    console.log(`PR #${pull_request.number} has no oc-session comment, skipping review_comment notification`);
+    return;
+  }
+
+  console.log(`📢 Notifying session ${notification.sessionKey} about automation review comment on PR #${pull_request.number}`);
+
+  try {
+    await notifyOpenClawSession(notification.sessionKey, notification.message);
+    console.log(`✅ Notification sent to session ${notification.sessionKey}`);
   } catch (error: any) {
     console.error(`Error notifying OpenClaw: ${error.message}`);
   }
@@ -600,6 +641,9 @@ export async function handleEvent(event: string, payload: any) {
       break;
     case 'pull_request_review':
       await handlePullRequestReview(payload);
+      break;
+    case 'pull_request_review_comment':
+      await handlePullRequestReviewComment(payload);
       break;
     case 'check_suite':
       await handleCheckSuite(payload);
