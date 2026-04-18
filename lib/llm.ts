@@ -8,8 +8,10 @@ import {
   runWithExponentialRetry,
 } from './openclaw-gateway';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
-import { REVIEW_AGENT_WAIT_TIMEOUT_MS } from './openclaw-review-timeouts.ts';
 import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws';
+
+const REVIEW_AGENT_WAIT_SLICE_MS = 30_000;
+const REVIEW_AGENT_WAIT_TOTAL_MS = 180_000;
 
 export const __internal = {
   isWebSocketEnabled,
@@ -156,35 +158,48 @@ ${userMessage}`,
       };
     }
 
-    const waitResult = await __internal.callGatewayRpc<{ runId?: string; status?: string; error?: string }>('agent.wait', {
-      runId,
-      timeoutMs: REVIEW_AGENT_WAIT_TIMEOUT_MS,
-    });
+    let remainingWaitBudgetMs = REVIEW_AGENT_WAIT_TOTAL_MS;
+    while (true) {
+      const waitTimeoutMs = Math.min(REVIEW_AGENT_WAIT_SLICE_MS, remainingWaitBudgetMs);
+      const waitResult = await __internal.callGatewayRpc<{ runId?: string; status?: string; error?: string }>('agent.wait', {
+        runId,
+        timeoutMs: waitTimeoutMs,
+      });
 
-    if (!waitResult.success) {
-      const detailBlob = waitResult.errorDetails ? JSON.stringify({ errorDetails: waitResult.errorDetails }) : '';
-      return {
-        success: false,
-        failure: classifyGatewayException(new Error(detailBlob ? `${waitResult.error} ${detailBlob}` : waitResult.error)),
-      };
-    }
+      if (!waitResult.success) {
+        const detailBlob = waitResult.errorDetails ? JSON.stringify({ errorDetails: waitResult.errorDetails }) : '';
+        return {
+          success: false,
+          failure: classifyGatewayException(new Error(detailBlob ? `${waitResult.error} ${detailBlob}` : waitResult.error)),
+        };
+      }
 
-    if (waitResult.result?.status === 'timeout') {
-      return {
-        success: false,
-        failure: { errorType: 'gateway', retryable: true, error: 'Timed out waiting for OpenClaw agent run to finish' },
-      };
-    }
+      if (waitResult.result?.status === 'error') {
+        return {
+          success: false,
+          failure: {
+            errorType: 'unknown',
+            retryable: false,
+            error: waitResult.result.error || 'OpenClaw agent run failed',
+          },
+        };
+      }
 
-    if (waitResult.result?.status === 'error') {
-      return {
-        success: false,
-        failure: {
-          errorType: 'unknown',
-          retryable: false,
-          error: waitResult.result.error || 'OpenClaw agent run failed',
-        },
-      };
+      if (waitResult.result?.status === 'ok' || waitResult.result?.status === 'completed') {
+        break;
+      }
+
+      remainingWaitBudgetMs -= waitTimeoutMs;
+      if (remainingWaitBudgetMs <= 0) {
+        return {
+          success: false,
+          failure: {
+            errorType: 'gateway',
+            retryable: true,
+            error: `Timed out waiting for OpenClaw agent run to finish after ${REVIEW_AGENT_WAIT_TOTAL_MS}ms`,
+          },
+        };
+      }
     }
 
     const transcriptResult = await __internal.callGatewayRpc<{ messages?: Array<{ role?: string; content?: string | Array<{ text?: string }>; message?: { content?: Array<{ text?: string }> } }> }>('sessions.get', {
