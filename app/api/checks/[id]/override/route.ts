@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getCheckRun, overrideCheckRunToPass } from '@/lib/db';
+import { performManualOverride } from '@/lib/manual-override';
 
 export async function POST(
   req: NextRequest,
@@ -23,29 +23,17 @@ export async function POST(
     return NextResponse.json({ error: 'Reason is required' }, { status: 400 });
   }
 
-  const checkRun = await getCheckRun(checkId);
-  if (!checkRun) {
-    return NextResponse.json({ error: 'Check run not found' }, { status: 404 });
-  }
-
-  if (checkRun.manually_overridden) {
-    return NextResponse.json({ error: 'Check run was already overridden' }, { status: 409 });
-  }
-
-  if (checkRun.status !== 'completed' || checkRun.conclusion !== 'failure') {
-    return NextResponse.json({ error: 'Only failed completed checks can be overridden' }, { status: 400 });
-  }
-
   const actor = auth.user?.login || `github:${auth.user?.id || 'admin'}`;
 
-  const updated = await overrideCheckRunToPass(checkId, reason, actor);
-  if (!updated) {
-    return NextResponse.json({ error: 'Check run changed before override could be recorded' }, { status: 409 });
+  const result = await performManualOverride(checkId, reason, actor);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
   }
 
   return NextResponse.json({
     ok: true,
-    checkRun: updated,
-    warning: 'Manual override is recorded in jean-ci only. It does not update the GitHub check run or submit a GitHub approval review.',
+    checkRun: result.checkRun,
+    githubReviewSubmitted: result.githubReviewSubmitted,
+    githubCheckUpdated: result.githubCheckUpdated,
   });
 }
