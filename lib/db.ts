@@ -23,7 +23,9 @@ After the verdict, provide a brief explanation (2-5 bullet points max).
 1. Be objective and consistent
 2. Focus on the criteria provided
 3. Do not suggest improvements unless they are blocking issues
-4. When in doubt, FAIL - it's safer to ask for fixes than to let bugs through`;
+4. Minimize roundtrips: provide a complete review in one response without asking follow-up questions
+5. Before finalizing, do an internal pseudo-result check: mentally apply each required blocking fix and confirm whether anything else would still block the PR
+6. When in doubt, FAIL - it's safer to ask for fixes than to let bugs through`;
 
 // Default user prompt
 export const DEFAULT_USER_PROMPT = `## Review Criteria

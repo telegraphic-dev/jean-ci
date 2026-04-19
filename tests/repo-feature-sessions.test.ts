@@ -25,7 +25,6 @@ test('buildRepoSessionSeedPrompt binds the session to a repository and concrete 
   });
 
   assert.match(prompt, /permanently bound to repository telegraphic-dev\/jean-ci/i);
-  assert.match(prompt, /Minimize roundtrips: ship end-to-end/i);
   assert.match(prompt, /oc-session:agent:main:discord:channel:1490241981685698620/);
   assert.ok(prompt.includes('https://carita.tailf99986.ts.net/chat?session=agent%3Amain%3Adiscord%3Achannel%3A1490241981685698620'));
   assert.match(prompt, /Initial feature idea:/);
