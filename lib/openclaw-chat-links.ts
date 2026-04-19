@@ -35,4 +35,3 @@ export function buildGatewayChatSessionUrl(sessionKey: string): string | null {
   url.searchParams.set('session', trimmedSessionKey);
   return url.toString();
 }
-

@@ -107,6 +107,15 @@ function validateRepoSlug(repo: string): boolean {
   return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
 }
 
+function splitRepoSlug(repo: string): [string, string] {
+  const parts = repo.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error('repo must be in owner/repo format');
+  }
+
+  return [parts[0], parts[1]];
+}
+
 function validateGitRef(ref: string): boolean {
   const trimmed = ref.trim();
   if (!trimmed) return false;
@@ -134,10 +143,7 @@ function validateGitRef(ref: string): boolean {
 }
 
 function buildSessionMetadata(repo: string, promptName: string, headSha?: string | null): ReviewSessionMetadata {
-  const [owner, repoName] = repo.split('/');
-  if (!owner || !repoName) {
-    throw new Error('repo must be in owner/repo format');
-  }
+  const [owner, repoName] = splitRepoSlug(repo);
 
   return {
     owner,
@@ -191,7 +197,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
         throw new Error(`repo is not tracked: ${repoFullName}`);
       }
       const octokit = await getInstallationOctokit(repoConfig.installation_id);
-      const [owner, repoName] = repoFullName.split('/');
+      const [owner, repoName] = splitRepoSlug(repoFullName);
       const files = await fetchPRCheckFiles(octokit, owner, repoName, ref);
       return files.map((file: { name: string; content: string; path?: string }) => ({
         name: file.name,
@@ -214,7 +220,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
     throw new Error(`too many checks requested (max ${LOCAL_REVIEW_MAX_CHECKS})`);
   }
 
-  const [owner, repoName] = repo.split('/');
+  const [owner, repoName] = splitRepoSlug(repo);
   const reviewContext = buildReviewContext({
     title: input.title,
     body: input.body,
