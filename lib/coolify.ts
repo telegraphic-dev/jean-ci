@@ -1,4 +1,4 @@
-import { COOLIFY_URL } from './config';
+import { COOLIFY_URL } from './config.ts';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;
@@ -134,8 +134,8 @@ import {
   savePendingDeployment as dbSavePendingDeployment,
   getPendingDeployment as dbGetPendingDeployment,
   deletePendingDeployment as dbDeletePendingDeployment,
-} from './db';
-import type { PendingDeployment as DbPendingDeployment } from './db';
+} from './db.ts';
+import type { PendingDeployment as DbPendingDeployment } from './db.ts';
 
 export interface PendingDeploymentInput {
   owner: string;

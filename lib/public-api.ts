@@ -1,6 +1,6 @@
 import { randomBytes, createHash, timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { getActiveApiTokenByHash, touchApiTokenLastUsed } from './db';
+import { getActiveApiTokenByHash, touchApiTokenLastUsed } from './db.ts';
 
 const DEFAULT_PAGE = 1;
 

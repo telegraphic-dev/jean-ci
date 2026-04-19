@@ -1,14 +1,14 @@
-import { SYSTEM_PROMPT } from './db';
+import { SYSTEM_PROMPT } from './db.ts';
 import {
   buildGatewayAuthGuidance,
   classifyGatewayException,
   classifyGatewayHttpFailure,
-  OpenClawGatewayFailure,
   parseGatewayAuthRecoveryHint,
   runWithExponentialRetry,
-} from './openclaw-gateway';
+} from './openclaw-gateway.ts';
+import type { OpenClawGatewayFailure } from './openclaw-gateway.ts';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
-import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws';
+import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws.ts';
 
 const REVIEW_AGENT_WAIT_SLICE_MS = 30_000;
 const REVIEW_AGENT_WAIT_TOTAL_MS = 180_000;

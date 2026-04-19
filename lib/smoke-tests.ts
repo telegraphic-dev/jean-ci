@@ -1,7 +1,7 @@
-import { callOpenClaw } from './llm';
-import { getInstallationOctokit, createCheck, updateCheck } from './github';
-import { insertCheckRun, updateCheckRun } from './db';
-import { APP_BASE_URL } from './config';
+import { callOpenClaw } from './llm.ts';
+import { getInstallationOctokit, createCheck, updateCheck } from './github.ts';
+import { insertCheckRun, updateCheckRun } from './db.ts';
+import { APP_BASE_URL } from './config.ts';
 
 const BASE_URL = APP_BASE_URL;
 

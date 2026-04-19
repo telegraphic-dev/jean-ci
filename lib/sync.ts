@@ -5,9 +5,9 @@ import {
   cleanupOldEvents,
   getAllPRReviewsForRepo,
   deletePRReview
-} from './db';
-import { getInstallationOctokit } from './github';
-import { COOLIFY_URL } from './config';
+} from './db.ts';
+import { getInstallationOctokit } from './github.ts';
+import { COOLIFY_URL } from './config.ts';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
 const COOLIFY_TOKEN = process.env.COOLIFY_TOKEN;

@@ -20,6 +20,7 @@ const PAPERCLIP_HTML_COMMENT_RE = new RegExp(
   `<!--\\s*paperclip-issue-id\\s*:\\s*${PAPERCLIP_ISSUE_REFERENCE_SOURCE}\\s*-->`,
   'ig',
 );
+const GITHUB_PULL_URL_RE = /https?:\/\/github\.com\/([^\s/]+\/[^\s/]+)\/pull\/(\d+)/ig;
 
 function normalizeIssueReference(value?: string | null): string | null {
   const trimmed = value?.trim();
@@ -125,6 +126,28 @@ function issueRepoMatches(issue: any, repoFullName: string): boolean {
   return candidates.has(expected);
 }
 
+export function issueMatchesPullRequestContext(issue: any, repoFullName: string, prNumber: number): boolean {
+  if (issueRepoMatches(issue, repoFullName)) {
+    return true;
+  }
+
+  const expectedRepo = normalizeRepoFullName(repoFullName);
+  if (!expectedRepo || !Number.isInteger(prNumber)) {
+    return false;
+  }
+
+  const description = typeof issue?.description === 'string' ? issue.description : '';
+  for (const match of description.matchAll(GITHUB_PULL_URL_RE)) {
+    const candidateRepo = normalizeRepoFullName(match[1]);
+    const candidatePrNumber = Number.parseInt(match[2] || '', 10);
+    if (candidateRepo === expectedRepo && candidatePrNumber === prNumber) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function paperclipFetch(path: string, init?: RequestInit, operation = 'paperclip.request') {
   if (!PAPERCLIP_API_URL || !PAPERCLIP_API_KEY) {
     throw new Error('Paperclip is not configured');
@@ -187,9 +210,9 @@ export async function markLinkedPaperclipIssuesDone(params: {
 
   for (const issueId of issueIds) {
     const issue = await paperclipFetch(`/api/issues/${issueId}`, undefined, 'paperclip.done_sync.fetch_issue');
-    if (!issueRepoMatches(issue, repoFullName)) {
+    if (!issueMatchesPullRequestContext(issue, repoFullName, prNumber)) {
       console.warn(
-        `Skipping Paperclip done-sync for issue ${issueId}: project repo does not match ${repoFullName}`
+        `Skipping Paperclip done-sync for issue ${issueId}: issue does not match ${repoFullName}#${prNumber}`
       );
       continue;
     }
@@ -355,9 +378,9 @@ export async function commentLinkedPaperclipIssuesOnFailedChecks(params: {
 
   for (const issueId of issueIds) {
     const issue = await paperclipFetch(`/api/issues/${issueId}`, undefined, 'paperclip.failed_checks.fetch_issue');
-    if (!issueRepoMatches(issue, repoFullName)) {
+    if (!issueMatchesPullRequestContext(issue, repoFullName, prNumber)) {
       console.warn(
-        `Skipping Paperclip failing-check comment for issue ${issueId}: project repo does not match ${repoFullName}`
+        `Skipping Paperclip failing-check comment for issue ${issueId}: issue does not match ${repoFullName}#${prNumber}`
       );
       continue;
     }

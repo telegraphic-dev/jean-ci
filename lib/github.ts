@@ -1,6 +1,6 @@
 import { App } from '@octokit/app';
 import fs from 'fs';
-import { upsertRepo, getAllRepos } from './db';
+import { upsertRepo, getAllRepos } from './db.ts';
 
 const APP_ID = process.env.GITHUB_APP_ID!;
 const CLIENT_ID = process.env.GITHUB_CLIENT_ID!;
