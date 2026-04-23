@@ -11,7 +11,11 @@ import { logExternalCallFailure, readResponseBodySnippet } from './external-call
 import { callGatewayRpc, isWebSocketEnabled } from './openclaw-ws.ts';
 
 const REVIEW_AGENT_WAIT_SLICE_MS = 30_000;
-const REVIEW_AGENT_WAIT_TOTAL_MS = 180_000;
+// Recent production runs are timing out at the 3-minute ceiling, then getting
+// re-sent from scratch up to two more times. Keep waiting on the same run for
+// the equivalent wall-clock budget instead of piling duplicate review prompts
+// onto an already-slow OpenClaw session.
+const REVIEW_AGENT_WAIT_TOTAL_MS = 540_000;
 
 export const __internal = {
   isWebSocketEnabled,
@@ -195,7 +199,7 @@ ${userMessage}`,
           success: false,
           failure: {
             errorType: 'gateway',
-            retryable: true,
+            retryable: false,
             error: `Timed out waiting for OpenClaw agent run to finish after ${REVIEW_AGENT_WAIT_TOTAL_MS}ms`,
           },
         };
