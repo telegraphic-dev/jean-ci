@@ -42,7 +42,7 @@ function isOperatorAdminMissingScopeError(result: { error?: string; errorDetails
 }
 
 const REVIEW_AGENT_WAIT_SLICE_MS = 30_000;
-const REVIEW_AGENT_WAIT_TOTAL_MS = 180_000;
+const REVIEW_AGENT_WAIT_TOTAL_MS = 540_000;
 
 async function callOpenClawResponsesViaWebSocketForTest(
   userMessage: string,
@@ -118,7 +118,7 @@ async function callOpenClawResponsesViaWebSocketForTest(
           success: false,
           failure: {
             errorType: 'gateway',
-            retryable: true,
+            retryable: false,
             error: `Timed out waiting for OpenClaw agent run to finish after ${REVIEW_AGENT_WAIT_TOTAL_MS}ms`,
           },
         };
@@ -257,6 +257,39 @@ test('websocket LLM path keeps waiting across agent.wait timeouts before failing
       { runId: 'run-slow', timeoutMs: 30000 },
     ],
   );
+});
+
+test('websocket LLM path stops retrying the whole review when the same run exhausts the wait budget', async () => {
+  let waitCalls = 0;
+
+  const result = await callOpenClawResponsesViaWebSocketForTest(
+    'Review this PR',
+    { owner: 'telegraphic-dev', repo: 'jean-ci', prNumber: 117, promptName: 'very slow review.md' },
+    async (method) => {
+      if (method === 'sessions.create') {
+        return { success: true, result: { key: 'main:jean-ci:telegraphic-dev:jean-ci:117:very-slow-review-md' } };
+      }
+      if (method === 'sessions.send') {
+        return { success: true, result: { runId: 'run-very-slow', status: 'accepted', messageSeq: 1 } };
+      }
+      if (method === 'agent.wait') {
+        waitCalls += 1;
+        return { success: true, result: { runId: 'run-very-slow', status: 'timeout' } };
+      }
+      if (method === 'sessions.delete') {
+        return { success: true, result: { deleted: true } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    },
+  );
+
+  assert.equal(result.success, false);
+  if (!result.success) {
+    assert.equal(result.failure.errorType, 'gateway');
+    assert.equal(result.failure.retryable, false);
+    assert.equal(result.failure.error, `Timed out waiting for OpenClaw agent run to finish after ${REVIEW_AGENT_WAIT_TOTAL_MS}ms`);
+  }
+  assert.equal(waitCalls, REVIEW_AGENT_WAIT_TOTAL_MS / REVIEW_AGENT_WAIT_SLICE_MS);
 });
 
 test('websocket LLM path still deletes the session when waiting fails', async () => {
