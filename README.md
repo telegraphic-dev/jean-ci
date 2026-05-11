@@ -167,15 +167,23 @@ If you want to load the GitHub App private key from a file path instead of base6
 ### 2. GitHub App Permissions
 
 Required permissions:
+- **Actions**: Read (for successful `workflow_run` fallback deploy checks)
 - **Checks**: Read & Write
 - **Contents**: Read (for fetching `.jean-ci/` files)
 - **Pull requests**: Read
+- **Packages**: Read (for GHCR publish verification after build workflows finish)
 - **Metadata**: Read
 
 Subscribe to events:
 - `pull_request`
+- `pull_request_review`
+- `pull_request_review_comment`
+- `issue_comment`
 - `check_suite`
 - `installation`
+- `installation_repositories`
+- `registry_package`
+- `workflow_run`
 
 ### 3. Custom PR Checks
 
@@ -358,13 +366,13 @@ deployments:
 
 3. **Install the jean-ci GitHub App** on your repository.
 
-When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and triggers a Coolify deployment.
+When a new image is published to GHCR, jean-ci receives the `registry_package` webhook and triggers a Coolify deployment. As a fallback, when a default-branch build workflow completes successfully, jean-ci checks whether a matching `sha-<commit>` GHCR tag exists and triggers the same deployment path if the package event was missed.
 
 ### How It Works
 
 jean-ci is **buildpack-agnostic** — it doesn't know or care whether your Coolify app uses `dockerfile`, `dockerimage`, or `dockercompose`. It simply:
 
-1. Receives `registry_package` webhook from GitHub
+1. Receives `registry_package` webhook from GitHub, or a successful default-branch `workflow_run` completion with a matching GHCR `sha-<commit>` tag
 2. Matches the package URL to a `coolify_app` UUID in your `.jean-ci/coolify.yml`
 3. Calls `POST /applications/{uuid}/restart` on Coolify API
 4. Coolify handles the rest based on its own app configuration
