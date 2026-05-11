@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getLatestCheckRunIdByGithubCheckId } from './db.ts';
+import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getAppMappingByUuid, getLatestCheckRunIdByGithubCheckId } from './db.ts';
 import { runPRReview } from './pr-review.ts';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github.ts';
-import { registerPendingDeployment } from './coolify.ts';
+import { getPendingDeployment, registerPendingDeployment } from './coolify.ts';
 import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers.ts';
 import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip.ts';
 import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite.ts';
+import { buildRegistryPackagePayloadFromWorkflowRun, findPublishedGhcrVersionForHead } from './ghcr-package.ts';
 import { APP_BASE_URL } from './config.ts';
 import { buildIssueCommentNotification, buildPullRequestReviewCommentNotification, buildPullRequestReviewNotification } from './review-feedback.ts';
 import { callGatewayRpc } from './openclaw-ws.ts';
@@ -504,6 +505,20 @@ export async function handleRegistryPackage(payload: any) {
     return;
   }
 
+  if (headSha && deployment.coolify_app) {
+    const existingMapping = await getAppMappingByUuid(deployment.coolify_app);
+    if (existingMapping?.last_deployed_sha === headSha) {
+      console.log(`⏭️ ${repository.full_name}@${headSha.slice(0, 7)} already deployed to ${deployment.coolify_app}`);
+      return;
+    }
+
+    const pendingDeployment = await getPendingDeployment(deployment.coolify_app);
+    if (pendingDeployment?.head_sha === headSha) {
+      console.log(`⏭️ ${repository.full_name}@${headSha.slice(0, 7)} already has a pending deployment for ${deployment.coolify_app}`);
+      return;
+    }
+  }
+
   const provider = getDeploymentProvider(deployment.provider);
   if (!provider) {
     console.error(`Unknown deployment provider: ${deployment.provider}`);
@@ -632,6 +647,81 @@ export async function handleRegistryPackage(payload: any) {
   console.log(`✅ Deploy triggered for ${repository.full_name} via ${deployment.provider}`);
 }
 
+export async function handleWorkflowRun(payload: any) {
+  const { action, workflow_run, repository, sender } = payload;
+
+  if (action !== 'completed') {
+    console.log(`Workflow run action: ${action} (ignoring)`);
+    return;
+  }
+
+  if (workflow_run?.conclusion !== 'success') {
+    console.log(`Workflow run ${workflow_run?.id || '(unknown)'} conclusion: ${workflow_run?.conclusion} (ignoring)`);
+    return;
+  }
+
+  const headSha = workflow_run?.head_sha;
+  if (!headSha) {
+    console.log('Workflow run completed without head_sha, skipping package deploy fallback');
+    return;
+  }
+
+  const defaultBranch = repository?.default_branch || 'main';
+  if (workflow_run?.head_branch && workflow_run.head_branch !== defaultBranch) {
+    console.log(`Workflow run for ${workflow_run.head_branch} is not ${defaultBranch}, skipping package deploy fallback`);
+    return;
+  }
+
+  const fullName = repository?.full_name;
+  if (!fullName) {
+    console.log('Workflow run missing repository.full_name, skipping package deploy fallback');
+    return;
+  }
+
+  const repoConfig = await getRepo(fullName);
+  if (!repoConfig) {
+    console.log(`No config for ${fullName}, skipping package deploy fallback`);
+    return;
+  }
+
+  const [owner, repo] = fullName.split('/');
+  const octokit = await getInstallationOctokit(repoConfig.installation_id);
+  const ref = workflow_run.head_branch || defaultBranch;
+  const deploymentConfig = await fetchDeploymentConfig(octokit, owner, repo, ref);
+
+  if (!deploymentConfig || !deploymentConfig.deployments.length) {
+    console.log(`No deployment config found for ${fullName}, skipping package deploy fallback`);
+    return;
+  }
+
+  const checkedPackages = new Set<string>();
+  for (const deployment of deploymentConfig.deployments) {
+    if (checkedPackages.has(deployment.package)) continue;
+    checkedPackages.add(deployment.package);
+
+    try {
+      const published = await findPublishedGhcrVersionForHead(octokit, deployment, headSha);
+      if (!published) {
+        console.log(`No GHCR sha-${headSha.slice(0, 7)} package yet for ${deployment.package}`);
+        continue;
+      }
+
+      console.log(`📦 Workflow completed and package exists: ${published.packageUrl}@${published.version.name}`);
+      await handleRegistryPackage(buildRegistryPackagePayloadFromWorkflowRun({
+        workflowRun: workflow_run,
+        repository,
+        sender,
+        packageName: published.packageName,
+        packageUrl: published.packageUrl,
+        packageVersion: published.version,
+      }));
+    } catch (error: any) {
+      const status = error?.status ? ` (${error.status})` : '';
+      console.error(`Error checking package ${deployment.package} for ${fullName}@${headSha.slice(0, 7)}${status}: ${error.message}`);
+    }
+  }
+}
+
 export async function handleEvent(event: string, payload: any) {
   switch (event) {
     case 'pull_request':
@@ -655,6 +745,9 @@ export async function handleEvent(event: string, payload: any) {
       break;
     case 'registry_package':
       await handleRegistryPackage(payload);
+      break;
+    case 'workflow_run':
+      await handleWorkflowRun(payload);
       break;
     default:
       console.log(`Event: ${event}`);
