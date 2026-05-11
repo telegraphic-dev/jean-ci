@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRegistryPackagePayloadFromWorkflowRun,
+  listGhcrPackageVersions,
   packageVersionMatchesHeadSha,
   parseGhcrPackageRef,
 } from '../lib/ghcr-package.ts';
@@ -47,4 +48,27 @@ test('buildRegistryPackagePayloadFromWorkflowRun synthesizes package event field
   assert.equal(payload.registry_package.package_version.package_url, 'ghcr.io/telegraphic-dev/openclaw-mentor');
   assert.equal(payload.registry_package.package_version.target_oid, '665e58d5d75f07fd32fa4cceecd0d44df7f15b7c');
   assert.equal(payload.registry_package.package_version.target_commitish, 'main');
+});
+
+test('listGhcrPackageVersions falls back from org packages to user packages on 404', async () => {
+  const calls: string[] = [];
+  const octokit = {
+    async request(route: string) {
+      calls.push(route);
+      if (route.startsWith('GET /orgs/')) {
+        const error: any = new Error('Not Found');
+        error.status = 404;
+        throw error;
+      }
+      return { data: [{ id: 1 }] };
+    },
+  };
+
+  const result = await listGhcrPackageVersions(octokit, 'personal-user', 'app');
+
+  assert.deepEqual(result.data, [{ id: 1 }]);
+  assert.deepEqual(calls, [
+    'GET /orgs/{org}/packages/container/{package_name}/versions',
+    'GET /users/{username}/packages/container/{package_name}/versions',
+  ]);
 });

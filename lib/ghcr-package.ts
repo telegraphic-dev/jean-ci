@@ -42,12 +42,7 @@ export async function findPublishedGhcrVersionForHead(octokit: any, target: Depl
   const parsed = parseGhcrPackageRef(target.package);
   if (!parsed) return null;
 
-  const route = 'GET /orgs/{org}/packages/container/{package_name}/versions';
-  const { data } = await octokit.request(route, {
-    org: parsed.owner,
-    package_name: parsed.packageName,
-    per_page: 100,
-  });
+  const { data } = await listGhcrPackageVersions(octokit, parsed.owner, parsed.packageName);
 
   const versions = Array.isArray(data) ? data : [];
   const version = versions.find((candidate) => packageVersionMatchesHeadSha(candidate, headSha));
@@ -58,6 +53,24 @@ export async function findPublishedGhcrVersionForHead(octokit: any, target: Depl
     packageUrl: parsed.packageUrl,
     version,
   };
+}
+
+export async function listGhcrPackageVersions(octokit: any, owner: string, packageName: string) {
+  try {
+    return await octokit.request('GET /orgs/{org}/packages/container/{package_name}/versions', {
+      org: owner,
+      package_name: packageName,
+      per_page: 100,
+    });
+  } catch (error: any) {
+    if (error?.status !== 404) throw error;
+
+    return octokit.request('GET /users/{username}/packages/container/{package_name}/versions', {
+      username: owner,
+      package_name: packageName,
+      per_page: 100,
+    });
+  }
 }
 
 export function buildRegistryPackagePayloadFromWorkflowRun(params: {

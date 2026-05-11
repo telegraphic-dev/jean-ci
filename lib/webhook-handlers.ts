@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getAppMappingByUuid, getLatestCheckRunIdByGithubCheckId } from './db.ts';
+import { upsertRepo, getRepo, insertEvent, getPRReviewState, upsertPRReviewState, upsertAppMapping, getLatestCheckRunIdByGithubCheckId } from './db.ts';
 import { runPRReview } from './pr-review.ts';
 import { getInstallationOctokit, createGitHubDeployment, updateDeploymentStatus, createCheck, updateCheck } from './github.ts';
 import { getPendingDeployment, registerPendingDeployment } from './coolify.ts';
@@ -506,12 +506,6 @@ export async function handleRegistryPackage(payload: any) {
   }
 
   if (headSha && deployment.coolify_app) {
-    const existingMapping = await getAppMappingByUuid(deployment.coolify_app);
-    if (existingMapping?.last_deployed_sha === headSha) {
-      console.log(`⏭️ ${repository.full_name}@${headSha.slice(0, 7)} already deployed to ${deployment.coolify_app}`);
-      return;
-    }
-
     const pendingDeployment = await getPendingDeployment(deployment.coolify_app);
     if (pendingDeployment?.head_sha === headSha) {
       console.log(`⏭️ ${repository.full_name}@${headSha.slice(0, 7)} already has a pending deployment for ${deployment.coolify_app}`);
