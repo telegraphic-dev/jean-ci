@@ -30,6 +30,7 @@
           <tr><th>Permission</th><th>Level</th><th>Why jean-ci needs it</th></tr>
         </thead>
         <tbody>
+          <tr><td>Actions</td><td>Read</td><td>Receive successful <code>workflow_run</code> completions and verify packages after builds finish.</td></tr>
           <tr><td>Checks</td><td>Read &amp; write</td><td>Create and update check runs for the built-in review and custom prompt checks.</td></tr>
           <tr><td>Contents</td><td>Read</td><td>Fetch <code>.jean-ci/pr-checks/*.md</code> and <code>.jean-ci/coolify.yml</code> from the repo.</td></tr>
           <tr><td>Pull requests</td><td>Read</td><td>Read PR title, body, state, and diff metadata.</td></tr>

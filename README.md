@@ -167,6 +167,7 @@ If you want to load the GitHub App private key from a file path instead of base6
 ### 2. GitHub App Permissions
 
 Required permissions:
+- **Actions**: Read (for successful `workflow_run` fallback deploy checks)
 - **Checks**: Read & Write
 - **Contents**: Read (for fetching `.jean-ci/` files)
 - **Pull requests**: Read
