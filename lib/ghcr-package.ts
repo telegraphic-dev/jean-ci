@@ -55,6 +55,23 @@ export async function findPublishedGhcrVersionForHead(octokit: any, target: Depl
   };
 }
 
+export function buildSyntheticGhcrVersionForHead(target: DeploymentTarget, headSha: string) {
+  const parsed = parseGhcrPackageRef(target.package);
+  if (!parsed) return null;
+
+  const shortSha = headSha.slice(0, 7).toLowerCase();
+  return {
+    packageName: parsed.packageName.split('/').pop() || parsed.packageName,
+    packageUrl: parsed.packageUrl,
+    version: {
+      id: `workflow-run-${shortSha}`,
+      name: `sha-${shortSha}`,
+      html_url: `https://github.com/orgs/${parsed.owner}/packages/container/${encodeURIComponent(parsed.packageName)}`,
+      metadata: { container: { tags: [`sha-${shortSha}`] } },
+    },
+  };
+}
+
 export async function listGhcrPackageVersions(octokit: any, owner: string, packageName: string) {
   try {
     return await octokit.request('GET /orgs/{org}/packages/container/{package_name}/versions', {

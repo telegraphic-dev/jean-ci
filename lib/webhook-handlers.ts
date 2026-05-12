@@ -6,7 +6,7 @@ import { getPendingDeployment, registerPendingDeployment } from './coolify.ts';
 import { fetchDeploymentConfig, findMatchingDeployment, getDeploymentProvider, validateDeploymentTarget } from './deploy-providers.ts';
 import { extractPaperclipIssueIds, isPaperclipConfigured, markLinkedPaperclipIssuesDone, commentLinkedPaperclipIssuesOnFailedChecks, type FailedCheckSummary } from './paperclip.ts';
 import { handlesCheckSuiteAction, shouldQueueRerequestedReview } from './check-suite.ts';
-import { buildRegistryPackagePayloadFromWorkflowRun, findPublishedGhcrVersionForHead } from './ghcr-package.ts';
+import { buildRegistryPackagePayloadFromWorkflowRun, buildSyntheticGhcrVersionForHead, findPublishedGhcrVersionForHead } from './ghcr-package.ts';
 import { APP_BASE_URL } from './config.ts';
 import { buildIssueCommentNotification, buildPullRequestReviewCommentNotification, buildPullRequestReviewNotification } from './review-feedback.ts';
 import { callGatewayRpc } from './openclaw-ws.ts';
@@ -710,6 +710,21 @@ export async function handleWorkflowRun(payload: any) {
         packageVersion: published.version,
       }));
     } catch (error: any) {
+      if (error?.status === 404) {
+        const synthetic = buildSyntheticGhcrVersionForHead(deployment, headSha);
+        if (synthetic) {
+          console.warn(`GHCR package API returned 404 for ${deployment.package}; trusting successful workflow_run and triggering deploy for sha-${headSha.slice(0, 7)}`);
+          await handleRegistryPackage(buildRegistryPackagePayloadFromWorkflowRun({
+            workflowRun: workflow_run,
+            repository,
+            sender,
+            packageName: synthetic.packageName,
+            packageUrl: synthetic.packageUrl,
+            packageVersion: synthetic.version,
+          }));
+          continue;
+        }
+      }
       const status = error?.status ? ` (${error.status})` : '';
       console.error(`Error checking package ${deployment.package} for ${fullName}@${headSha.slice(0, 7)}${status}: ${error.message}`);
     }

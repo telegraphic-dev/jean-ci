@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRegistryPackagePayloadFromWorkflowRun,
+  buildSyntheticGhcrVersionForHead,
   listGhcrPackageVersions,
   packageVersionMatchesHeadSha,
   parseGhcrPackageRef,
@@ -48,6 +49,18 @@ test('buildRegistryPackagePayloadFromWorkflowRun synthesizes package event field
   assert.equal(payload.registry_package.package_version.package_url, 'ghcr.io/telegraphic-dev/openclaw-mentor');
   assert.equal(payload.registry_package.package_version.target_oid, '665e58d5d75f07fd32fa4cceecd0d44df7f15b7c');
   assert.equal(payload.registry_package.package_version.target_commitish, 'main');
+});
+
+test('buildSyntheticGhcrVersionForHead creates deployable package metadata without package API access', () => {
+  const synthetic = buildSyntheticGhcrVersionForHead(
+    { provider: 'coolify', package: 'ghcr.io/telegraphic-dev/pikarama:latest', coolify_app: 'app-uuid' },
+    '8f88a32341a7e188933f0a71315f4fc66421bc76'
+  );
+
+  assert.equal(synthetic?.packageName, 'pikarama');
+  assert.equal(synthetic?.packageUrl, 'ghcr.io/telegraphic-dev/pikarama');
+  assert.equal(synthetic?.version.name, 'sha-8f88a32');
+  assert.deepEqual(synthetic?.version.metadata.container.tags, ['sha-8f88a32']);
 });
 
 test('listGhcrPackageVersions falls back from org packages to user packages on 404', async () => {
