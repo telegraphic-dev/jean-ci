@@ -38,20 +38,68 @@ export function packageVersionMatchesHeadSha(version: any, headSha: string): boo
   return tags.some((tag) => String(tag).toLowerCase() === `sha-${shortSha}`);
 }
 
-export async function findPublishedGhcrVersionForHead(octokit: any, target: DeploymentTarget, headSha: string) {
+export interface GhcrLookupRetryOptions {
+  attempts?: number;
+  baseDelayMs?: number;
+  backoffFactor?: number;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function findPublishedGhcrVersionForHead(
+  octokit: any,
+  target: DeploymentTarget,
+  headSha: string,
+  retryOptions: GhcrLookupRetryOptions = {}
+) {
   const parsed = parseGhcrPackageRef(target.package);
   if (!parsed) return null;
 
-  const { data } = await listGhcrPackageVersions(octokit, parsed.owner, parsed.packageName);
+  const attempts = Math.max(1, retryOptions.attempts ?? 1);
+  const baseDelayMs = Math.max(0, retryOptions.baseDelayMs ?? 0);
+  const backoffFactor = Math.max(1, retryOptions.backoffFactor ?? 2);
 
-  const versions = Array.isArray(data) ? data : [];
-  const version = versions.find((candidate) => packageVersionMatchesHeadSha(candidate, headSha));
-  if (!version) return null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const { data } = await listGhcrPackageVersions(octokit, parsed.owner, parsed.packageName);
 
+      const versions = Array.isArray(data) ? data : [];
+      const version = versions.find((candidate) => packageVersionMatchesHeadSha(candidate, headSha));
+      if (version) {
+        return {
+          packageName: parsed.packageName.split('/').pop() || parsed.packageName,
+          packageUrl: parsed.packageUrl,
+          version,
+        };
+      }
+    } catch (error: any) {
+      if (error?.status !== 404 || attempt === attempts) throw error;
+    }
+
+    if (attempt < attempts && baseDelayMs > 0) {
+      await sleep(baseDelayMs * backoffFactor ** (attempt - 1));
+    }
+  }
+
+  return null;
+}
+
+export function buildSyntheticGhcrVersionForHead(target: DeploymentTarget, headSha: string) {
+  const parsed = parseGhcrPackageRef(target.package);
+  if (!parsed) return null;
+
+  const shortSha = headSha.slice(0, 7).toLowerCase();
   return {
     packageName: parsed.packageName.split('/').pop() || parsed.packageName,
     packageUrl: parsed.packageUrl,
-    version,
+    version: {
+      id: `workflow-run-${shortSha}`,
+      name: `sha-${shortSha}`,
+      html_url: `https://github.com/orgs/${parsed.owner}/packages/container/${encodeURIComponent(parsed.packageName)}`,
+      metadata: { container: { tags: [`sha-${shortSha}`] } },
+    },
   };
 }
 
