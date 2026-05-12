@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildRegistryPackagePayloadFromWorkflowRun,
   buildSyntheticGhcrVersionForHead,
+  findPublishedGhcrVersionForHead,
   listGhcrPackageVersions,
   packageVersionMatchesHeadSha,
   parseGhcrPackageRef,
@@ -61,6 +62,55 @@ test('buildSyntheticGhcrVersionForHead creates deployable package metadata witho
   assert.equal(synthetic?.packageUrl, 'ghcr.io/telegraphic-dev/pikarama');
   assert.equal(synthetic?.version.name, 'sha-8f88a32');
   assert.deepEqual(synthetic?.version.metadata.container.tags, ['sha-8f88a32']);
+});
+
+test('findPublishedGhcrVersionForHead retries transient 404s before returning the package version', async () => {
+  let calls = 0;
+  const octokit = {
+    async request() {
+      calls++;
+      if (calls < 3) {
+        const error: any = new Error('Not Found');
+        error.status = 404;
+        throw error;
+      }
+      return { data: [{ id: 7, name: 'sha256:digest', metadata: { container: { tags: ['sha-8f88a32'] } } }] };
+    },
+  };
+
+  const result = await findPublishedGhcrVersionForHead(
+    octokit,
+    { provider: 'coolify', package: 'ghcr.io/telegraphic-dev/pikarama:latest', coolify_app: 'app-uuid' },
+    '8f88a32341a7e188933f0a71315f4fc66421bc76',
+    { attempts: 3, baseDelayMs: 0 }
+  );
+
+  assert.equal(calls, 3);
+  assert.equal(result?.version.id, 7);
+});
+
+test('findPublishedGhcrVersionForHead retries temporarily missing sha tags', async () => {
+  let calls = 0;
+  const octokit = {
+    async request() {
+      calls++;
+      return {
+        data: calls < 2
+          ? [{ id: 6, metadata: { container: { tags: ['latest'] } } }]
+          : [{ id: 7, metadata: { container: { tags: ['latest', 'sha-8f88a32'] } } }],
+      };
+    },
+  };
+
+  const result = await findPublishedGhcrVersionForHead(
+    octokit,
+    { provider: 'coolify', package: 'ghcr.io/telegraphic-dev/pikarama:latest', coolify_app: 'app-uuid' },
+    '8f88a32341a7e188933f0a71315f4fc66421bc76',
+    { attempts: 2, baseDelayMs: 0 }
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(result?.version.id, 7);
 });
 
 test('listGhcrPackageVersions falls back from org packages to user packages on 404', async () => {

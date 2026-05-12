@@ -694,7 +694,11 @@ export async function handleWorkflowRun(payload: any) {
     checkedPackages.add(deployment.package);
 
     try {
-      const published = await findPublishedGhcrVersionForHead(octokit, deployment, headSha);
+      const published = await findPublishedGhcrVersionForHead(octokit, deployment, headSha, {
+        attempts: 4,
+        baseDelayMs: 5000,
+        backoffFactor: 2,
+      });
       if (!published) {
         console.log(`No GHCR sha-${headSha.slice(0, 7)} package yet for ${deployment.package}`);
         continue;
