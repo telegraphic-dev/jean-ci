@@ -95,12 +95,61 @@ export async function fetchPRCheckFiles(octokit: any, owner: string, repo: strin
   return files;
 }
 
-export async function getPRDiff(octokit: any, owner: string, repo: string, prNumber: number): Promise<string> {
-  const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
-    owner, repo, pull_number: prNumber,
-    mediaType: { format: 'diff' },
-  });
-  return data as unknown as string;
+export function isRetryablePullRequestDiffError(error: any): boolean {
+  const status = Number(error?.status || 0);
+  const message = String(error?.message || '');
+
+  return status === 429
+    || status === 502
+    || status === 503
+    || status === 504
+    || (status >= 500 && status < 600)
+    || /diff is temporarily unavailable|heavy server load/i.test(message);
+}
+
+type PullRequestDiffRetryOptions = {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+};
+
+function wait(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export async function getPRDiff(
+  octokit: any,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  options: PullRequestDiffRetryOptions = {},
+): Promise<string> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 4);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 1500);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner, repo, pull_number: prNumber,
+        mediaType: { format: 'diff' },
+      });
+      return data as unknown as string;
+    } catch (error: any) {
+      if (attempt >= maxAttempts || !isRetryablePullRequestDiffError(error)) {
+        throw error;
+      }
+
+      const delay = retryDelayMs * attempt;
+      console.warn(
+        `GitHub PR diff fetch failed transiently for ${owner}/${repo}#${prNumber}; retrying attempt ${attempt + 1}/${maxAttempts}: ${error.message}`,
+      );
+      await wait(delay);
+    }
+  }
+
+  throw new Error(`Failed to fetch PR diff for ${owner}/${repo}#${prNumber}`);
 }
 
 export async function getPRInfo(octokit: any, owner: string, repo: string, prNumber: number) {
