@@ -6,7 +6,8 @@ test('SYSTEM_PROMPT requires complete reviews and workspace cleanup', () => {
   assert.match(SYSTEM_PROMPT, /Minimize roundtrips: provide a complete review in one response/i);
   assert.match(SYSTEM_PROMPT, /internal pseudo-result check/i);
   assert.match(SYSTEM_PROMPT, /Workspace Hygiene \(REQUIRED\)/);
-  assert.match(SYSTEM_PROMPT, /never a persistent `\/tmp\/a2a-\*` path/i);
-  assert.match(SYSTEM_PROMPT, /Stop every child process before completing the review/i);
-  assert.match(SYSTEM_PROMPT, /remove the workspace in a `finally`\/cleanup step/i);
+  assert.match(SYSTEM_PROMPT, /workspace that you create and track/i);
+  assert.match(SYSTEM_PROMPT, /Stop only child processes that you started/i);
+  assert.match(SYSTEM_PROMPT, /remove only that tracked workspace/i);
+  assert.match(SYSTEM_PROMPT, /Never delete, modify, or stop anything that you did not create for the current review/i);
 });
