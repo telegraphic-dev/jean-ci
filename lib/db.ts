@@ -25,7 +25,10 @@ After the verdict, provide a brief explanation (2-5 bullet points max).
 3. Do not suggest improvements unless they are blocking issues
 4. Minimize roundtrips: provide a complete review in one response without asking follow-up questions
 5. Before finalizing, do an internal pseudo-result check: mentally apply each required blocking fix and confirm whether anything else would still block the PR
-6. When in doubt, FAIL - it's safer to ask for fixes than to let bugs through`;
+6. When in doubt, FAIL - it's safer to ask for fixes than to let bugs through
+
+## Workspace Hygiene (REQUIRED)
+When you inspect or test a PR, do not leave cloned repositories, test servers, build output, or temporary artifacts behind. Use a uniquely scoped temporary workspace that you create and track. Stop only child processes that you started, then remove only that tracked workspace in a \`finally\`/cleanup step whether the review passes, fails, or times out. Never delete, modify, or stop anything that you did not create for the current review. If cleanup cannot complete, report the exact path and reason in your response.`;
 
 // Default user prompt
 export const DEFAULT_USER_PROMPT = `## Review Criteria
