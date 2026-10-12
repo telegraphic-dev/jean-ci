@@ -10,6 +10,7 @@ import { buildRegistryPackagePayloadFromWorkflowRun, buildSyntheticGhcrVersionFo
 import { APP_BASE_URL } from './config.ts';
 import { buildIssueCommentNotification, buildPullRequestReviewCommentNotification, buildPullRequestReviewNotification } from './review-feedback.ts';
 import { callGatewayRpc } from './openclaw-ws.ts';
+import { shouldQueueDraftPRReview } from './draft-review.ts';
 
 const REVIEW_TRIGGER_REGEX = /(^|\s)\/review(\s|$)/i;
 const MENTION_TRIGGER = '@jean-ci review';
@@ -126,11 +127,15 @@ export async function handlePullRequest(payload: any) {
   }
 
   const reviewState = await getPRReviewState(repo, prNumber);
-  if (reviewState?.draft_reviewed) {
+  if (!shouldQueueDraftPRReview({
+    draftReviewed: reviewState?.draft_reviewed ?? false,
+    lastReviewedSha: reviewState?.last_reviewed_sha,
+    headSha,
+  })) {
     await upsertPRReviewState({
       repo,
       pr_number: prNumber,
-      last_reviewed_sha: reviewState.last_reviewed_sha,
+      last_reviewed_sha: reviewState?.last_reviewed_sha,
       is_draft: true,
       draft_reviewed: true,
     });
