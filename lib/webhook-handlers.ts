@@ -127,11 +127,23 @@ export async function handlePullRequest(payload: any) {
   }
 
   const reviewState = await getPRReviewState(repo, prNumber);
+  const octokit = await getInstallationOctokit(installation.id);
+  const { data: currentPR } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner,
+    repo: repoName,
+    pull_number: prNumber,
+  });
+
   if (!shouldQueueDraftPRReview({
     draftReviewed: reviewState?.draft_reviewed ?? false,
     lastReviewedSha: reviewState?.last_reviewed_sha,
-    headSha,
+    webhookHeadSha: headSha,
+    currentHeadSha: currentPR.head.sha,
   })) {
+    if (currentPR.head.sha !== headSha) {
+      console.log(`⏭️ Stale draft PR event for ${repo}#${prNumber} (${headSha}); current head is ${currentPR.head.sha}`);
+      return;
+    }
     await upsertPRReviewState({
       repo,
       pr_number: prNumber,

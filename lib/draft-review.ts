@@ -1,7 +1,9 @@
 export function shouldQueueDraftPRReview(input: {
   draftReviewed: boolean;
   lastReviewedSha?: string;
-  headSha: string;
+  webhookHeadSha: string;
+  currentHeadSha: string;
 }): boolean {
-  return !input.draftReviewed || input.lastReviewedSha !== input.headSha;
+  return input.webhookHeadSha === input.currentHeadSha
+    && (!input.draftReviewed || input.lastReviewedSha !== input.webhookHeadSha);
 }
