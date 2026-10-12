@@ -10,6 +10,7 @@ import { buildRegistryPackagePayloadFromWorkflowRun, buildSyntheticGhcrVersionFo
 import { APP_BASE_URL } from './config.ts';
 import { buildIssueCommentNotification, buildPullRequestReviewCommentNotification, buildPullRequestReviewNotification } from './review-feedback.ts';
 import { callGatewayRpc } from './openclaw-ws.ts';
+import { shouldQueueDraftPRReview } from './draft-review.ts';
 
 const REVIEW_TRIGGER_REGEX = /(^|\s)\/review(\s|$)/i;
 const MENTION_TRIGGER = '@jean-ci review';
@@ -126,11 +127,27 @@ export async function handlePullRequest(payload: any) {
   }
 
   const reviewState = await getPRReviewState(repo, prNumber);
-  if (reviewState?.draft_reviewed) {
+  const octokit = await getInstallationOctokit(installation.id);
+  const { data: currentPR } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+    owner,
+    repo: repoName,
+    pull_number: prNumber,
+  });
+
+  if (!shouldQueueDraftPRReview({
+    draftReviewed: reviewState?.draft_reviewed ?? false,
+    lastReviewedSha: reviewState?.last_reviewed_sha,
+    webhookHeadSha: headSha,
+    currentHeadSha: currentPR.head.sha,
+  })) {
+    if (currentPR.head.sha !== headSha) {
+      console.log(`⏭️ Stale draft PR event for ${repo}#${prNumber} (${headSha}); current head is ${currentPR.head.sha}`);
+      return;
+    }
     await upsertPRReviewState({
       repo,
       pr_number: prNumber,
-      last_reviewed_sha: reviewState.last_reviewed_sha,
+      last_reviewed_sha: reviewState?.last_reviewed_sha,
       is_draft: true,
       draft_reviewed: true,
     });
