@@ -189,7 +189,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           const reviewEvent = conclusion === 'success' ? 'APPROVE' : 'REQUEST_CHANGES';
           const reviewBody = `## ${parsed.title}\n\n${parsed.normalized.substring(0, 65000)}\n\n---\n*[View full details](${BASE_URL}/checks/${dbId})*`;
 
-          await createPRReview(octokit, owner, repo, prNumber, reviewEvent, reviewBody);
+          await createPRReview(octokit, owner, repo, prNumber, reviewEvent, reviewBody, headSha);
           console.log(`Created PR review: ${reviewEvent}`);
         } catch (e: any) {
           console.error('Failed to create PR review:', e.message);

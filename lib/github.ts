@@ -198,11 +198,13 @@ export async function createPRReview(
   prNumber: number,
   event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT',
   body: string,
+  commitId: string,
 ) {
   const { data } = await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
     owner,
     repo,
     pull_number: prNumber,
+    commit_id: commitId,
     event,
     body,
   });
