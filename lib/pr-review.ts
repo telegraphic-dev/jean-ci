@@ -5,6 +5,7 @@ import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt
 import { APP_BASE_URL } from './config.ts';
 import { buildExecutionFailureOutcome } from './review-failure.ts';
 import { buildReviewContext, truncateReviewDiff } from './review-context.ts';
+import { isCurrentReviewHead } from './review-head.ts';
 
 const BASE_URL = APP_BASE_URL;
 
@@ -79,6 +80,11 @@ export async function runPRReview(installationId: number, owner: string, repo: s
     getPRInfo(octokit, owner, repo, prNumber),
     getPRDiff(octokit, owner, repo, prNumber),
   ]);
+
+  if (!isCurrentReviewHead(headSha, prInfo.head?.sha)) {
+    console.log(`⏭️ Skipping stale PR review for ${repoFullName}#${prNumber} (${headSha}); current head is ${prInfo.head?.sha}`);
+    return;
+  }
 
   console.log(`Diff size: ${Math.round(diff.length / 1024)}KB (limits: preview=${DIFF_PREVIEW_LIMIT}, llm=${DIFF_LLM_LIMIT})`);
 
@@ -166,6 +172,17 @@ export async function runPRReview(installationId: number, owner: string, repo: s
 
       const parsed = parseReviewResponse(result.response);
       const conclusion = getConclusionForVerdict(parsed.verdict);
+
+      const latestPrInfo = await getPRInfo(octokit, owner, repo, prNumber);
+      if (!isCurrentReviewHead(headSha, latestPrInfo.head?.sha)) {
+        await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
+          conclusion: 'neutral',
+          title: '⚠️ Review superseded',
+          summary: `The PR head changed while this review was running, so its result was discarded.\n\n- Reviewed head: ${headSha}\n- Current head: ${latestPrInfo.head?.sha || 'unknown'}`,
+        });
+        console.log(`Check "${check.name}" superseded by newer head for ${repoFullName}#${prNumber}`);
+        continue;
+      }
 
       if (check.isGlobal) {
         try {
