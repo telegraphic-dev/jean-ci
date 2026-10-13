@@ -12,10 +12,26 @@ export async function register() {
     console.log(`${'='.repeat(50)}\n`);
     
     try {
-      const { initDatabase, cleanupOldEvents } = await import('./lib/db');
+      const { initDatabase, cleanupOldEvents, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
       // Initialize database
       await initDatabase();
+
+      const startupStartedAt = new Date();
+      const { recoverInterruptedChecks } = await import('./lib/interrupted-check-recovery');
+      const { getInstallationOctokit, updateCheck } = await import('./lib/github');
+      const recovery = await recoverInterruptedChecks({
+        listInterruptedChecks: getInterruptedCheckRuns,
+        getRepo,
+        getInstallationOctokit,
+        completeGitHubCheck: updateCheck,
+        markCheckCompleted: updateCheckRun,
+        detailsUrl: (id) => `${APP_BASE_URL}/checks/${id}`,
+        log: console.log,
+      }, startupStartedAt);
+      if (recovery.recovered || recovery.skipped || recovery.failed) {
+        console.log(`Recovered interrupted checks: ${JSON.stringify(recovery)}`);
+      }
       
       // Cleanup old events
       await cleanupOldEvents();

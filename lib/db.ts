@@ -449,6 +449,18 @@ export async function getCheckRun(id: number): Promise<CheckRun | null> {
   return result.rows[0] || null;
 }
 
+export async function getInterruptedCheckRuns(startedBefore: Date): Promise<CheckRun[]> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_check_runs
+     WHERE status IN ('queued', 'in_progress')
+       AND github_check_id IS NOT NULL
+       AND created_at < $1
+     ORDER BY created_at ASC`,
+    [startedBefore],
+  );
+  return result.rows;
+}
+
 export async function getLatestCheckRunIdByGithubCheckId(githubCheckId: number): Promise<number | null> {
   const result = await pool.query(
     `SELECT id FROM jean_ci_check_runs
