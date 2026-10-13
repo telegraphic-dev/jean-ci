@@ -225,6 +225,13 @@ export async function updateCheck(octokit: any, owner: string, repo: string, che
   return data;
 }
 
+export async function getCheck(octokit: any, owner: string, repo: string, checkRunId: number) {
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}/check-runs/{check_run_id}', {
+    owner, repo, check_run_id: checkRunId,
+  });
+  return data;
+}
+
 export async function createGitHubDeployment(octokit: any, owner: string, repo: string, ref: string, environment: string, description: string) {
   try {
     const { data: deployment } = await octokit.request('POST /repos/{owner}/{repo}/deployments', {

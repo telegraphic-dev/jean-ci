@@ -4,6 +4,7 @@ export type InterruptedCheckRecoveryDeps = {
   listInterruptedChecks: (startedBefore: Date) => Promise<CheckRun[]>;
   getRepo: (repo: string) => Promise<Repo | null>;
   getInstallationOctokit: (installationId: number) => Promise<any>;
+  getGitHubCheck: (octokit: any, owner: string, repo: string, checkRunId: number) => Promise<any>;
   completeGitHubCheck: (octokit: any, owner: string, repo: string, checkRunId: number, updates: any) => Promise<unknown>;
   markCheckCompleted: (id: number, data: {
     status: string;
@@ -42,6 +43,19 @@ export async function recoverInterruptedChecks(
 
     try {
       const octokit = await deps.getInstallationOctokit(repoConfig.installation_id);
+      const remoteCheck = await deps.getGitHubCheck(octokit, owner, repo, checkRunId);
+      if (remoteCheck.status === 'completed') {
+        await deps.markCheckCompleted(check.id, {
+          status: 'completed',
+          conclusion: remoteCheck.conclusion || 'neutral',
+          title: remoteCheck.output?.title || 'Review completed before restart',
+          summary: remoteCheck.output?.summary || 'GitHub already recorded this check as completed before jean-ci restarted.',
+          completed_at: remoteCheck.completed_at ? new Date(remoteCheck.completed_at) : completedAt,
+        });
+        recovered += 1;
+        deps.log?.(`Synchronized completed check ${check.id} from GitHub`);
+        continue;
+      }
       await deps.completeGitHubCheck(octokit, owner, repo, checkRunId, {
         status: 'completed',
         conclusion: 'neutral',

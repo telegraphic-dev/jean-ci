@@ -19,16 +19,18 @@ export async function register() {
 
       const startupStartedAt = new Date();
       const { recoverInterruptedChecks } = await import('./lib/interrupted-check-recovery');
-      const { getInstallationOctokit, updateCheck } = await import('./lib/github');
-      const recovery = await recoverInterruptedChecks({
+      const { getInstallationOctokit, getCheck, updateCheck } = await import('./lib/github');
+      const recover = () => recoverInterruptedChecks({
         listInterruptedChecks: getInterruptedCheckRuns,
         getRepo,
         getInstallationOctokit,
+        getGitHubCheck: getCheck,
         completeGitHubCheck: updateCheck,
         markCheckCompleted: updateCheckRun,
         detailsUrl: (id) => `${APP_BASE_URL}/checks/${id}`,
         log: console.log,
       }, startupStartedAt);
+      const recovery = await recover();
       if (recovery.recovered || recovery.skipped || recovery.failed) {
         console.log(`Recovered interrupted checks: ${JSON.stringify(recovery)}`);
       }
@@ -38,6 +40,9 @@ export async function register() {
       
       // Schedule periodic cleanup (every hour)
       setInterval(() => cleanupOldEvents().catch(console.error), 60 * 60 * 1000);
+
+      // Retry recovery if GitHub or installation authentication was temporarily unavailable at startup.
+      setInterval(() => recover().catch(console.error), 5 * 60 * 1000);
       
       // Schedule sync job (every 15 minutes)
       const { runSync } = await import('./lib/sync');
