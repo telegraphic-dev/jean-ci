@@ -12,16 +12,37 @@ export async function register() {
     console.log(`${'='.repeat(50)}\n`);
     
     try {
-      const { initDatabase, cleanupOldEvents } = await import('./lib/db');
+      const { initDatabase, cleanupOldEvents, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
       // Initialize database
       await initDatabase();
+
+      const startupStartedAt = new Date();
+      const { recoverInterruptedChecks } = await import('./lib/interrupted-check-recovery');
+      const { getInstallationOctokit, getCheck, updateCheck } = await import('./lib/github');
+      const recover = () => recoverInterruptedChecks({
+        listInterruptedChecks: getInterruptedCheckRuns,
+        getRepo,
+        getInstallationOctokit,
+        getGitHubCheck: getCheck,
+        completeGitHubCheck: updateCheck,
+        markCheckCompleted: updateCheckRun,
+        detailsUrl: (id) => `${APP_BASE_URL}/checks/${id}`,
+        log: console.log,
+      }, startupStartedAt);
+      const recovery = await recover();
+      if (recovery.recovered || recovery.skipped || recovery.failed) {
+        console.log(`Recovered interrupted checks: ${JSON.stringify(recovery)}`);
+      }
       
       // Cleanup old events
       await cleanupOldEvents();
       
       // Schedule periodic cleanup (every hour)
       setInterval(() => cleanupOldEvents().catch(console.error), 60 * 60 * 1000);
+
+      // Retry recovery if GitHub or installation authentication was temporarily unavailable at startup.
+      setInterval(() => recover().catch(console.error), 5 * 60 * 1000);
       
       // Schedule sync job (every 15 minutes)
       const { runSync } = await import('./lib/sync');
