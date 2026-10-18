@@ -110,6 +110,8 @@ export function isRetryablePullRequestDiffError(error: any): boolean {
 type PullRequestDiffRetryOptions = {
   maxAttempts?: number;
   retryDelayMs?: number;
+  baseRef?: string;
+  headRef?: string;
 };
 
 function wait(ms: number): Promise<void> {
@@ -128,6 +130,7 @@ export async function getPRDiff(
 ): Promise<string> {
   const maxAttempts = Math.max(1, options.maxAttempts ?? 4);
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? 1500);
+  let primaryError: any;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -137,9 +140,11 @@ export async function getPRDiff(
       });
       return data as unknown as string;
     } catch (error: any) {
-      if (attempt >= maxAttempts || !isRetryablePullRequestDiffError(error)) {
+      if (!isRetryablePullRequestDiffError(error)) {
         throw error;
       }
+      primaryError = error;
+      if (attempt >= maxAttempts) break;
 
       const delay = retryDelayMs * attempt;
       console.warn(
@@ -149,7 +154,63 @@ export async function getPRDiff(
     }
   }
 
-  throw new Error(`Failed to fetch PR diff for ${owner}/${repo}#${prNumber}`);
+  // GitHub occasionally serves a transient 5xx for the pull diff endpoint on
+  // very large PRs. The compare endpoint exercises a separate API path.
+  if (options.baseRef && options.headRef) {
+    try {
+      const { data } = await octokit.request('GET /repos/{owner}/{repo}/compare/{basehead}', {
+        owner,
+        repo,
+        basehead: `${options.baseRef}...${options.headRef}`,
+        mediaType: { format: 'diff' },
+      });
+      console.warn(`Fetched PR diff through GitHub compare fallback for ${owner}/${repo}#${prNumber}`);
+      return data as unknown as string;
+    } catch (error: any) {
+      console.warn(`GitHub compare diff fallback failed for ${owner}/${repo}#${prNumber}: ${error.message}`);
+    }
+  }
+
+  // Last-resort GitHub-only fallback. File patches have a 3,000-file API cap
+  // and GitHub can omit an individual oversized/binary patch, but this avoids
+  // dropping an entire review because the monolithic renderer is under load.
+  try {
+    const parts: string[] = [];
+    for (let page = 1; page <= 30; page += 1) {
+      const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}/files', {
+        owner, repo, pull_number: prNumber, per_page: 100, page,
+      });
+      const files = Array.isArray(data) ? data : [];
+      if (files.length === 0) break;
+
+      for (const file of files) {
+        const beforePath = file.status === 'added' ? '/dev/null' : (file.previous_filename || file.filename);
+        const afterPath = file.status === 'removed' ? '/dev/null' : file.filename;
+        if (typeof file.patch !== 'string' || !file.patch.trim()) {
+          throw new Error(`GitHub omitted the patch for ${file.filename}; refusing an incomplete diff fallback.`);
+        }
+        const patch = file.patch;
+        parts.push([
+          `diff --git a/${beforePath} b/${afterPath}`,
+          `--- ${beforePath === '/dev/null' ? '/dev/null' : `a/${beforePath}`}`,
+          `+++ ${afterPath === '/dev/null' ? '/dev/null' : `b/${afterPath}`}`,
+          patch,
+        ].join('\n'));
+      }
+      if (files.length < 100) break;
+      if (page === 30) {
+        throw new Error('GitHub pull-files fallback reached the 3,000-file API cap; refusing an incomplete diff fallback.');
+      }
+    }
+    if (parts.length > 0) {
+      console.warn(`Fetched PR file-patch fallback for ${owner}/${repo}#${prNumber}`);
+      return parts.join('\n');
+    }
+  } catch (error: any) {
+    console.warn(`GitHub PR file-patch fallback failed for ${owner}/${repo}#${prNumber}: ${error.message}`);
+  }
+
+  throw primaryError || new Error(`Failed to fetch PR diff for ${owner}/${repo}#${prNumber}`);
 }
 
 export async function getPRInfo(octokit: any, owner: string, repo: string, prNumber: number) {

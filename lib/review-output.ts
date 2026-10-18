@@ -91,3 +91,29 @@ export function parseReviewResponse(response: string): ParsedReviewResponse {
     normalized,
   };
 }
+
+export function combineChunkedReviewResponses(chunks: Array<{ label: string; parsed: ParsedReviewResponse }>): ParsedReviewResponse {
+  if (chunks.length === 0) {
+    throw new Error('Cannot combine an empty set of review responses.');
+  }
+  if (chunks.length === 1) return chunks[0].parsed;
+
+  const failures = chunks.filter(({ parsed }) => parsed.verdict === 'FAIL');
+  const verdict: ReviewVerdict = failures.length > 0 ? 'FAIL' : 'PASS';
+  const relevant = failures.length > 0 ? failures : chunks;
+  const findings = relevant.flatMap(({ label, parsed }) =>
+    parsed.summary.split(/\r?\n/).filter((line) => /^-\s+/.test(line)).map((line) => `- [${label}] ${line.replace(/^-\s+/, '')}`),
+  ).slice(0, 12);
+  const normalized = [
+    `VERDICT: ${verdict}`,
+    '',
+    ...(findings.length > 0 ? findings : ['- No blocking issues were identified across the reviewed subsystems.']),
+  ].join('\n');
+
+  return {
+    verdict,
+    title: verdict === 'PASS' ? '✅ Approved' : '❌ Changes requested',
+    summary: normalized.substring(0, 65535),
+    normalized,
+  };
+}
