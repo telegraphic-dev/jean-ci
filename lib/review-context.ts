@@ -59,6 +59,24 @@ function splitDiffFiles(diff: string): Array<{ path: string; content: string }> 
   }));
 }
 
+function splitOversizedDiffFile(content: string, limit: number): string[] {
+  if (content.length <= limit) return [content];
+
+  const hunkStart = content.search(/^@@ /m);
+  const header = hunkStart >= 0 ? content.slice(0, hunkStart) : '';
+  const body = hunkStart >= 0 ? content.slice(hunkStart) : content;
+  const payloadLimit = Math.max(1, limit - header.length);
+  const pieces: string[] = [];
+
+  for (const hunk of body.split(/(?=^@@ )/m).filter(Boolean)) {
+    for (let offset = 0; offset < hunk.length; offset += payloadLimit) {
+      pieces.push(`${header}${hunk.slice(offset, offset + payloadLimit)}`);
+    }
+  }
+
+  return pieces.length > 0 ? pieces : [content];
+}
+
 /** Keep all files from a subsystem together until the review budget is full. */
 export function splitReviewDiffBySubsystem(diff: string, limit: number): ReviewDiffChunk[] {
   if (!diff.trim()) return [{ subsystem: 'empty diff', diff }];
@@ -74,11 +92,13 @@ export function splitReviewDiffBySubsystem(diff: string, limit: number): ReviewD
 
   for (const file of splitDiffFiles(diff)) {
     const subsystem = classifySubsystem(file.path);
-    const current = currentBySubsystem.get(subsystem) || '';
-    if (current && current.length + file.content.length + 1 > safeLimit) {
-      flush(subsystem);
+    for (const segment of splitOversizedDiffFile(file.content, safeLimit)) {
+      const current = currentBySubsystem.get(subsystem) || '';
+      if (current && current.length + segment.length + 1 > safeLimit) {
+        flush(subsystem);
+      }
+      currentBySubsystem.set(subsystem, `${currentBySubsystem.get(subsystem) ? `${currentBySubsystem.get(subsystem)}\n` : ''}${segment}`);
     }
-    currentBySubsystem.set(subsystem, `${currentBySubsystem.get(subsystem) ? `${currentBySubsystem.get(subsystem)}\n` : ''}${file.content}`);
   }
   for (const subsystem of [...currentBySubsystem.keys()]) flush(subsystem);
   return chunks;

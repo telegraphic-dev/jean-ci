@@ -186,9 +186,10 @@ export async function getPRDiff(
       for (const file of files) {
         const beforePath = file.status === 'added' ? '/dev/null' : (file.previous_filename || file.filename);
         const afterPath = file.status === 'removed' ? '/dev/null' : file.filename;
-        const patch = typeof file.patch === 'string' && file.patch.trim()
-          ? file.patch
-          : `# GitHub omitted this ${file.status} patch because it is binary or too large to render.`;
+        if (typeof file.patch !== 'string' || !file.patch.trim()) {
+          throw new Error(`GitHub omitted the patch for ${file.filename}; refusing an incomplete diff fallback.`);
+        }
+        const patch = file.patch;
         parts.push([
           `diff --git a/${beforePath} b/${afterPath}`,
           `--- ${beforePath === '/dev/null' ? '/dev/null' : `a/${beforePath}`}`,
@@ -197,6 +198,9 @@ export async function getPRDiff(
         ].join('\n'));
       }
       if (files.length < 100) break;
+      if (page === 30) {
+        throw new Error('GitHub pull-files fallback reached the 3,000-file API cap; refusing an incomplete diff fallback.');
+      }
     }
     if (parts.length > 0) {
       console.warn(`Fetched PR file-patch fallback for ${owner}/${repo}#${prNumber}`);

@@ -72,3 +72,20 @@ test('large diffs are grouped into bounded subsystem review contexts', () => {
   assert.match(contexts[0]?.context || '', /subsystem segment frontend \(1\/3\)/);
   assert.match(contexts[1]?.context || '', /subsystem segment backend \(2\/3\)/);
 });
+
+test('oversized file patches are split without dropping later hunks', () => {
+  const diff = [
+    'diff --git a/lib/large.ts b/lib/large.ts',
+    '--- a/lib/large.ts',
+    '+++ b/lib/large.ts',
+    '@@ -1 +1 @@',
+    `+${'a'.repeat(120)}`,
+    '@@ -2 +2 @@',
+    `+${'b'.repeat(120)}`,
+  ].join('\n');
+  const chunks = splitReviewDiffBySubsystem(diff, 100);
+
+  assert.ok(chunks.length > 1);
+  assert.equal(chunks.every((chunk) => chunk.subsystem === 'backend'), true);
+  assert.equal(chunks.map((chunk) => chunk.diff).join('').split('b').length - 1 >= 120, true);
+});
