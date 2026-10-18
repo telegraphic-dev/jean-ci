@@ -36,6 +36,54 @@ export function extractChangedFilePaths(diff: string): string[] {
   return [...paths];
 }
 
+export interface ReviewDiffChunk {
+  subsystem: string;
+  diff: string;
+}
+
+function classifySubsystem(path: string): string {
+  const normalized = path.toLowerCase();
+  if (normalized.startsWith('.github/') || normalized.startsWith('terraform/') || normalized.startsWith('infra/') || /(^|\/)(dockerfile|docker-compose|kubernetes|helm)(\.|\/|$)/.test(normalized)) return 'infrastructure';
+  if (normalized.startsWith('docs/') || /(^|\/)(readme|changelog|license)(\.|$)/.test(normalized)) return 'documentation';
+  if (/(^|\/)(test|tests|__tests__|spec)(\/|\.|$)/.test(normalized)) return 'tests';
+  if (normalized.startsWith('app/') || normalized.startsWith('components/') || normalized.startsWith('pages/') || normalized.startsWith('frontend/')) return 'frontend';
+  if (normalized.startsWith('api/') || normalized.startsWith('lib/') || normalized.startsWith('server/') || normalized.startsWith('backend/') || normalized.startsWith('db/')) return 'backend';
+  return path.split('/')[0] || 'other';
+}
+
+function splitDiffFiles(diff: string): Array<{ path: string; content: string }> {
+  const sections = diff.split(/(?=^diff --git )/m).filter(Boolean);
+  return sections.map((content) => ({
+    path: extractChangedFilePaths(content)[0] || 'unknown-file',
+    content,
+  }));
+}
+
+/** Keep all files from a subsystem together until the review budget is full. */
+export function splitReviewDiffBySubsystem(diff: string, limit: number): ReviewDiffChunk[] {
+  if (!diff.trim()) return [{ subsystem: 'empty diff', diff }];
+  const safeLimit = Math.max(1, limit);
+  const chunks: ReviewDiffChunk[] = [];
+  const currentBySubsystem = new Map<string, string>();
+
+  const flush = (subsystem: string) => {
+    const content = currentBySubsystem.get(subsystem);
+    if (content) chunks.push({ subsystem, diff: content });
+    currentBySubsystem.delete(subsystem);
+  };
+
+  for (const file of splitDiffFiles(diff)) {
+    const subsystem = classifySubsystem(file.path);
+    const current = currentBySubsystem.get(subsystem) || '';
+    if (current && current.length + file.content.length + 1 > safeLimit) {
+      flush(subsystem);
+    }
+    currentBySubsystem.set(subsystem, `${currentBySubsystem.get(subsystem) ? `${currentBySubsystem.get(subsystem)}\n` : ''}${file.content}`);
+  }
+  for (const subsystem of [...currentBySubsystem.keys()]) flush(subsystem);
+  return chunks;
+}
+
 export function buildReviewContext(
   input: {
     title?: string | null;
@@ -90,4 +138,16 @@ export function buildReviewContext(
     truncateReviewDiff(input.diff, input.diffLimit),
     '```',
   ].join('\n');
+}
+
+export function buildReviewContexts(input: Parameters<typeof buildReviewContext>[0]): Array<{ label: string; context: string }> {
+  const chunks = splitReviewDiffBySubsystem(input.diff, input.diffLimit);
+  return chunks.map((chunk, index) => {
+    const label = `${chunk.subsystem} (${index + 1}/${chunks.length})`;
+    const context = buildReviewContext({ ...input, diff: chunk.diff });
+    return {
+      label,
+      context: `${context}\n\n## Review Scope\nThis is subsystem segment ${label}. Review this segment rigorously; do not assume unshown subsystems are safe.`,
+    };
+  });
 }

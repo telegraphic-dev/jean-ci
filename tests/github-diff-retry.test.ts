@@ -61,3 +61,37 @@ test('getPRDiff does not retry non-retryable GitHub errors', async () => {
   );
   assert.equal(calls, 1);
 });
+
+test('getPRDiff falls back to GitHub compare after the pull diff endpoint is exhausted', async () => {
+  const calls: Array<{ route: string; params: Record<string, unknown> }> = [];
+  const octokit = {
+    request: async (route: string, params: Record<string, unknown>) => {
+      calls.push({ route, params });
+      if (route.includes('/pulls/{pull_number}')) {
+        const error = new Error('diff is temporarily unavailable') as Error & { status: number };
+        error.status = 503;
+        throw error;
+      }
+      return { data: 'diff --git a/fallback b/fallback\n+ok\n' };
+    },
+  };
+
+  const diff = await getPRDiff(octokit, 'telegraphic-dev', 'jean-ci', 158, {
+    maxAttempts: 2,
+    retryDelayMs: 0,
+    baseRef: 'base-sha',
+    headRef: 'head-sha',
+  });
+
+  assert.equal(diff, 'diff --git a/fallback b/fallback\n+ok\n');
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2], {
+    route: 'GET /repos/{owner}/{repo}/compare/{basehead}',
+    params: {
+      owner: 'telegraphic-dev',
+      repo: 'jean-ci',
+      basehead: 'base-sha...head-sha',
+      mediaType: { format: 'diff' },
+    },
+  });
+});

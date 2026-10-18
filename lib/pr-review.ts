@@ -1,10 +1,10 @@
 import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db.ts';
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
 import { callOpenClaw } from './llm.ts';
-import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
+import { buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
 import { APP_BASE_URL } from './config.ts';
 import { buildExecutionFailureOutcome } from './review-failure.ts';
-import { buildReviewContext, truncateReviewDiff } from './review-context.ts';
+import { buildReviewContexts, truncateReviewDiff } from './review-context.ts';
 import { isCurrentReviewHead } from './review-head.ts';
 
 const BASE_URL = APP_BASE_URL;
@@ -76,10 +76,11 @@ export async function runPRReview(installationId: number, owner: string, repo: s
   const octokit = await getInstallationOctokit(installationId);
 
   // Get PR info and diff first
-  const [prInfo, diff] = await Promise.all([
-    getPRInfo(octokit, owner, repo, prNumber),
-    getPRDiff(octokit, owner, repo, prNumber),
-  ]);
+  const prInfo = await getPRInfo(octokit, owner, repo, prNumber);
+  const diff = await getPRDiff(octokit, owner, repo, prNumber, {
+    baseRef: prInfo.base?.sha,
+    headRef: prInfo.head?.sha,
+  });
 
   if (!isCurrentReviewHead(headSha, prInfo.head?.sha)) {
     console.log(`⏭️ Skipping stale PR review for ${repoFullName}#${prNumber} (${headSha}); current head is ${prInfo.head?.sha}`);
@@ -96,7 +97,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
   const diffPreview = truncateReviewDiff(diff, DIFF_PREVIEW_LIMIT);
-  const reviewContext = buildReviewContext({
+  const reviewContexts = buildReviewContexts({
     title: prInfo.title,
     body: prInfo.body,
     diff,
@@ -152,25 +153,33 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         }
       }
 
-      const result = await callOpenClaw(check.prompt, reviewContext, {
-        owner,
-        repo,
-        prNumber,
-        promptName: check.isGlobal ? 'review' : check.name,
-        headSha,
-      });
-      if (!result.success) {
-        const failure = buildExecutionFailureOutcome(result.errorType, result.error);
-        await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
-          conclusion: failure.conclusion,
-          title: failure.title,
-          summary: failure.summary,
+      const chunkedResponses = [];
+      let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
+      for (const [index, reviewContext] of reviewContexts.entries()) {
+        const result = await callOpenClaw(check.prompt, reviewContext.context, {
+          owner,
+          repo,
+          prNumber,
+          promptName: `${check.isGlobal ? 'review' : check.name}-${index + 1}`,
+          headSha,
         });
-        console.log(`Check "${check.name}" ${failure.conclusion === 'neutral' ? 'marked neutral due to gateway outage' : 'failed during reviewer execution'}`);
+        if (!result.success) {
+          executionFailure = buildExecutionFailureOutcome(result.errorType, result.error);
+          break;
+        }
+        chunkedResponses.push({ label: reviewContext.label, parsed: parseReviewResponse(result.response) });
+      }
+      if (executionFailure) {
+        await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
+          conclusion: executionFailure.conclusion,
+          title: executionFailure.title,
+          summary: executionFailure.summary,
+        });
+        console.log(`Check "${check.name}" ${executionFailure.conclusion === 'neutral' ? 'marked neutral due to gateway outage' : 'failed during reviewer execution'}`);
         continue;
       }
 
-      const parsed = parseReviewResponse(result.response);
+      const parsed = combineChunkedReviewResponses(chunkedResponses);
       const conclusion = getConclusionForVerdict(parsed.verdict);
 
       const latestPrInfo = await getPRInfo(octokit, owner, repo, prNumber);

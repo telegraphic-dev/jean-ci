@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from '../lib/review-output.ts';
+import { buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from '../lib/review-output.ts';
 
 test('validateReviewPrompt accepts structured prompt', () => {
   const result = validateReviewPrompt(`
@@ -56,4 +56,15 @@ test('parseReviewResponse requires verdict on first non-empty line', () => {
     () => parseReviewResponse('Looks good\nVERDICT: PASS'),
     /must start with "VERDICT: PASS" or "VERDICT: FAIL"/
   );
+});
+
+test('combineChunkedReviewResponses fails the whole review when any subsystem fails', () => {
+  const combined = combineChunkedReviewResponses([
+    { label: 'frontend (1/2)', parsed: parseReviewResponse('VERDICT: PASS\n- UI is safe') },
+    { label: 'backend (2/2)', parsed: parseReviewResponse('VERDICT: FAIL\n- Authorization is missing') },
+  ]);
+
+  assert.equal(combined.verdict, 'FAIL');
+  assert.match(combined.summary, /\[backend \(2\/2\)\] Authorization is missing/);
+  assert.doesNotMatch(combined.summary, /UI is safe/);
 });
