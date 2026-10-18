@@ -161,6 +161,10 @@ export function buildReviewContext(
 }
 
 export function buildReviewContexts(input: Parameters<typeof buildReviewContext>[0]): Array<{ label: string; context: string }> {
+  if (input.diff.length <= input.diffLimit) {
+    return [{ label: 'full diff (1/1)', context: buildReviewContext(input) }];
+  }
+
   const chunks = splitReviewDiffBySubsystem(input.diff, input.diffLimit);
   return chunks.map((chunk, index) => {
     const label = `${chunk.subsystem} (${index + 1}/${chunks.length})`;

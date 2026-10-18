@@ -89,3 +89,16 @@ test('oversized file patches are split without dropping later hunks', () => {
   assert.equal(chunks.every((chunk) => chunk.subsystem === 'backend'), true);
   assert.equal(chunks.map((chunk) => chunk.diff).join('').split('b').length - 1 >= 120, true);
 });
+
+test('small diffs retain one full cross-subsystem review context', () => {
+  const diff = [
+    'diff --git a/lib/service.ts b/lib/service.ts\n+implementation',
+    'diff --git a/tests/service.test.ts b/tests/service.test.ts\n+test',
+  ].join('\n');
+  const contexts = buildReviewContexts({ title: 'Small change', diff, diffLimit: 10_000 });
+
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0]?.label, 'full diff (1/1)');
+  assert.match(contexts[0]?.context || '', /lib\/service\.ts/);
+  assert.match(contexts[0]?.context || '', /tests\/service\.test\.ts/);
+});

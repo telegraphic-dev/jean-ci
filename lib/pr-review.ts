@@ -170,6 +170,17 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         chunkedResponses.push({ label: reviewContext.label, parsed: parseReviewResponse(result.response) });
       }
       if (executionFailure) {
+        const priorFailure = chunkedResponses.find(({ parsed }) => parsed.verdict === 'FAIL');
+        if (priorFailure) {
+          const preservedFailure = combineChunkedReviewResponses(chunkedResponses);
+          await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
+            conclusion: 'failure',
+            title: preservedFailure.title,
+            summary: `${preservedFailure.summary}\n\n- Review of remaining segments stopped after a reviewer execution failure: ${executionFailure.summary}`,
+          });
+          console.log(`Check "${check.name}" preserved an earlier blocking finding after a later reviewer execution failure`);
+          continue;
+        }
         await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
           conclusion: executionFailure.conclusion,
           title: executionFailure.title,
