@@ -12,8 +12,9 @@ Review this PR for API contract drift. Block the PR if any of these are true:
 - API behavior changed without updating parity coverage (especially `tests/public-openapi-parity.test.ts`).
 
 Validation expectations:
-- Run tests and confirm parity coverage passes.
-- Confirm docs still list `/api/public/openapi.json`.
+- When the diff touches a public API handler, OpenAPI definition, parity test, or public-API documentation, run the relevant tests and confirm parity coverage passes.
+- When none of those surfaces changed, PASS after confirming that the supplied diff contains no public API contract change. Do not fail an unrelated PR solely because a checkout or test execution is unavailable.
+- Confirm docs still list `/api/public/openapi.json` only when public API documentation changed.
 
 Required response format:
 - First non-empty line must be exactly `VERDICT: PASS` or `VERDICT: FAIL`.
