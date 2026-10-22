@@ -167,7 +167,12 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           executionFailure = buildExecutionFailureOutcome(result.errorType, result.error);
           break;
         }
-        chunkedResponses.push({ label: reviewContext.label, parsed: parseReviewResponse(result.response) });
+        try {
+          chunkedResponses.push({ label: reviewContext.label, parsed: parseReviewResponse(result.response) });
+        } catch (error) {
+          executionFailure = buildExecutionFailureOutcome('unknown', error instanceof Error ? error.message : String(error));
+          break;
+        }
       }
       if (executionFailure) {
         const priorFailure = chunkedResponses.find(({ parsed }) => parsed.verdict === 'FAIL');

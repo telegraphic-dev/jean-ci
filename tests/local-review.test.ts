@@ -124,6 +124,32 @@ await test('runLocalReview reports invalid git-backed prompt files without calli
   ]);
 });
 
+await test('runLocalReview reports malformed output and continues independent checks', async () => {
+  const result = await runLocalReview({
+    repo: 'telegraphic-dev/jean-ci',
+    diff: 'diff --git a/file.ts b/file.ts\n+const value = true;\n',
+    headSha: 'abc123',
+    __deps: {
+      getUserPrompt: async () => 'Global review',
+      fetchChecksFromGit: async () => [{
+        name: 'security',
+        prompt: '# Security\n\n## Purpose\nCatch regressions.\n\n## Review Instructions\nInspect authorization.\n\n## Verdict Criteria\nPASS if safe. FAIL if unsafe.',
+      }],
+      callReviewer: async (prompt: string) => ({
+        success: true,
+        response: prompt === 'Global review'
+          ? 'VERDICT: FAIL\n- Review profile: diff=reviewed; repository=inspected; tests=not needed.'
+          : 'VERDICT: PASS\nNo security regression.',
+      } as const),
+    },
+  } as any);
+  assert.equal(result.executionFailures.length, 1);
+  assert.equal(result.executionFailures[0].name, 'Code Review');
+  assert.equal(result.executionFailures[0].errorType, 'unknown');
+  assert.match(result.executionFailures[0].error, /FAIL must include an explanation/);
+  assert.deepEqual(result.checks.map(({ name, verdict }) => [name, verdict]), [['security', 'PASS']]);
+});
+
 await test('runLocalReview rejects unknown selectedChecks instead of silently dropping them', async () => {
   await assert.rejects(
     () => runLocalReview({

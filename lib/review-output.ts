@@ -63,20 +63,32 @@ export function parseReviewResponse(response: string): ParsedReviewResponse {
   const trimmed = response.trim();
   const lines = trimmed.split(/\r?\n/).map((line) => line.trim());
   const firstMeaningfulLine = lines.find((line) => line.length > 0) || '';
-  const verdictMatch = firstMeaningfulLine.match(/^\**VERDICT:\s*(PASS|FAIL)\b.*$/i);
+  const verdictMatch = firstMeaningfulLine.match(/^\**VERDICT:\s*(PASS|FAIL)\b\**(.*)$/i);
 
   if (!verdictMatch) {
     throw new Error('Reviewer response must start with "VERDICT: PASS" or "VERDICT: FAIL" on the first non-empty line.');
   }
 
   const verdict = verdictMatch[1].toUpperCase() as ReviewVerdict;
-  const detailLines = lines.slice(lines.indexOf(firstMeaningfulLine) + 1).filter(Boolean);
-  const bulletLines = detailLines.filter((line) => /^[-*]\s+/.test(line));
-  const normalizedBullets = (bulletLines.length ? bulletLines : detailLines)
-    .slice(0, 5)
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter(Boolean)
-    .map((line) => `- ${line}`);
+  // Prose and continuation lines carry findings too. Selecting only bullets
+  // silently drops them as soon as the reviewer adds a profile metadata bullet.
+  const inlineExplanation = verdictMatch[2].replace(/^\s*[-–—:]\s*/, '').trim();
+  const details = [inlineExplanation, ...lines.slice(lines.indexOf(firstMeaningfulLine) + 1)]
+    .map((line) => line.replace(/^[-*]\s+/, '').trim())
+    .filter(Boolean);
+  const hasExplanation = details.some((line) => {
+    const content = line.replace(/^#{1,6}\s+/, '').replace(/[*_`]/g, '').trim();
+    return content.length > 0
+      && !/^[-=~\s]+$/.test(content)
+      && !/^review profile\s*:/i.test(content)
+      && !/^(?:(?:diff|repository|tests)\s*=\s*[^;]+;?\s*)+$/i.test(content);
+  });
+  if (verdict === 'FAIL' && !hasExplanation) {
+    // The caller reports a failed review execution, not REQUEST_CHANGES.
+    // Do not turn a malformed reviewer response into a code finding or a PASS.
+    throw new Error('Reviewer FAIL must include an explanation beyond review profile metadata. Rerun the review; no actionable code finding was supplied.');
+  }
+  const normalizedBullets = details.map((line) => `- ${line}`);
 
   const fallbackLine = verdict === 'PASS'
     ? '- No blocking issues were identified against the provided criteria.'
@@ -103,7 +115,7 @@ export function combineChunkedReviewResponses(chunks: Array<{ label: string; par
   const relevant = failures.length > 0 ? failures : chunks;
   const findings = relevant.flatMap(({ label, parsed }) =>
     parsed.summary.split(/\r?\n/).filter((line) => /^-\s+/.test(line)).map((line) => `- [${label}] ${line.replace(/^-\s+/, '')}`),
-  ).slice(0, 12);
+  );
   const normalized = [
     `VERDICT: ${verdict}`,
     '',
