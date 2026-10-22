@@ -1,4 +1,4 @@
-import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db.ts';
+import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, setReservedCheckInput, updateCheckRun } from './db.ts';
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
 import { callOpenClaw } from './llm.ts';
 import { withReviewInterruption, REVIEW_INTERRUPTION_NOTICE, boundReviewMarkdown, linkReviewedLocations, buildPRReviewBody, buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
@@ -67,11 +67,12 @@ async function completeCheck(
   });
 }
 
-export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string) {
+export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string, restart?: { checkId: number; checkName: string }) {
   const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
 
   if (!repoConfig || !repoConfig.pr_review_enabled) {
+    if (restart) throw new Error('Repository review disabled');
     console.log(`PR review disabled for ${repoFullName}`);
     return;
   }
@@ -85,7 +86,8 @@ export async function runPRReview(installationId: number, owner: string, repo: s
     headRef: prInfo.head?.sha,
   });
 
-  if (!isCurrentReviewHead(headSha, prInfo.head?.sha)) {
+  if (!isCurrentReviewHead(headSha, prInfo.head?.sha) || (restart && prInfo.state !== 'open')) {
+    if (restart) throw new Error('PR closed or head changed');
     console.log(`⏭️ Skipping stale PR review for ${repoFullName}#${prNumber} (${headSha}); current head is ${prInfo.head?.sha}`);
     return;
   }
@@ -95,7 +97,8 @@ export async function runPRReview(installationId: number, owner: string, repo: s
   // Fetch check files from repo
   const checkFiles = await fetchPRCheckFiles(octokit, owner, repo, headSha);
   const userPrompt = await getConfig('user_prompt') || DEFAULT_USER_PROMPT;
-  const checks = normalizeChecks(userPrompt, checkFiles);
+  const checks = normalizeChecks(userPrompt, checkFiles).filter(c => !restart || c.name === restart.checkName);
+  if (restart && checks.length !== 1) throw new Error('The requested check no longer exists at the reviewed head');
 
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
@@ -105,7 +108,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
   const checkRuns = [];
   for (const check of checks) {
     try {
-      const dbId = await insertCheckRun({
+      const dbId = restart?.checkId ?? await insertCheckRun({
         repo: repoFullName,
         pr_number: prNumber,
         check_name: check.name,
@@ -116,12 +119,14 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         diff_preview: diffPreview,
       });
 
+      if (restart) await setReservedCheckInput(dbId, headSha, { prompt: check.prompt, pr_title: prInfo.title, pr_body: prInfo.body || '', diff_preview: diffPreview });
       const checkRun = await createCheck(octokit, owner, repo, `jean-ci / ${check.name}`, headSha, 'queued');
       await setCheckRunGithubId(dbId, checkRun.id);
 
       checkRuns.push({ check, checkRun, dbId });
       console.log(`Created pending check: ${check.name} (db: ${dbId})`);
     } catch (error: any) {
+      if (restart) throw error;
       console.error(`Error creating check "${check.name}":`, error.message);
     }
   }

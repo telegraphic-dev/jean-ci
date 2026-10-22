@@ -33,7 +33,7 @@ function fixture() {
   };
   const deps = {
     getCheck: async () => ({ id: 1, repo: 'owner/repo', pr_number: 2, head_sha: 'head', status: 'in_progress' }),
-    getRepo: async () => ({ installation_id: 3 }),
+    getRepo: async () => ({ installation_id: 3, pr_review_enabled: true }),
     getInstallationOctokit: async () => ({}), getPRInfo: async () => ({ head: { sha: 'head' }, state: 'open' }),
     store, client: () => client,
     claim: async (_b: any, p: any, choice: string, actor: string) => {
@@ -184,7 +184,7 @@ test('HTTP client preserves requester/profile and sends only exact once/deny con
   const calls: Array<{ url: string; init: RequestInit }> = [];
   global.fetch = async (url, init = {}) => {
     calls.push({ url: String(url), init });
-    if (String(url).endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true } });
+    if (String(url).endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true, run_approval_timeout_v1: true } });
     if (String(url).endsWith('/approval')) return Response.json({ status: 'resolved' });
     return Response.json(waiting);
   };
@@ -196,4 +196,42 @@ test('HTTP client preserves requester/profile and sends only exact once/deny con
     assert.deepEqual(JSON.parse(calls.at(-1)!.init.body as string), { request_id: 'approval_1', execution_generation: 7, choice: 'once' });
     assert.equal((calls[1].init.headers as any)['Idempotency-Key'], 'exact-key');
   } finally { global.fetch = oldFetch; if (oldUrl == null) delete process.env.OPENCLAW_GATEWAY_URL; else process.env.OPENCLAW_GATEWAY_URL = oldUrl; }
+});
+
+test('30-minute native approval window is excluded from the 9-minute execution budget, then active work times out', async () => {
+  for (const finish of [true, false]) {
+    const f = fixture(); let clock = 0; let steps = 0;
+    f.setCurrent({ ...waiting, pending_controls: [{ ...prompt, timeout_s: 1800, expires_at: 1800 }] });
+    const review = runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1, now: () => clock,
+      sleep: async () => {
+        if (++steps === 1) clock += 1_200_000; // twenty minutes of real approval waiting
+        else if (steps === 2) { clock += 100; f.setCurrent(finish ? completed : { run_id: 'run_test', status: 'running' }); }
+        else clock += 540_001;
+      },
+    });
+    if (finish) assert.match(await review, /PASS/);
+    else await assert.rejects(review, /Timed out/);
+    assert.equal(f.creates, 1); assert.equal(f.posts, 0);
+  }
+});
+
+test('completed check keeps safe expired approval history and never polls or returns tool data', async () => {
+  const f = fixture(); f.binding.denied = true;
+  f.binding.history = [{ prompt_id: 'expired1', execution_generation: 7, outcome: 'expired', expiresAt: '2026-10-22T20:15:24.000Z' }];
+  f.client.status = async () => { throw new Error('completed history must not need native access'); };
+  const data = await getReviewApprovals(1, { ...f.deps, getCheck: async () => ({ status: 'completed' }) } as any);
+  assert.equal(data.requests.length, 0); assert.equal(data.history[0].outcome, 'expired'); assert.equal(data.can_restart, true);
+  assert.ok(!JSON.stringify(data.history).includes(prompt.command));
+  f.binding.history = [];
+  assert.equal((await getReviewApprovals(1, { ...f.deps, getCheck: async () => ({ status: 'completed' }) } as any)).legacy_incomplete, true);
+});
+
+test('client fails closed before submission without negotiated native per-run timeout capability', async () => {
+  const saved = global.fetch; let creates = 0;
+  global.fetch = async url => {
+    if (String(url).endsWith('/runs')) creates++;
+    return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true } });
+  };
+  try { await assert.rejects(hermesClient().supported(), /per-run approval window extension/); assert.equal(creates, 0); }
+  finally { global.fetch = saved; }
 });

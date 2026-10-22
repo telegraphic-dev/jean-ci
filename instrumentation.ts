@@ -14,10 +14,17 @@ export async function register() {
     try {
       const { initDatabase, cleanupOldEvents, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
+      const startupStartedAt = new Date();
       // Initialize database
       await initDatabase();
+      const { queuedReviewRestarts } = await import('./lib/db');
+      const { dispatchReviewRestart } = await import('./lib/review-restart');
+      const drainRestarts = async () => {
+        for (const id of await queuedReviewRestarts()) void dispatchReviewRestart(id).catch(console.error);
+      };
+      await drainRestarts();
+      setInterval(() => drainRestarts().catch(console.error), 30_000);
 
-      const startupStartedAt = new Date();
       const { recoverInterruptedChecks } = await import('./lib/interrupted-check-recovery');
       const { getInstallationOctokit, getCheck, updateCheck } = await import('./lib/github');
       const recover = () => recoverInterruptedChecks({

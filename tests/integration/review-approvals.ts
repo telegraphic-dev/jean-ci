@@ -42,11 +42,12 @@ const githubFixture = { request: async (route: string, params: any) => {
   return { data: comments };
 } };
 let currentHead = 'a'.repeat(40);
+let currentState = 'open';
 let nextCheck = 100;
 const moduleUrl = (name: string) => new URL(`../../lib/${name}.ts`, import.meta.url).href;
 mock.module(moduleUrl('github'), { namedExports: {
   getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => [],
-  getPRInfo: async () => ({ title: 'CSRF context fixture', head: { sha: currentHead }, base: { sha: 'b'.repeat(40) }, state: 'open' }),
+  getPRInfo: async () => ({ title: 'CSRF context fixture', head: { sha: currentHead }, base: { sha: 'b'.repeat(40) }, state: currentState }),
   getPRDiff: async () => 'diff --git a/auth.ts b/auth.ts\n@@ -1 +1 @@\n-old\n+new\n',
   createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { const payload = args.at(-1);
     if (payload.output?.title === 'Tool approval required' && waitStatusFailures > 0) { waitStatusFailures--; throw new Error('GitHub 503'); }
@@ -64,10 +65,10 @@ const keys = new Map<string, string>();
 let lost = false;
 const prompt = { kind: 'approval', prompt_id: 'approval_native_shape', execution_generation: 11, command: 'python inspect_csrf.py', description: 'Read required source context', choices: ['once', 'deny', 'session', 'always'] };
 const oldFetch = global.fetch;
-global.fetch = async (url, init = {}) => {
+const fixtureFetch: typeof fetch = async (url, init = {}) => {
   const path = String(url);
   assert.ok(path.startsWith('http://hermes-fixture.invalid/v1/'), 'no live network requests');
-  if (path.endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true } });
+  if (path.endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true, run_approval_timeout_v1: true } });
   if (path.endsWith('/runs') && init.method === 'POST') {
     const key = (init.headers as Record<string, string>)['Idempotency-Key'];
     assert.ok(key);
@@ -89,6 +90,7 @@ global.fetch = async (url, init = {}) => {
   }
   return Response.json(current);
 };
+global.fetch = fixtureFetch;
 
 test('actual PR runner + PostgreSQL: once resumes, deny/expiry incomplete, no autoapproval or duplicate runs', async () => {
   try {
@@ -273,4 +275,45 @@ test('optional Discord notice is safe, read back, durably deduplicated, and abse
     await notifyReviewApproval(id); assert.equal(calls, 2);
     await notifyReviewApproval(id); assert.equal(calls, 2);
   } finally { delete process.env.REVIEW_APPROVAL_DISCORD_WEBHOOK_URL; global.fetch = oldFetch; }
+});
+
+test('expired-check restart is durable and deduplicated across concurrent clicks and dispatchers; stale head/closed/disabled/live refuse', async () => {
+  const { restartReview, dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Code Review', head_sha: currentHead });
+  let b = await db.reviewRunStore.reserve(id, 1, hermesClient().scope, 'expired-source');
+  await db.reviewRunStore.bind(id, 1, 'run_expired_restart'); b = { ...b, run_id: 'run_expired_restart' };
+  const p = { ...prompt, kind: 'approval' as const, expires_at: Date.now() / 1000 - 1, timeout_s: 1800 };
+  await db.reviewRunStore.observe(b, async () => ({ run_id: b.run_id!, status: 'waiting_for_approval', execution_generation: 11, pending_controls: [p] }));
+  await db.reviewRunStore.observe(b, async () => ({ run_id: b.run_id!, status: 'completed', output: 'INCOMPLETE', pending_controls: [] }));
+  await db.updateCheckRun(id, { status: 'completed', conclusion: 'failure' });
+  const history = await getReviewApprovals(id);
+  assert.equal(history.history[0].outcome, 'expired'); assert.equal(history.requests.length, 0); assert.equal(history.can_restart, true);
+  assert.ok(!JSON.stringify(history).includes(p.command));
+  let originalStatus = 'completed';
+  global.fetch = async (url, init = {}) => String(url).endsWith('/run_expired_restart') ? Response.json({ run_id: 'run_expired_restart', status: originalStatus, pending_controls: [] }) : fixtureFetch(url, init);
+  try {
+    currentState = 'closed'; await assert.rejects(restartReview(id, 'operator'), /PR closed/); currentState = 'open';
+    currentHead = 'c'.repeat(40); await assert.rejects(restartReview(id, 'operator'), /head changed/); currentHead = 'a'.repeat(40);
+    await db.setRepoReviewEnabled('fixture/repo', false); await assert.rejects(restartReview(id, 'operator'), /disabled/); await db.setRepoReviewEnabled('fixture/repo', true);
+    for (const status of ['running', 'unknown']) { originalStatus = status; await assert.rejects(restartReview(id, 'operator'), /still live or unknown/); } originalStatus = 'completed';
+    const before = createCount; const posts = approvalPosts; const checkBefore = nextCheck;
+    const results = await Promise.all(Array.from({ length: 12 }, () => restartReview(id, 'operator')));
+    assert.equal(new Set(results.map(r => r.check_id)).size, 1);
+    const newId = results[0].check_id;
+    assert.notEqual(newId, id); assert.equal((await db.getCheckRun(id))?.status, 'completed');
+    assert.equal(createCount, before, 'link/POST reservation never auto-approves or starts an unreserved run');
+    mode = 'once';
+    const dispatches = Array.from({ length: 8 }, () => dispatchReviewRestart(id));
+    for (let i = 0; i < 200 && !(await db.reviewRunStore.get(newId))[0]?.pending.length; i++) await new Promise(r => setTimeout(r, 10));
+    const newBinding = (await db.reviewRunStore.get(newId))[0];
+    assert.ok(newBinding?.pending.length); assert.equal(createCount, before + 1); assert.equal(nextCheck, checkBefore + 1);
+    assert.equal(approvalPosts, posts, 'explicit restart must still wait for a separate approval');
+    await decideReviewApproval(newId, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 11, choice: 'once' }, 'operator');
+    await Promise.all(dispatches);
+    assert.equal((await db.getCheckRun(newId))?.conclusion, 'success');
+    assert.ok((await db.getCheckRun(newId))?.prompt); assert.equal((await db.getCheckRun(newId))?.pr_title, 'CSRF context fixture');
+    const repeated = await restartReview(id, 'operator'); assert.equal(repeated.check_id, newId);
+    await dispatchReviewRestart(id); assert.equal(createCount, before + 1);
+    assert.equal((await pool.query('SELECT * FROM jean_ci_review_restarts WHERE source_check_id=$1', [id])).rowCount, 1);
+  } finally { currentState = 'open'; currentHead = 'a'.repeat(40); global.fetch = oldFetch; }
 });

@@ -24,6 +24,7 @@ test('PR reviews report malformed output without requesting changes and preserve
       getRepo: async () => ({ pr_review_enabled: true }),
       getConfig: async () => configuredPrompt, DEFAULT_USER_PROMPT: 'Review',
       insertCheckRun: async () => 1, setCheckRunGithubId: async () => {},
+      setReservedCheckInput: async () => { throw new Error('Ordinary review must not update a reserved restart'); },
       updateCheckRun: async (...args) => { stored.push(args.at(-1)); },
     }});
     mock.module(moduleUrl('github'), { namedExports: {

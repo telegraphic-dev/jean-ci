@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export interface ApprovalPrompt {
   kind: 'approval'; prompt_id: string; execution_generation: number;
-  command: string; description: string; choices: string[]; timeout_s?: number;
+  command: string; description: string; choices: string[]; timeout_s?: number; expires_at?: number;
 }
 export interface HermesRun {
   run_id: string; status: string; execution_generation?: number;
@@ -35,10 +35,11 @@ export function hermesClient() {
       const features = data.features || {};
       if (features.run_submission !== true) return false;
       if (features.run_status !== true || features.run_approval_response !== true || features.approval_events !== true) throw new Error('Hermes Runs lacks approval capabilities');
+      if (features.run_approval_timeout_v1 !== true) throw new Error('INCOMPLETE: Hermes requires the per-run approval window extension; no review was submitted.');
       return true;
     },
     async create(input: string, instructions: string, key: string): Promise<HermesRun> {
-      const result = await request('/runs', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ input, instructions }) });
+      const result = await request('/runs', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ input, instructions, approval_timeout_s: 1800 }) });
       if (!validControlId(result.run_id)) throw new Error('Invalid Hermes run identity');
       return result;
     },
@@ -59,7 +60,8 @@ export function approvalPrompts(run: HermesRun): ApprovalPrompt[] {
   return (run.pending_controls || []).filter(p => p.kind === 'approval' && validControlId(p.prompt_id) && p.execution_generation === run.execution_generation && typeof p.command === 'string' && typeof p.description === 'string' && Array.isArray(p.choices));
 }
 
-export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; denied: boolean; settling?: boolean; }
+export interface ApprovalHistory { prompt_id: string; execution_generation: number; outcome: 'pending' | 'expired' | 'denied' | 'approved' | 'unconfirmed'; expiresAt: string | null; }
+export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; history?: ApprovalHistory[]; denied: boolean; settling?: boolean; }
 export interface RunStore {
   reserve(check: number, segment: number, scope: string, fingerprint: string): Promise<RunBinding>;
   bind(check: number, segment: number, run: string): Promise<void>;
@@ -69,7 +71,7 @@ export interface RunStore {
 }
 export async function runHermesReview(input: string, instructions: string, options: {
   checkId?: number; segment?: number; store?: RunStore; onWaiting?: () => Promise<void>;
-  client?: ReturnType<typeof hermesClient>; sleep?: () => Promise<void>; deadlineMs?: number;
+  client?: ReturnType<typeof hermesClient>; sleep?: () => Promise<void>; deadlineMs?: number; now?: () => number;
 } = {}): Promise<string> {
   const client = options.client || hermesClient();
   const store = options.store;
@@ -87,9 +89,16 @@ export async function runHermesReview(input: string, instructions: string, optio
     if (!id) throw last || new Error('Hermes submission failed');
     if (binding && store) { await store.bind(binding.check_id, binding.segment, id); binding = { ...binding, run_id: id }; }
   }
-  const deadline = Date.now() + (options.deadlineMs ?? 540_000);
+  const now = options.now || Date.now;
+  let previous = now();
+  let remaining = options.deadlineMs ?? 540_000;
+  let pausedUntil = 0;
   let failures = 0;
-  while (Date.now() < deadline) {
+  while (remaining > 0) {
+    const tick = now();
+    remaining -= Math.max(0, tick - Math.max(previous, Math.min(tick, pausedUntil)));
+    previous = tick;
+    if (remaining <= 0) break;
     let run: HermesRun;
     try {
       run = binding && store ? await store.observe(binding, () => client.status(id!)) : await client.status(id);
@@ -101,9 +110,12 @@ export async function runHermesReview(input: string, instructions: string, optio
     if (run.status === 'waiting_for_approval') {
       if (!binding) throw new Error('INCOMPLETE: Tool approval requires an authenticated PR check page; local reviews never auto-approve.');
       if (approvalPrompts(run).length) {
+        // Only a server-attested deadline pauses execution accounting. Old native
+        // versions cannot silently promise a longer approval wait.
+        pausedUntil = Math.max(0, ...approvalPrompts(run).map(p => Number.isFinite(p.expires_at) ? p.expires_at! * 1000 : 0));
         try { await options.onWaiting?.(); } catch { console.warn('Optional approval wait announcement unavailable; existing run retained'); }
       }
-    }
+    } else pausedUntil = 0;
     if (terminalRun(run.status)) {
       if (binding && store) {
         const saved = (await store.get(binding.check_id)).find(r => r.segment === binding!.segment);

@@ -20,6 +20,21 @@ export function requireApprovalCsrf(request: Request) {
   if (request.headers.get('origin') !== new URL(APP_BASE_URL).origin || request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') throw new ApprovalError(403, 'Same-origin JSON request required');
 }
 
+export async function readApprovalJson(request: Request): Promise<unknown> {
+  const reader = request.body?.getReader();
+  if (!reader) throw new ApprovalError(400, 'JSON body required');
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > 4096) { await reader.cancel(); throw new ApprovalError(413, 'Request too large'); }
+    chunks.push(value);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new ApprovalError(400, 'Invalid JSON'); }
+}
+
 const defaultDeps = {
   getCheck: getCheckRun, getRepo, getInstallationOctokit, getPRInfo,
   store: reviewRunStore, client: hermesClient,
@@ -35,20 +50,29 @@ async function activeCheck(id: number, deps: ApprovalDeps) {
 export async function getReviewApprovals(id: number, deps: ApprovalDeps = defaultDeps) {
   const check = await deps.getCheck(id);
   if (!check) throw new ApprovalError(404, 'Check not found');
-  if (check.status === 'completed') return { status: 'completed', check_status: check.status, requests: [] };
   const client = deps.client();
   const bindings = await deps.store.get(id);
   const requests: Array<ApprovalPrompt & { segment: number }> = [];
   const statuses: string[] = [];
   for (const binding of bindings) {
     if (!binding.run_id) { statuses.push('submitting'); continue; }
+    if (check.status === 'completed') { statuses.push(binding.status); continue; }
     if (binding.scope !== client.scope) throw new ApprovalError(409, 'Reviewer requester changed; existing run cannot be controlled');
     if (terminalRun(binding.status)) { statuses.push(binding.status); continue; }
     const run = await deps.store.observe(binding, () => client.status(binding.run_id!));
     statuses.push(run.status);
-    for (const prompt of approvalPrompts(run)) requests.push({ ...prompt, segment: binding.segment });
+    for (const prompt of approvalPrompts(run)) if (!prompt.expires_at || prompt.expires_at * 1000 > Date.now()) requests.push({ ...prompt, segment: binding.segment });
   }
-  return { status: requests.length ? 'waiting_for_approval' : statuses.at(-1) || check.status, check_status: check.status, approval_incomplete: bindings.some(b => b.denied), requests };
+  const saved = await deps.store.get(id);
+  const history = saved.flatMap(b => (b.history || []).map(h => ({ ...h, segment: b.segment,
+    outcome: h.outcome === 'pending' && check.status === 'completed' ? (h.expiresAt && Date.parse(h.expiresAt) <= Date.now() ? 'expired' : 'unconfirmed') : h.outcome,
+  })));
+  const incomplete = saved.some(b => b.denied);
+  return { status: check.status === 'completed' ? 'completed' : requests.length ? 'waiting_for_approval' : statuses.at(-1) || check.status,
+    check_status: check.status, approval_incomplete: incomplete, requests, history,
+    // Legacy denied bindings have no recorded prompt history; do not invent a timeout cause.
+    legacy_incomplete: incomplete && !history.length,
+    can_restart: check.status === 'completed' && (incomplete || history.some(h => h.outcome === 'expired' || h.outcome === 'unconfirmed')) };
 }
 export async function decideReviewApproval(id: number, decision: ApprovalDecision, actor: string, deps: ApprovalDeps = defaultDeps) {
   const check = await activeCheck(id, deps);
@@ -56,16 +80,16 @@ export async function decideReviewApproval(id: number, decision: ApprovalDecisio
   const client = deps.client();
   if (!binding?.run_id || binding.scope !== client.scope) throw new ApprovalError(409, 'No controllable run for this check segment');
   const repo = await deps.getRepo(check.repo);
-  if (!repo || !check.head_sha) throw new ApprovalError(409, 'Review head unavailable');
+  if (!repo?.pr_review_enabled || !check.head_sha) throw new ApprovalError(409, 'Review head unavailable or repository disabled');
   const [owner, name] = check.repo.split('/');
   const octokit = await deps.getInstallationOctokit(repo.installation_id);
   const pr = await deps.getPRInfo(octokit, owner, name, check.pr_number);
-  if (pr.head?.sha !== check.head_sha || pr.state === 'closed') throw new ApprovalError(409, 'Review head changed or PR closed');
+  if (pr.head?.sha !== check.head_sha || pr.state !== 'open') throw new ApprovalError(409, 'Review head changed or PR closed');
   // Canonical request immediately before dispatch, never a cached command or
   // run ID from the browser. Hermes atomically enforces expiry and generation.
   const run = await deps.store.observe(binding, () => client.status(binding.run_id!));
   const prompt = approvalPrompts(run).find(p => p.prompt_id === decision.prompt_id && p.execution_generation === decision.execution_generation);
-  if (!prompt || !prompt.choices.includes(decision.choice)) throw new ApprovalError(409, 'Approval expired, changed, or already resolved');
+  if (!prompt || (prompt.expires_at && prompt.expires_at * 1000 <= Date.now()) || !prompt.choices.includes(decision.choice)) throw new ApprovalError(409, 'Approval expired, changed, or already resolved');
   await activeCheck(id, deps);
   if (!await deps.claim(binding, prompt, decision.choice, actor)) throw new ApprovalError(409, 'Decision already submitted; refresh status');
   try {

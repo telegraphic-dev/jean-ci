@@ -54,6 +54,17 @@ test('PR comment is public-safe, read back, deduplicated per request and links e
   assert.equal(f.comments.length, 2, 'new native request has its own notice');
 });
 
+test('negotiated approval comment gives the exact deadline and separates resume from restart', async () => {
+  const f = fixture();
+  await deliverApprovalComment({ ...f.target, expiresAt: '2026-10-22T20:15:24.000Z' }, f.octokit, f.store);
+  const body = f.comments[0].body;
+  assert.match(body, /2026-10-22T20:15:24\.000Z/);
+  assert.match(body, /30-minute approval window, excluded from the execution budget/);
+  assert.match(body, /Opening the link never approves/);
+  assert.match(body, /Approve once resumes the same live run/);
+  assert.match(body, /explicit Restart review/);
+});
+
 test('definite comment refusal retries, lost create only reconciles, readback retries same ID', async () => {
   for (const mode of ['refused', 'lost', 'readback']) {
     const f = fixture(); f.fail(mode);
