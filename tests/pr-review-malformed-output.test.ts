@@ -34,7 +34,7 @@ test('PR reviews report malformed output without requesting changes and preserve
       createPRReview: async (...args) => { reviews.push(args); },
     }});
     mock.module(moduleUrl('llm'), { namedExports: {
-      callOpenClaw: async (prompt, context) => { sent.push({ prompt, context }); return { success: true, response: responses.shift() }; },
+      callOpenClaw: async (prompt, context) => { sent.push({ prompt, context }); const response = responses.shift(); return typeof response === 'object' ? response : { success: true, response }; },
     }});
     mock.module(moduleUrl('review-context'), { namedExports: {
       truncateReviewDiff: (diff) => diff,
@@ -47,7 +47,7 @@ test('PR reviews report malformed output without requesting changes and preserve
     assert.equal(reviews.length, 0);
     assert.equal(updates.at(-1).conclusion, 'failure');
     assert.match(updates.at(-1).output.title, /Review failed/);
-    assert.match(updates.at(-1).output.summary, /FAIL must include an explanation/);
+    assert.match(stored.at(-1).summary, /FAIL must include an explanation/);
 
     const incomplete = 'VERDICT: INCOMPLETE\nRequired cross-segment context could not be fetched because tool approval was denied.';
     for (const earlier of [[], ['VERDICT: PASS\nNo defects.']]) {
@@ -56,8 +56,8 @@ test('PR reviews report malformed output without requesting changes and preserve
       await runPRReview(1, 'owner', 'repo', 1, 'head');
       assert.equal(reviews.length, 0);
       assert.equal(updates.at(-1).conclusion, 'failure');
-      assert.match(updates.at(-1).output.summary, /INCOMPLETE/);
-      assert.match(updates.at(-1).output.summary, /tool approval was denied/);
+      assert.match(stored.at(-1).summary, /INCOMPLETE/);
+      assert.match(stored.at(-1).summary, /tool approval was denied/);
     }
     updates = [];
     responses = ['VERDICT: FAIL\nAuthorization is missing in api.ts.', malformed];
@@ -66,13 +66,13 @@ test('PR reviews report malformed output without requesting changes and preserve
     assert.equal(updates.at(-1).conclusion, 'failure');
     assert.match(updates.at(-1).output.summary, /Authorization is missing/);
     assert.match(updates.at(-1).output.summary, /remaining segments stopped/);
-    assert.match(updates.at(-1).output.summary, /FAIL must include an explanation/);
+    assert.match(stored.at(-1).summary, /FAIL must include an explanation/);
     responses = ['VERDICT: FAIL\nAuthorization is missing in api.ts.', incomplete];
     await runPRReview(1, 'owner', 'repo', 1, 'head');
     assert.equal(reviews.length, 0);
     assert.equal(updates.at(-1).conclusion, 'failure');
     assert.match(updates.at(-1).output.summary, /Authorization is missing/);
-    assert.match(updates.at(-1).output.summary, /INCOMPLETE/);
+    assert.match(stored.at(-1).summary, /INCOMPLETE/);
 
     useRealContexts = true;
     reviewDiff = 'diff --git a/app/dashboard.ts b/app/dashboard.ts\n@@ -1 +1 @@\n' + '+changed line\n'.repeat(14000) + '+TAIL_SENTINEL\n';
@@ -112,8 +112,35 @@ test('PR reviews report malformed output without requesting changes and preserve
       assert.match(review[5], /\n  Keep continuation indentation/);
       assert.doesNotMatch(review[5], /VERDICT:|Review profile|segment \d|No blocking UI/);
       if (preceding[0]?.includes('FAIL')) assert.match(review[5], /### Another defect/);
+      assert.doesNotMatch(updates.at(-1).output.summary, /VERDICT:|Review profile|segment \d|No blocking UI/);
+      assert.match(updates.at(-1).output.summary, /### Failed sends are reported as successful/);
+      if (preceding[0]?.includes('FAIL')) assert.match(updates.at(-1).output.summary, /### Another defect/);
       assert.match(stored.at(-1).summary, /Review profile/);
       if (preceding.length) assert.match(stored.at(-1).summary, /segment 0/);
+    }
+    // Public checks and authenticated diagnostics are independently captured.
+    for (const preceding of [[], ['VERDICT: PASS\nSafe UI.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.']]) {
+      responses = [...preceding, 'VERDICT: FAIL\n### Defect\nProblem details.\n\nFix the sender.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.'];
+      await runPRReview(1, 'owner', 'repo', 1, currentHead);
+      assert.equal(updates.at(-1).output.summary, '### Defect\nProblem details.\n\nFix the sender.');
+      assert.match(stored.at(-1).summary, /VERDICT: FAIL/);
+      assert.match(stored.at(-1).summary, /Review profile/);
+      if (preceding.length) assert.match(stored.at(-1).summary, /Safe UI/);
+    }
+    responses = ['VERDICT: PASS\nSafe UI.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.', 'VERDICT: PASS\nSafe API.'];
+    await runPRReview(1, 'owner', 'repo', 1, currentHead);
+    assert.equal(updates.at(-1).output.summary, 'Safe UI.\n\n---\n\nSafe API.');
+    assert.match(stored.at(-1).summary, /segment 0[\s\S]*Review profile[\s\S]*segment 1/);
+    for (const failure of [malformed, incomplete, { success: false, errorType: 'gateway', error: 'PRIVATE_GATEWAY_DETAIL' }]) {
+      responses = ['VERDICT: PASS\nSafe UI.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.', fixture.structuredOutput, failure];
+      await runPRReview(1, 'owner', 'repo', 1, currentHead);
+      assert.match(updates.at(-1).output.summary, /### Failed sends are reported as successful/);
+      assert.match(updates.at(-1).output.summary, /\*\*Problem:\*\*/);
+      assert.match(updates.at(-1).output.summary, /remaining segments stopped/);
+      assert.doesNotMatch(updates.at(-1).output.summary, /VERDICT:|Review profile|segment \d|Safe UI|PRIVATE_GATEWAY_DETAIL/);
+      assert.match(stored.at(-1).summary, /Safe UI/);
+      assert.match(stored.at(-1).summary, /Review profile/);
+      if (typeof failure === 'object') assert.match(stored.at(-1).summary, /PRIVATE_GATEWAY_DETAIL/);
     }
     responses = ['VERDICT: FAIL\n' + 'Finding detail. '.repeat(5000) + '\nTAIL_FINDING', fixture.structuredOutput];
     await runPRReview(1, 'owner', 'repo', 1, currentHead);

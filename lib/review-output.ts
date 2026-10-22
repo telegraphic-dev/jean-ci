@@ -1,3 +1,5 @@
+import { fromMarkdown } from 'mdast-util-from-markdown';
+
 export type ReviewVerdict = 'PASS' | 'FAIL';
 
 export interface PromptValidationResult {
@@ -64,7 +66,7 @@ export function buildPromptValidationSummary(errors: string[]): string {
 // Only remove recognized metadata, never prose that happens to mention a profile.
 // Fences and their contents are opaque, so examples keep their exact Markdown.
 function withoutProfileMetadata(markdown: string): string {
-  return mapOutsideFences(markdown, (line) => {
+  return mapOutsideCode(markdown, (line) => {
     const content = line.trim().replace(/^(?:[-*+]\s+|#{1,6}\s+)/, '').replace(/[*_`]/g, '').trim();
     const profile = content.replace(/^review profile\s*:\s*/i, '');
     if (/^review profile\s*:\s*$/i.test(content)
@@ -73,23 +75,45 @@ function withoutProfileMetadata(markdown: string): string {
   }).replace(/^\n+|\n+$/g, '');
 }
 
-function mapOutsideFences(markdown: string, transform: (line: string) => string | null): string {
-  let fence: { char: string; length: number } | undefined;
-  const output: string[] = [];
-  for (const line of markdown.split('\n')) {
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-    if (fence) {
-      output.push(line);
-      if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
-    } else if (marker) {
-      fence = { char: marker[1][0], length: marker[1].length };
-      output.push(line);
-    } else {
-      const transformed = transform(line);
-      if (transformed !== null) output.push(transformed);
+/** CommonMark handles container indentation, quoted fences, and indented code.
+ * Use source positions, not AST serialization: reviewer whitespace is evidence.
+ */
+function codeRanges(markdown: string): Array<{ firstLine: number; lastLine: number; start: number; end: number }> {
+  const ranges: Array<{ firstLine: number; lastLine: number; start: number; end: number }> = [];
+  const visit = (node: ReturnType<typeof fromMarkdown> | ReturnType<typeof fromMarkdown>['children'][number]) => {
+    if (node.type === 'code' && node.position) {
+      const { start, end } = node.position;
+      // Include the container prefix on the opening line when clipping overflow.
+      const offset = start.offset!;
+      ranges.push({ firstLine: start.line, lastLine: end.line, start: markdown.lastIndexOf('\n', offset - 1) + 1, end: end.offset! });
     }
+    if ('children' in node) for (const child of node.children) visit(child);
+  };
+  visit(fromMarkdown(markdown));
+  return ranges;
+}
+
+function mapOutsideCode(markdown: string, transform: (line: string) => string | null): string {
+  const ranges = codeRanges(markdown);
+  const output: string[] = [];
+  let rangeIndex = 0;
+  for (const [index, line] of markdown.split('\n').entries()) {
+    while (rangeIndex < ranges.length && ranges[rangeIndex].lastLine < index + 1) rangeIndex++;
+    const range = ranges[rangeIndex];
+    const transformed = range && range.firstLine <= index + 1 ? line : transform(line);
+    if (transformed !== null) output.push(transformed);
   }
   return output.join('\n');
+}
+
+/** Bound a public surface without leaving the notice inside a literal example. */
+export function boundReviewMarkdown(content: string, limit: number, detailsUrl: string): string {
+  if (content.length <= limit) return content;
+  const notice = `\n\n_Review exceeds GitHub’s display limit; remaining findings are available in full details._\n\n[View full details](${detailsUrl})`;
+  let end = Math.max(0, limit - notice.length);
+  const code = codeRanges(content).find((range) => range.start < end && end < range.end);
+  if (code) end = code.start;
+  return content.slice(0, end) + notice;
 }
 
 export function parseReviewResponse(response: string): ParsedReviewResponse {
@@ -179,7 +203,7 @@ export function linkReviewedLocations(markdown: string, source: { owner: string;
     }
   }
   const encode = (segment: string) => encodeURIComponent(segment).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
-  return mapOutsideFences(markdown, (line) => line.replace(
+  return mapOutsideCode(markdown, (line) => line.replace(
     /\[[^\]\n]*\]\([^\n]*?\)|`([^`\n]+):(\d+)(?:-(\d+))?`|(?<![\w/.:`])([A-Za-z0-9_./-]+):(\d+)(?:-(\d+))?(?![\w\d])/g,
     (match, codePath: string, codeStart: string, codeEnd: string, plainPath: string, plainStart: string, plainEnd: string) => {
       const file = codePath || plainPath;
@@ -199,7 +223,7 @@ export function linkReviewedLocations(markdown: string, source: { owner: string;
 export function readableReviewSummary(summary: string): string {
   if (!/^\s*\**VERDICT:\s*(PASS|FAIL)\b/i.test(summary)) return summary;
   const chunkMarker = '\u0000review-segment\u0000';
-  const segmented = mapOutsideFences(summary, (line) => line.replace(/^## ([^\n]+ \(\d+\/\d+\))\s*$/, `${chunkMarker}$1${chunkMarker}`)).split(chunkMarker);
+  const segmented = mapOutsideCode(summary, (line) => line.replace(/^## ([^\n]+ \(\d+\/\d+\))\s*$/, `${chunkMarker}$1${chunkMarker}`)).split(chunkMarker);
   if (segmented.length > 1 && /^\s*\**VERDICT:\s*(?:PASS|FAIL)\**\s*$/i.test(segmented[0])) {
     try {
       const chunks = [];
@@ -209,7 +233,7 @@ export function readableReviewSummary(summary: string): string {
       return combineChunkedReviewResponses(chunks).reviewMarkdown;
     } catch { /* Older/partial summaries may not follow the current chunk format. */ }
   }
-  const content = mapOutsideFences(summary, (line) => {
+  const content = mapOutsideCode(summary, (line) => {
     const verdict = line.match(/^\s*\**VERDICT:\s*(?:PASS|FAIL)\b\**(.*)$/i);
     if (verdict) return verdict[1].replace(/^\s*[-–—:]\s*/, '').trim() || null;
     if (/^## [^\n]+ \(\d+\/\d+\)\s*$/.test(line)) return null;
@@ -223,21 +247,5 @@ export function buildPRReviewBody(parsed: ParsedReviewResponse, source: Paramete
   const content = linkReviewedLocations(parsed.reviewMarkdown, source);
   const header = `## ${parsed.title}\n\n`;
   const footer = `\n\n---\n*[View full details](${detailsUrl})*`;
-  const notice = '\n\n_Review exceeds GitHub’s display limit; remaining findings are available in full details._';
-  const budget = 65000 - header.length - footer.length;
-  if (content.length <= budget) return header + content + footer;
-  let preview = content.slice(0, budget - notice.length);
-  // Do not strand the overflow notice/details link inside an unfinished code block.
-  let open: { marker: string; offset: number } | undefined;
-  let offset = 0;
-  for (const line of preview.split('\n')) {
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-    if (marker) {
-      if (!open) open = { marker: marker[1], offset };
-      else if (marker[1][0] === open.marker[0] && marker[1].length >= open.marker.length && !marker[2].trim()) open = undefined;
-    }
-    offset += line.length + 1;
-  }
-  if (open) preview = preview.slice(0, open.offset);
-  return header + preview + notice + footer;
+  return header + boundReviewMarkdown(content, 65000 - header.length - footer.length, detailsUrl) + footer;
 }
