@@ -1,3 +1,5 @@
+import { REVIEW_REQUEST_LIMIT, reviewRequestLength, assertReviewRequestFits } from './review-request.ts';
+
 export function truncateReviewDiff(diff: string, limit: number): string {
   if (diff.length <= limit) {
     return diff;
@@ -39,6 +41,7 @@ export function extractChangedFilePaths(diff: string): string[] {
 export interface ReviewDiffChunk {
   subsystem: string;
   diff: string;
+  paths?: string[];
 }
 
 function classifySubsystem(path: string): string {
@@ -62,42 +65,52 @@ function splitDiffFiles(diff: string): Array<{ path: string; content: string }> 
 function splitOversizedDiffFile(content: string, limit: number): string[] {
   if (content.length <= limit) return [content];
 
-  const hunkStart = content.search(/^@@ /m);
-  const header = hunkStart >= 0 ? content.slice(0, hunkStart) : '';
-  const body = hunkStart >= 0 ? content.slice(hunkStart) : content;
-  const payloadLimit = Math.max(1, limit - header.length);
   const pieces: string[] = [];
-
-  for (const hunk of body.split(/(?=^@@ )/m).filter(Boolean)) {
-    for (let offset = 0; offset < hunk.length; offset += payloadLimit) {
-      pieces.push(`${header}${hunk.slice(offset, offset + payloadLimit)}`);
+  let offset = 0;
+  while (offset < content.length) {
+    let end = Math.min(content.length, offset + limit);
+    if (end < content.length) {
+      // Prefer complete hunks, then lines. A single huge line must be split.
+      const window = content.slice(offset, end);
+      const hunk = window.lastIndexOf('\n@@ ');
+      const line = window.lastIndexOf('\n');
+      if (hunk > limit / 2) end = offset + hunk + 1;
+      else if (line >= 0) end = offset + line + 1;
+      // Do not split a UTF-16 surrogate pair across requests.
+      else if (end > offset + 1 && /[\uD800-\uDBFF]/.test(content[end - 1])) end--;
     }
+    pieces.push(content.slice(offset, end));
+    offset = end;
   }
-
-  return pieces.length > 0 ? pieces : [content];
+  return pieces;
 }
 
 /** Keep all files from a subsystem together until the review budget is full. */
 export function splitReviewDiffBySubsystem(diff: string, limit: number): ReviewDiffChunk[] {
-  if (!diff.trim()) return [{ subsystem: 'empty diff', diff }];
-  const safeLimit = Math.max(1, limit);
+  if (!diff.length) return [{ subsystem: 'empty diff', diff }];
+  if (!Number.isSafeInteger(limit) || limit < 2) throw new Error('Review diff limit must be an integer of at least 2 chars.');
+  const safeLimit = limit;
   const chunks: ReviewDiffChunk[] = [];
   const currentBySubsystem = new Map<string, string>();
+  const pathsBySubsystem = new Map<string, Set<string>>();
 
   const flush = (subsystem: string) => {
     const content = currentBySubsystem.get(subsystem);
-    if (content) chunks.push({ subsystem, diff: content });
+    if (content) chunks.push({ subsystem, diff: content, paths: [...(pathsBySubsystem.get(subsystem) || [])] });
     currentBySubsystem.delete(subsystem);
+    pathsBySubsystem.delete(subsystem);
   };
 
   for (const file of splitDiffFiles(diff)) {
     const subsystem = classifySubsystem(file.path);
     for (const segment of splitOversizedDiffFile(file.content, safeLimit)) {
       const current = currentBySubsystem.get(subsystem) || '';
-      if (current && current.length + segment.length + 1 > safeLimit) {
+      if (current && current.length + segment.length > safeLimit) {
         flush(subsystem);
       }
-      currentBySubsystem.set(subsystem, `${currentBySubsystem.get(subsystem) ? `${currentBySubsystem.get(subsystem)}\n` : ''}${segment}`);
+      currentBySubsystem.set(subsystem, `${currentBySubsystem.get(subsystem) || ''}${segment}`);
+      if (!pathsBySubsystem.has(subsystem)) pathsBySubsystem.set(subsystem, new Set());
+      pathsBySubsystem.get(subsystem)!.add(file.path);
     }
   }
   for (const subsystem of [...currentBySubsystem.keys()]) flush(subsystem);
@@ -110,14 +123,17 @@ export function buildReviewContext(
     body?: string | null;
     diff: string;
     diffLimit: number;
+    userPrompt?: string;
+    changedPaths?: string[];
     owner?: string;
     repo?: string;
   },
 ): string {
+  if (input.diff.length > input.diffLimit) throw new Error('Diff exceeds single-context limit; use buildReviewContexts for complete coverage.');
   const canonicalRepoPath = input.owner && input.repo
     ? buildCanonicalRepoPath(input.owner, input.repo)
     : null;
-  const changedPaths = extractChangedFilePaths(input.diff);
+  const changedPaths = input.changedPaths || extractChangedFilePaths(input.diff);
   const repoNamePrefixedPaths = input.repo
     ? changedPaths.filter((path) => path === input.repo || path.startsWith(`${input.repo}/`))
     : [];
@@ -148,30 +164,44 @@ export function buildReviewContext(
       ? [
           '',
           '## Changed Files',
-          ...changedPaths.slice(0, 200).map((path) => `- ${path}`),
-          ...(changedPaths.length > 200 ? [`- ... (${changedPaths.length - 200} more files omitted)`] : []),
+          ...changedPaths.map((path) => `- ${path}`),
         ]
       : []),
     '',
     '## Diff',
     '```diff',
-    truncateReviewDiff(input.diff, input.diffLimit),
+    input.diff,
     '```',
   ].join('\n');
 }
 
-export function buildReviewContexts(input: Parameters<typeof buildReviewContext>[0]): Array<{ label: string; context: string }> {
-  if (input.diff.length <= input.diffLimit) {
-    return [{ label: 'full diff (1/1)', context: buildReviewContext(input) }];
-  }
+const SCOPE_RULES = 'Intentional segment boundaries: other segments are reviewed separately. Do not treat unshown segments or a continued file/hunk as missing code, and do not assume them safe. Review the supplied segment against the criteria. If cross-segment evidence is genuinely necessary and cannot be obtained with approved tools, report VERDICT: INCOMPLETE with the required evidence, not a speculative code finding.';
+const REVIEW_FOOTER = '\n\n## End of Review Input\nAll diff content assigned to this segment is included above.';
 
-  const chunks = splitReviewDiffBySubsystem(input.diff, input.diffLimit);
+export function buildReviewContexts(input: Parameters<typeof buildReviewContext>[0]): Array<{ label: string; context: string }> {
+  if (!Number.isSafeInteger(input.diffLimit) || input.diffLimit < 2) throw new Error('Review diff limit must be an integer of at least 2 chars.');
+  const prompt = input.userPrompt || '';
+  const render = (diff: string, paths: string[], label: string) =>
+    `## Review Scope\nThis is subsystem segment ${label}. ${SCOPE_RULES}\n\n${buildReviewContext({ ...input, diff, changedPaths: paths, diffLimit: Math.max(input.diffLimit, diff.length) })}${REVIEW_FOOTER}`;
+  const paths = extractChangedFilePaths(input.diff);
+  const full = render(input.diff, paths, 'full diff (1/1)');
+  if (input.diff.length <= input.diffLimit && reviewRequestLength(prompt, full) <= REVIEW_REQUEST_LIMIT) {
+    return [{ label: 'full diff (1/1)', context: full }];
+  }
+  // Reserve all metadata, the full file list, scope, footer and exact system/user
+  // assembly. This upper bound covers every segment's label and path guidance.
+  const subsystems = splitDiffFiles(input.diff).map(({ path }) => classifySubsystem(path));
+  const longestSubsystem = subsystems.sort((a, b) => b.length - a.length)[0] || 'empty diff';
+  const largestLabel = `${longestSubsystem} (${input.diff.length}/${input.diff.length})`;
+  const overhead = render('', [...paths].sort((a, b) => b.length - a.length), largestLabel);
+  assertReviewRequestFits(prompt, overhead);
+  const budget = Math.min(input.diffLimit, REVIEW_REQUEST_LIMIT - reviewRequestLength(prompt, overhead));
+  if (budget < 2) throw new Error('Review metadata/criteria leave no diff transport budget; nothing was sent.');
+  const chunks = splitReviewDiffBySubsystem(input.diff, budget);
   return chunks.map((chunk, index) => {
     const label = `${chunk.subsystem} (${index + 1}/${chunks.length})`;
-    const context = buildReviewContext({ ...input, diff: chunk.diff });
-    return {
-      label,
-      context: `${context}\n\n## Review Scope\nThis is subsystem segment ${label}. Review this segment rigorously; do not assume unshown subsystems are safe.`,
-    };
+    const context = render(chunk.diff, chunk.paths || paths, label);
+    assertReviewRequestFits(prompt, context);
+    return { label, context };
   });
 }

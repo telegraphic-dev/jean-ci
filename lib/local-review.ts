@@ -1,5 +1,5 @@
-import { buildPromptValidationSummary, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
-import { buildReviewContext } from './review-context.ts';
+import { buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
+import { buildReviewContexts } from './review-context.ts';
 import type { ReviewSessionMetadata } from './llm.ts';
 
 export interface LocalReviewCheckInput {
@@ -221,14 +221,6 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
   }
 
   const [owner, repoName] = splitRepoSlug(repo);
-  const reviewContext = buildReviewContext({
-    title: input.title,
-    body: input.body,
-    diff: input.diff,
-    diffLimit: DIFF_LLM_LIMIT,
-    owner,
-    repo: repoName,
-  });
   const checks: LocalReviewCheckResult[] = [];
   const validationFailures: LocalReviewValidationFailure[] = [];
   const executionFailures: LocalReviewExecutionFailure[] = [];
@@ -246,29 +238,33 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       }
     }
 
-    const result = await deps.callReviewer(check.prompt, reviewContext, buildSessionMetadata(repo, check.isGlobal ? 'review' : check.name, input.headSha || reviewRef));
-    if (!result.success) {
-      executionFailures.push({
-        name: check.name,
-        isGlobal: check.isGlobal,
-        errorType: result.errorType,
-        error: result.error,
-      });
-      continue;
-    }
-
-    let parsed;
+    const chunkedResponses = [];
+    let failed = false;
     try {
-      parsed = parseReviewResponse(result.response);
+      const contexts = buildReviewContexts({
+        title: input.title, body: input.body, diff: input.diff,
+        diffLimit: DIFF_LLM_LIMIT, owner, repo: repoName, userPrompt: check.prompt,
+      });
+      for (const [index, context] of contexts.entries()) {
+        const result = await deps.callReviewer(check.prompt, context.context, buildSessionMetadata(repo, contexts.length === 1 ? (check.isGlobal ? 'review' : check.name) : `${check.isGlobal ? 'review' : check.name}-${index + 1}`, input.headSha || reviewRef));
+        if (!result.success) {
+          executionFailures.push({ name: check.name, isGlobal: check.isGlobal, errorType: result.errorType, error: result.error });
+          failed = true;
+          break;
+        }
+        chunkedResponses.push({ label: context.label, parsed: parseReviewResponse(result.response) });
+      }
     } catch (error) {
       executionFailures.push({
-        name: check.name,
-        isGlobal: check.isGlobal,
-        errorType: 'unknown',
+        name: check.name, isGlobal: check.isGlobal, errorType: 'unknown',
         error: error instanceof Error ? error.message : String(error),
       });
-      continue;
+      failed = true;
     }
+    // Never turn a partial PASS into a completed review. Keep concrete earlier
+    // FAIL findings alongside the execution failure for callers to display.
+    if (failed && !chunkedResponses.some(({ parsed }) => parsed.verdict === 'FAIL')) continue;
+    const parsed = combineChunkedReviewResponses(chunkedResponses);
     checks.push({
       name: check.name,
       verdict: parsed.verdict,

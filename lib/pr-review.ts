@@ -97,14 +97,6 @@ export async function runPRReview(installationId: number, owner: string, repo: s
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
   const diffPreview = truncateReviewDiff(diff, DIFF_PREVIEW_LIMIT);
-  const reviewContexts = buildReviewContexts({
-    title: prInfo.title,
-    body: prInfo.body,
-    diff,
-    diffLimit: DIFF_LLM_LIMIT,
-    owner,
-    repo,
-  });
 
   // Create ALL checks as pending first, storing in DB
   const checkRuns = [];
@@ -153,6 +145,15 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         }
       }
 
+      const reviewContexts = buildReviewContexts({
+        title: prInfo.title,
+        body: prInfo.body,
+        diff,
+        userPrompt: check.prompt,
+        diffLimit: DIFF_LLM_LIMIT,
+        owner,
+        repo,
+      });
       const chunkedResponses = [];
       let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
       for (const [index, reviewContext] of reviewContexts.entries()) {
