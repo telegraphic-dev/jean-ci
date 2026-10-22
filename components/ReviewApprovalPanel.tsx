@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { singleFlight, startSequentialPolling } from '@/lib/sequential-polling';
 import { useRouter } from 'next/navigation';
 import type { ApprovalPrompt } from '@/lib/hermes-runs';
 
@@ -29,12 +30,11 @@ export function ReviewApprovalPanel({ checkId }: { checkId: number }) {
       setError(error instanceof Error ? error.message : 'Reviewer status unavailable');
     }
   }, [endpoint, router]);
+  const refreshSingleFlight = useMemo(() => singleFlight(refresh), [refresh]);
   useEffect(() => {
     if (finished) return;
-    void refresh();
-    const timer = setInterval(() => { void refresh(); }, 1500);
-    return () => clearInterval(timer);
-  }, [refresh, finished]);
+    return startSequentialPolling(refreshSingleFlight, 1500);
+  }, [refreshSingleFlight, finished]);
   async function decide(prompt: Pending, choice: 'once' | 'deny') {
     setBusy(true); setError('');
     try {
@@ -43,7 +43,7 @@ export function ReviewApprovalPanel({ checkId }: { checkId: number }) {
       }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Decision not confirmed');
-      await refresh();
+      await refreshSingleFlight();
     } catch (error) {
       setRequests([]);
       setError(error instanceof Error ? error.message : 'Decision not confirmed. Refresh status; do not resubmit the review.');
