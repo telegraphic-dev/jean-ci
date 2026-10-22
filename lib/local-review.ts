@@ -257,7 +257,18 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       continue;
     }
 
-    const parsed = parseReviewResponse(result.response);
+    let parsed;
+    try {
+      parsed = parseReviewResponse(result.response);
+    } catch (error) {
+      executionFailures.push({
+        name: check.name,
+        isGlobal: check.isGlobal,
+        errorType: 'unknown',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     checks.push({
       name: check.name,
       verdict: parsed.verdict,
