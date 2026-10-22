@@ -2,7 +2,7 @@ const PUBLIC_API_VERSION = 'v1';
 const PUBLIC_API_INFO = {
   title: 'Jean CI Public API',
   version: '1.0.0',
-  description: 'Read-only access to Jean CI data without direct database access.',
+  description: 'Access to Jean CI data and local-diff reviews. Browser-session administrator tool-approval controls at /api/checks/{id}/approval are intentionally excluded from this public bearer-token API; see docs/review-tool-approvals.md.',
 } as const;
 
 const pageParam = { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } } as const;
@@ -43,6 +43,7 @@ export function buildPublicOpenApiSpec() {
       [`/${PUBLIC_API_VERSION}/local-review`]: {
         post: {
           summary: 'Run jean-ci review checks against a caller-provided local diff',
+          description: 'Local reviews never auto-approve tools. A Hermes tool-approval wait without an authenticated PR check binding is reported as an execution failure, not PASS. Approval decisions require the separate GitHub-admin browser session API.',
           requestBody: {
             required: true,
             content: {

@@ -81,6 +81,12 @@ You should see:
 
 If a custom repo prompt is malformed, that custom check fails fast with an actionable error instead of sending ambiguous output to the LLM. The built-in default review keeps running.
 
+## 6. Handle a tool approval request
+
+If Hermes needs permission for required context, the check stays in progress and a PR comment links directly to that review's authenticated `/checks/[id]` detail page. The configured GitHub administrator can inspect the exact command/reason and choose **Approve once** or **Deny** there. The same run continues; no session-wide or permanent permissions are granted. Native expiry is unchanged. A denied/expired required request produces an incomplete execution, not a speculative code finding. PR comments never contain tool arguments or secrets. Optional Discord notifications carry the same safe link only when an operator webhook is configured.
+
+See [Tool approvals during PR reviews](review-tool-approvals.md) for configuration, the private browser API, failure/restart behavior and verification.
+
 ## Prompt schema
 
 Each prompt should contain:

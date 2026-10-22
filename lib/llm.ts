@@ -39,6 +39,10 @@ export interface ReviewSessionMetadata {
   prNumber?: string | number;
   promptName?: string;
   headSha?: string;
+  // Trusted server-side binding, never copied from review text or public input.
+  checkId?: number;
+  segment?: number;
+  onWaiting?: () => Promise<void>;
 }
 
 function buildReviewSessionKey(metadata: ReviewSessionMetadata = {}): string {
@@ -97,6 +101,23 @@ export async function callOpenClaw(userPrompt: string, context = '', metadata: R
   }
 
   const userMessage = buildReviewUserMessage(userPrompt, context);
+  // Capability negotiation is outside legacy retry: once Runs is selected, no
+  // synchronous fallback or outer retry may create a second review execution.
+  if (!__internal.isWebSocketEnabled() && process.env.OPENCLAW_USE_RUNS !== 'false') {
+    try {
+      const { hermesClient, runHermesReview } = await import('./hermes-runs.ts');
+      const client = hermesClient();
+      const supported = await client.supported();
+      if (!supported && process.env.OPENCLAW_USE_RUNS === 'true') throw new Error('Hermes approval-aware Runs is unavailable');
+      if (supported) {
+        const store = metadata.checkId ? (await import('./db.ts')).reviewRunStore : undefined;
+        const response = await runHermesReview(userMessage, SYSTEM_PROMPT, { client, store, checkId: metadata.checkId, segment: metadata.segment, onWaiting: metadata.onWaiting });
+        return { success: true, response };
+      }
+    } catch {
+      return { success: false, errorType: 'unknown', error: 'INCOMPLETE: Approval-aware reviewer execution could not finish. Inspect the authenticated check page; the existing run was not resubmitted.' };
+    }
+  }
   const execution = await runWithExponentialRetry(async (attempt) => {
     const result = __internal.isWebSocketEnabled()
       ? await callOpenClawResponsesViaWebSocket(userMessage, metadata)

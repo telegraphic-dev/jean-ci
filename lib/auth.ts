@@ -26,6 +26,17 @@ export async function getSession() {
   });
 }
 
+// Control operations must never inherit requireAuth's permissive unset-admin
+// behavior, nor trust cookies sealed with the application's known default key.
+export async function requireReviewAdmin() {
+  if (!process.env.ADMIN_GITHUB_ID || !process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32 || process.env.SESSION_SECRET === 'default-secret-change-me-in-production') {
+    return { authorized: false as const, error: 'Review controls require configured admin authentication' };
+  }
+  const session = await getSession();
+  if (!session.user || String(session.user.id) !== process.env.ADMIN_GITHUB_ID) return { authorized: false as const, error: 'Administrator required' };
+  return { authorized: true as const, user: session.user };
+}
+
 export async function requireAuth() {
   const session = await getSession();
   
