@@ -1,4 +1,4 @@
-import { SYSTEM_PROMPT } from './db.ts';
+import { SYSTEM_PROMPT, assertReviewRequestFits, buildReviewUserMessage } from './review-request.ts';
 import {
   buildGatewayAuthGuidance,
   classifyGatewayException,
@@ -81,6 +81,11 @@ type OpenClawResult =
   | { success: false; error: string; errorType: 'gateway' | 'unknown'; response?: undefined };
 
 export async function callOpenClaw(userPrompt: string, context = '', metadata: ReviewSessionMetadata = {}): Promise<OpenClawResult> {
+  try {
+    assertReviewRequestFits(userPrompt, context);
+  } catch (error) {
+    return { success: false, errorType: 'unknown', error: error instanceof Error ? error.message : String(error) };
+  }
   const gatewayUrl = process.env.OPENCLAW_GATEWAY_URL;
   const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
   const maxAttempts = getMaxAttempts();
@@ -91,7 +96,7 @@ export async function callOpenClaw(userPrompt: string, context = '', metadata: R
     return { success: true, response: '**VERDICT: PASS**\n\n[Mock mode] Code looks good!' };
   }
 
-  const userMessage = `${userPrompt}\n\n## Pull Request Details\n${context}`;
+  const userMessage = buildReviewUserMessage(userPrompt, context);
   const execution = await runWithExponentialRetry(async (attempt) => {
     const result = __internal.isWebSocketEnabled()
       ? await callOpenClawResponsesViaWebSocket(userMessage, metadata)

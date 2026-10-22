@@ -63,12 +63,15 @@ export function parseReviewResponse(response: string): ParsedReviewResponse {
   const trimmed = response.trim();
   const lines = trimmed.split(/\r?\n/).map((line) => line.trim());
   const firstMeaningfulLine = lines.find((line) => line.length > 0) || '';
-  const verdictMatch = firstMeaningfulLine.match(/^\**VERDICT:\s*(PASS|FAIL)\b\**(.*)$/i);
+  const verdictMatch = firstMeaningfulLine.match(/^\**VERDICT:\s*(PASS|FAIL|INCOMPLETE)\b\**(.*)$/i);
 
   if (!verdictMatch) {
     throw new Error('Reviewer response must start with "VERDICT: PASS" or "VERDICT: FAIL" on the first non-empty line.');
   }
 
+  if (verdictMatch[1].toUpperCase() === 'INCOMPLETE') {
+    throw new Error(`Reviewer reported VERDICT: INCOMPLETE; review execution did not finish. ${trimmed}`);
+  }
   const verdict = verdictMatch[1].toUpperCase() as ReviewVerdict;
   // Prose and continuation lines carry findings too. Selecting only bullets
   // silently drops them as soon as the reviewer adds a profile metadata bullet.
