@@ -59,11 +59,12 @@ export function approvalPrompts(run: HermesRun): ApprovalPrompt[] {
   return (run.pending_controls || []).filter(p => p.kind === 'approval' && validControlId(p.prompt_id) && p.execution_generation === run.execution_generation && typeof p.command === 'string' && typeof p.description === 'string' && Array.isArray(p.choices));
 }
 
-export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; denied: boolean; }
+export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; denied: boolean; settling?: boolean; }
 export interface RunStore {
   reserve(check: number, segment: number, scope: string, fingerprint: string): Promise<RunBinding>;
   bind(check: number, segment: number, run: string): Promise<void>;
-  observe(binding: RunBinding, run: HermesRun): Promise<void>;
+  // Fetch under the durable row lock: responses fetched before locking are unordered.
+  observe(binding: RunBinding, fetchRun: () => Promise<HermesRun>): Promise<HermesRun>;
   get(check: number): Promise<RunBinding[]>;
 }
 export async function runHermesReview(input: string, instructions: string, options: {
@@ -90,19 +91,30 @@ export async function runHermesReview(input: string, instructions: string, optio
   let failures = 0;
   while (Date.now() < deadline) {
     let run: HermesRun;
-    try { run = await client.status(id); failures = 0; } catch {
+    try {
+      run = binding && store ? await store.observe(binding, () => client.status(id!)) : await client.status(id);
+      failures = 0;
+    } catch {
       if (++failures >= 5) throw new Error('INCOMPLETE: Hermes status unavailable; existing run identity retained.');
       await (options.sleep?.() || new Promise(r => setTimeout(r, 1000))); continue;
     }
-    if (binding && store) await store.observe(binding, run);
     if (run.status === 'waiting_for_approval') {
       if (!binding) throw new Error('INCOMPLETE: Tool approval requires an authenticated PR check page; local reviews never auto-approve.');
-      if (approvalPrompts(run).length) await options.onWaiting?.();
+      if (approvalPrompts(run).length) {
+        try { await options.onWaiting?.(); } catch { console.warn('Optional approval wait announcement unavailable; existing run retained'); }
+      }
     }
     if (terminalRun(run.status)) {
       if (binding && store) {
         const saved = (await store.get(binding.check_id)).find(r => r.segment === binding!.segment);
-        if (saved?.denied) throw new Error('INCOMPLETE: Tool approval was denied, expired, or could not be confirmed.');
+        if (!saved) throw new Error('INCOMPLETE: Review run binding unavailable.');
+        if (saved.denied) throw new Error('INCOMPLETE: Tool approval was denied, expired, or could not be confirmed.');
+        if (saved.settling) {
+          // A native completion can beat the decision HTTP acknowledgement.
+          // The durable dispatch lease bounds this wait, including after crashes.
+          await (options.sleep?.() || new Promise(r => setTimeout(r, 1000)));
+          continue;
+        }
       }
       if (run.status !== 'completed' || typeof run.output !== 'string' || !run.output.trim()) throw new Error(`INCOMPLETE: Hermes run ended (${run.status}) without a complete review.`);
       return run.output;

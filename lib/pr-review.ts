@@ -171,11 +171,13 @@ export async function runPRReview(installationId: number, owner: string, repo: s
             const summary = `Review paused for an operator decision. [Open the authenticated check page](${BASE_URL}/checks/${dbId}) to approve once or deny. Native approval expiry still applies.`;
             if (!approvalWaitReported) {
               await updateCheckRun(dbId, { status: 'in_progress', title, summary });
-              await updateCheck(octokit, owner, repo, checkRun.id, {
-                status: 'in_progress', details_url: `${BASE_URL}/checks/${dbId}`,
-                output: { title, summary },
-              });
-              approvalWaitReported = true;
+              try {
+                await updateCheck(octokit, owner, repo, checkRun.id, {
+                  status: 'in_progress', details_url: `${BASE_URL}/checks/${dbId}`,
+                  output: { title, summary },
+                });
+                approvalWaitReported = true;
+              } catch { console.warn('Optional GitHub approval status unavailable; will retry while polling'); }
             }
             const { postReviewApprovalComments } = await import('./review-approval-comments.ts');
             await postReviewApprovalComments(dbId);

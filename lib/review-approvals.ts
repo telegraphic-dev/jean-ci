@@ -44,8 +44,7 @@ export async function getReviewApprovals(id: number, deps: ApprovalDeps = defaul
     if (!binding.run_id) { statuses.push('submitting'); continue; }
     if (binding.scope !== client.scope) throw new ApprovalError(409, 'Reviewer requester changed; existing run cannot be controlled');
     if (terminalRun(binding.status)) { statuses.push(binding.status); continue; }
-    const run = await client.status(binding.run_id);
-    await deps.store.observe(binding, run);
+    const run = await deps.store.observe(binding, () => client.status(binding.run_id!));
     statuses.push(run.status);
     for (const prompt of approvalPrompts(run)) requests.push({ ...prompt, segment: binding.segment });
   }
@@ -64,8 +63,7 @@ export async function decideReviewApproval(id: number, decision: ApprovalDecisio
   if (pr.head?.sha !== check.head_sha || pr.state === 'closed') throw new ApprovalError(409, 'Review head changed or PR closed');
   // Canonical request immediately before dispatch, never a cached command or
   // run ID from the browser. Hermes atomically enforces expiry and generation.
-  const run = await client.status(binding.run_id);
-  await deps.store.observe(binding, run);
+  const run = await deps.store.observe(binding, () => client.status(binding.run_id!));
   const prompt = approvalPrompts(run).find(p => p.prompt_id === decision.prompt_id && p.execution_generation === decision.execution_generation);
   if (!prompt || !prompt.choices.includes(decision.choice)) throw new ApprovalError(409, 'Approval expired, changed, or already resolved');
   await activeCheck(id, deps);
@@ -73,10 +71,9 @@ export async function decideReviewApproval(id: number, decision: ApprovalDecisio
   try {
     const receipt = await client.decide(binding.run_id, prompt, decision.choice);
     if (receipt.status !== 'resolved') throw new Error('Decision not confirmed');
-    const after = await client.status(binding.run_id);
+    const after = await deps.store.observe(binding, () => client.status(binding.run_id!));
     if (approvalPrompts(after).some(p => p.prompt_id === prompt.prompt_id && p.execution_generation === prompt.execution_generation)) throw new Error('Decision still pending');
     await deps.finish(binding, prompt, 'accepted', decision.choice);
-    await deps.store.observe(binding, after);
     return { status: 'accepted', choice: decision.choice };
   } catch {
     // Ambiguous delivery is never retried automatically. Preserve the actor's

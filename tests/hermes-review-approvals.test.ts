@@ -19,7 +19,7 @@ function fixture() {
     reserve: async () => structuredClone(binding),
     bind: async (_c, _s, id) => { binding.run_id = id; },
     get: async () => [structuredClone(binding)],
-    observe: async (_b, run) => { binding.status = run.status; binding.pending = approvalPrompts(run); },
+    observe: async (_b, fetchRun) => { const run = await fetchRun(); binding.status = run.status; binding.pending = approvalPrompts(run); return run; },
   };
   const client = {
     scope: 'scope', supported: async () => true,
@@ -46,16 +46,71 @@ function fixture() {
 }
 
 test('Runs waits without auto-approving; explicit once resumes the same run', async () => {
-  const f = fixture(); let waits = 0;
-  const result = await runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1, sleep: async () => {}, onWaiting: async () => {
+  const f = fixture(); let waits = 0; let deciding: Promise<unknown> | undefined;
+  const result = await runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1, sleep: async () => { await new Promise(r => setImmediate(r)); }, onWaiting: async () => {
     waits++;
     assert.equal(f.posts, 0);
     const status = await getReviewApprovals(1, f.deps);
     assert.equal(status.requests[0].command, prompt.command);
-    await decideReviewApproval(1, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 7, choice: 'once' }, 'operator', f.deps);
+    deciding = decideReviewApproval(1, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 7, choice: 'once' }, 'operator', f.deps);
   } });
+  await deciding;
   assert.match(result, /PASS/); assert.equal(f.creates, 1); assert.equal(f.posts, 1); assert.equal(waits, 1);
   assert.equal(f.binding.run_id, 'run_test'); assert.equal(f.decisions[0].actor, 'operator');
+});
+
+test('worker waits for concurrent decision settlement after native completion, not the onWaiting callback', async () => {
+  const f = fixture();
+  let release!: () => void;
+  const acknowledgement = new Promise<void>(r => { release = r; });
+  const originalDecide = f.client.decide;
+  f.client.decide = async (...args) => {
+    const receipt = await originalDecide(...args);
+    f.binding.settling = true;
+    await acknowledgement;
+    return receipt;
+  };
+  const originalFinish = f.deps.finish;
+  f.deps.finish = async (...args) => { await originalFinish(...args); f.binding.settling = false; };
+  let deciding: Promise<unknown> | undefined, completionSeen = false;
+  const result = await runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1,
+    onWaiting: async () => { deciding = decideReviewApproval(1, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 7, choice: 'once' }, 'operator', f.deps); },
+    sleep: async () => {
+      await new Promise(r => setImmediate(r));
+      if (f.binding.status === 'completed' && f.binding.settling) {
+        completionSeen = true; release(); await deciding;
+      }
+    },
+  });
+  await deciding;
+  assert.equal(completionSeen, true); assert.match(result, /PASS/);
+  assert.equal(f.creates, 1); assert.equal(f.posts, 1);
+});
+
+test('in-flight settlement fails closed on uncertainty, lease expiry or overall deadline', async () => {
+  for (const outcome of ['uncertain', 'expired', 'deadline']) {
+    const f = fixture(); f.setCurrent(completed); f.binding.settling = true;
+    let waits = 0;
+    await assert.rejects(runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1,
+      deadlineMs: outcome === 'deadline' ? 10 : 1000,
+      sleep: async () => { waits++; if (outcome !== 'deadline') { f.binding.denied = true; f.binding.settling = false; } else await new Promise(r => setTimeout(r, 15)); },
+    }), outcome === 'deadline' ? /Timed out/ : /could not be confirmed/);
+    assert.equal(waits, 1); assert.equal(f.posts, 0); assert.equal(f.creates, 1);
+  }
+});
+
+test('optional wait announcement failure retries on the same run and leaves approval usable', async () => {
+  const f = fixture(); let calls = 0; let deciding: Promise<unknown> | undefined;
+  const result = await runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1,
+    sleep: async () => { await new Promise(r => setImmediate(r)); },
+    onWaiting: async () => {
+      if (++calls === 1) throw new Error('GitHub 503');
+      const panel = await getReviewApprovals(1, f.deps); assert.equal(panel.requests.length, 1);
+      deciding = decideReviewApproval(1, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 7, choice: 'once' }, 'operator', f.deps);
+    },
+  });
+  await deciding;
+  assert.match(result, /PASS/); assert.equal(calls, 2); assert.equal(f.creates, 1); assert.equal(f.posts, 1);
 });
 
 test('deny, terminal failures and local approval waits never become successful reviews', async () => {

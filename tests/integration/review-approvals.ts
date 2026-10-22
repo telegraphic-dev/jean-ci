@@ -1,6 +1,6 @@
 // Run only against an explicitly provisioned disposable local PostgreSQL:
 // REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://... npm run test:approvals:integration
-import test, { mock } from 'node:test';
+import test, { mock, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 
@@ -16,6 +16,17 @@ delete process.env.REVIEW_APPROVAL_DISCORD_WEBHOOK_URL;
 const db = await import('../../lib/db.ts');
 const { hermesClient } = await import('../../lib/hermes-runs.ts');
 const pool = new pg.Pool({ connectionString: database });
+after(async () => { await pool.end(); });
+function gate() { let release!: () => void; const promise = new Promise<void>(r => { release = r; }); return { promise, release }; }
+let waitStatusFailures = 0;
+let ackGate: ReturnType<typeof gate> | null = null;
+let settledRead: ReturnType<typeof gate> | null = null;
+const originalGet = db.reviewRunStore.get;
+db.reviewRunStore.get = async check => {
+  const rows = await originalGet(check);
+  if (rows.some(r => r.status === 'completed' && r.settling)) settledRead?.release();
+  return rows;
+};
 const updates: any[] = [];
 const reviews: any[] = [];
 const comments: any[] = [];
@@ -37,7 +48,9 @@ mock.module(moduleUrl('github'), { namedExports: {
   getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => [],
   getPRInfo: async () => ({ title: 'CSRF context fixture', head: { sha: currentHead }, base: { sha: 'b'.repeat(40) }, state: 'open' }),
   getPRDiff: async () => 'diff --git a/auth.ts b/auth.ts\n@@ -1 +1 @@\n-old\n+new\n',
-  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { updates.push(args.at(-1)); },
+  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { const payload = args.at(-1);
+    if (payload.output?.title === 'Tool approval required' && waitStatusFailures > 0) { waitStatusFailures--; throw new Error('GitHub 503'); }
+    updates.push(payload); },
   createPRReview: async (...args: any[]) => { reviews.push(args); },
 } });
 const { runPRReview } = await import('../../lib/pr-review.ts');
@@ -71,6 +84,7 @@ global.fetch = async (url, init = {}) => {
     approvalPosts++;
     assert.deepEqual(JSON.parse(init.body as string), { request_id: prompt.prompt_id, execution_generation: 11, choice: mode === 'deny' ? 'deny' : 'once' });
     current = { ...current, status: 'completed', pending_controls: [], output: 'VERDICT: PASS\nNo blocking defects.\n- Review profile: diff=reviewed; repository=inspected; tests=not needed.' };
+    if (mode === 'delayed-ack') await ackGate!.promise;
     return Response.json({ status: 'resolved', prompt_id: prompt.prompt_id });
   }
   return Response.json(current);
@@ -81,8 +95,10 @@ test('actual PR runner + PostgreSQL: once resumes, deny/expiry incomplete, no au
     await db.initDatabase(); await db.initDatabase();
     await pool.query('TRUNCATE jean_ci_check_runs CASCADE');
     await db.upsertRepo('fixture/repo', 1, true);
-    for (const selected of ['once', 'deny', 'expiry', 'lost-create']) {
+    for (const selected of ['once', 'deny', 'expiry', 'lost-create', 'delayed-ack', 'github-503']) {
       mode = selected; updates.length = 0; reviews.length = 0;
+      waitStatusFailures = selected === 'github-503' ? 1 : 0;
+      ackGate = gate(); settledRead = gate();
       const before = createCount; const postsBefore = approvalPosts;
       const commentsBefore = comments.length;
       const running = runPRReview(1, 'fixture', 'repo', 1, currentHead);
@@ -91,7 +107,8 @@ test('actual PR runner + PostgreSQL: once resumes, deny/expiry incomplete, no au
       for (let i = 0; i < 100; i++) {
         const checks = await db.getAllCheckRuns(1);
         checkId = checks[0]?.id;
-        if (checkId && (await db.reviewRunStore.get(checkId))[0]?.pending.length && comments.length > commentsBefore) break;
+        if (checkId && (await db.reviewRunStore.get(checkId))[0]?.pending.length && comments.length > commentsBefore
+          && updates.some(u => u.output?.title === 'Tool approval required')) break;
         await new Promise(r => setTimeout(r, 20));
       }
       assert.ok(checkId);
@@ -106,7 +123,15 @@ test('actual PR runner + PostgreSQL: once resumes, deny/expiry incomplete, no au
       if (selected === 'expiry') {
         current = { ...current, status: 'completed', pending_controls: [], output: 'VERDICT: PASS\nNo defects.' };
       } else {
-        await decideReviewApproval(checkId, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 11, choice: selected === 'deny' ? 'deny' : 'once' }, 'test-admin:operator');
+        const deciding = decideReviewApproval(checkId, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 11, choice: selected === 'deny' ? 'deny' : 'once' }, 'test-admin:operator');
+        if (selected === 'delayed-ack') {
+          await Promise.race([settledRead!.promise, new Promise((_, reject) => setTimeout(() => reject(new Error('worker never observed in-flight completion')), 5000))]);
+          assert.notEqual((await db.getCheckRun(checkId))?.status, 'completed');
+          const pending = (await db.reviewRunStore.get(checkId))[0];
+          assert.equal(pending.settling, true); assert.equal(pending.denied, false);
+          ackGate!.release();
+        }
+        await deciding;
       }
       await running;
       const commentAudit = await pool.query('SELECT comment_id,comment_url FROM jean_ci_review_approval_comments WHERE check_id=$1', [checkId]);
@@ -137,6 +162,44 @@ test('actual PR runner + PostgreSQL: once resumes, deny/expiry incomplete, no au
   } finally { global.fetch = oldFetch; }
 });
 
+test('PostgreSQL locks fetch + observation across worker and browser, preventing reversed responses', async () => {
+  const { runHermesReview } = await import('../../lib/hermes-runs.ts');
+  const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'ordered', head_sha: currentHead });
+  const oldFetched = gate(), releaseOld = gate(), workerSleep = gate(), sleeping = gate();
+  let calls = 0;
+  const waiting = { run_id: 'run_ordered', status: 'waiting_for_approval', execution_generation: 11, pending_controls: [{ ...prompt, kind: 'approval' as const }] };
+  let native = waiting;
+  const client = { ...hermesClient(), scope: 'ordered-scope', create: async () => ({ run_id: 'run_ordered', status: 'queued' }), status: async () => {
+    calls++;
+    if (calls === 1) { oldFetched.release(); await releaseOld.promise; return { run_id: 'run_ordered', status: 'running', pending_controls: [] }; }
+    return structuredClone(native);
+  } };
+  const running = runHermesReview('ordered', 'instructions', { client, store: db.reviewRunStore, checkId: id,
+    sleep: async () => { sleeping.release(); await workerSleep.promise; } });
+  await oldFetched.promise;
+  const browser = getReviewApprovals(id, { store: db.reviewRunStore, client: () => client, getCheck: db.getCheckRun } as any);
+  // Wait for the second transaction to actually block, not an arbitrary sleep.
+  let blocked = false;
+  for (let i = 0; i < 100; i++) {
+    const locks = await pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT * FROM jean_ci_review_runs%'");
+    if (locks.rowCount) { blocked = true; break; }
+    await new Promise(r => setTimeout(r, 10));
+  }
+  assert.equal(blocked, true); assert.equal(calls, 1, 'browser fetch must not run outside row lock');
+  releaseOld.release();
+  const panel = await browser; await sleeping.promise;
+  assert.equal(panel.requests[0].prompt_id, prompt.prompt_id);
+  let saved = (await db.reviewRunStore.get(id))[0];
+  assert.equal(saved.denied, false); assert.equal(saved.pending.length, 1);
+  assert.equal(await db.claimReviewDecision(saved, waiting.pending_controls[0], 'once', 'operator'), true);
+  await db.finishReviewDecision(saved, waiting.pending_controls[0], 'accepted', 'once');
+  native = { ...waiting, status: 'completed', pending_controls: [], output: 'VERDICT: PASS' } as typeof waiting;
+  workerSleep.release();
+  assert.match(await running, /PASS/);
+  saved = (await db.reviewRunStore.get(id))[0];
+  assert.equal(saved.denied, false); assert.equal(saved.status, 'completed'); assert.equal(saved.pending.length, 0);
+});
+
 test('PostgreSQL atomic claims, durable identity, scope binding, expiry and restart fail closed', async () => {
   const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'restart', head_sha: currentHead });
   await db.setCheckRunGithubId(id, 999);
@@ -150,7 +213,11 @@ test('PostgreSQL atomic claims, durable identity, scope binding, expiry and rest
   const p = { ...prompt, kind: 'approval' as const };
   const claims = await Promise.all(Array.from({ length: 8 }, (_, i) => db.claimReviewDecision(binding, p, 'once', `admin-${i}`)));
   assert.equal(claims.filter(Boolean).length, 1);
-  assert.equal((await db.reviewRunStore.get(id))[0].denied, true, 'unconfirmed dispatch after crash is incomplete');
+  assert.equal((await db.reviewRunStore.get(id))[0].settling, true, 'live dispatch is not a denial');
+  await pool.query("UPDATE jean_ci_review_decisions SET created_at=NOW()-INTERVAL '61 seconds' WHERE check_id=$1", [id]);
+  assert.equal((await db.reviewRunStore.get(id))[0].denied, true, 'expired dispatch after crash is incomplete');
+  await assert.rejects(db.finishReviewDecision(binding, p, 'accepted', 'once'), /lease expired/);
+  assert.equal((await pool.query('SELECT outcome FROM jean_ci_review_decisions WHERE check_id=$1', [id])).rows[0].outcome, 'uncertain');
   const notifications = await Promise.all(Array.from({ length: 8 }, () => db.claimReviewNotification(id, 'exact-prompt')));
   assert.equal(notifications.filter(Boolean).length, 1, 'notification dedupe is durable');
   const commentClaims = await Promise.all(Array.from({ length: 8 }, () => db.claimApprovalComment(id, 'request-identity')));
@@ -174,14 +241,13 @@ test('PostgreSQL atomic claims, durable identity, scope binding, expiry and rest
   assert.equal((await db.getCheckRun(id))?.conclusion, 'neutral');
   assert.equal((await db.reviewRunStore.get(id))[0].run_id, 'run_restart', 'restart retains identity without creating a review');
   await assert.rejects(decideReviewApproval(id, { segment: 1, prompt_id: p.prompt_id, execution_generation: 11, choice: 'once' }, 'operator'), /no longer active/);
-  await pool.end();
 });
 
 test('optional Discord notice is safe, read back, durably deduplicated, and absent without configured webhook', async () => {
   const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Discord fixture', head_sha: currentHead });
   const binding = await db.reviewRunStore.reserve(id, 1, hermesClient().scope, 'discord');
   await db.reviewRunStore.bind(id, 1, 'run_discord_fixture');
-  await db.reviewRunStore.observe({ ...binding, run_id: 'run_discord_fixture' }, { run_id: 'run_discord_fixture', status: 'waiting_for_approval', execution_generation: 11, pending_controls: [{ ...prompt, kind: 'approval' }] });
+  await db.reviewRunStore.observe({ ...binding, run_id: 'run_discord_fixture' }, async () => ({ run_id: 'run_discord_fixture', status: 'waiting_for_approval', execution_generation: 11, pending_controls: [{ ...prompt, kind: 'approval' as const }] }));
   let calls = 0; let content = '';
   global.fetch = async (url, init = {}) => {
     calls++;

@@ -413,17 +413,24 @@ export const reviewRunStore: RunStore = {
   async get(check) {
     return (await pool.query(`SELECT r.*, (r.denied OR EXISTS (
       SELECT 1 FROM jean_ci_review_decisions d WHERE d.check_id=r.check_id AND d.segment=r.segment
-      AND (d.choice='deny' OR d.outcome <> 'accepted'))) AS denied
+      AND (d.choice='deny' OR d.outcome NOT IN ('accepted', 'dispatching') OR
+        (d.outcome='dispatching' AND (d.created_at IS NULL OR d.created_at <= NOW()-INTERVAL '60 seconds'))))) AS denied,
+      EXISTS (SELECT 1 FROM jean_ci_review_decisions d WHERE d.check_id=r.check_id AND d.segment=r.segment
+        AND d.choice='once' AND d.outcome='dispatching' AND d.created_at > NOW()-INTERVAL '60 seconds') AS settling
       FROM jean_ci_review_runs r WHERE r.check_id=$1 ORDER BY r.segment`, [check])).rows;
   },
-  async observe(binding, run) {
+  async observe(binding, fetchRun) {
     // Serialize observations so concurrent page/runner polls cannot erase a
     // decision or miss a native expiry. No commands enter public check summaries.
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       const row = (await client.query('SELECT * FROM jean_ci_review_runs WHERE check_id=$1 AND segment=$2 FOR UPDATE', [binding.check_id, binding.segment])).rows[0];
-      if (!row || row.run_id !== run.run_id) throw new Error('Review run identity conflict');
+      if (!row || row.run_id !== binding.run_id) throw new Error('Review run identity conflict');
+      // Cross-process lock covers the fetch as well as the write. No client clock
+      // or pre-lock snapshot may erase a newer native approval.
+      const run = await fetchRun();
+      if (row.run_id !== run.run_id) throw new Error('Review run identity conflict');
       const pending = approvalPrompts(run);
       let denied = row.denied;
       for (const previous of row.pending as ApprovalPrompt[]) {
@@ -436,6 +443,7 @@ export const reviewRunStore: RunStore = {
       await client.query('UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5 WHERE check_id=$1 AND segment=$2',
       [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied]);
       await client.query('COMMIT');
+      return run;
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
   },
 };
@@ -447,8 +455,11 @@ export async function claimReviewDecision(binding: RunBinding, prompt: ApprovalP
   return !!result.rowCount;
 }
 export async function finishReviewDecision(binding: RunBinding, prompt: ApprovalPrompt, outcome: 'accepted' | 'uncertain', choice: 'once' | 'deny') {
-  await pool.query(`UPDATE jean_ci_review_decisions SET outcome=$5 WHERE check_id=$1 AND segment=$2 AND prompt_id=$3 AND generation=$4`,
+  const result = await pool.query(`UPDATE jean_ci_review_decisions
+    SET outcome=CASE WHEN outcome='uncertain' OR created_at IS NULL OR created_at <= NOW()-INTERVAL '60 seconds' THEN 'uncertain' ELSE $5 END
+    WHERE check_id=$1 AND segment=$2 AND prompt_id=$3 AND generation=$4 RETURNING outcome`,
   [binding.check_id, binding.segment, prompt.prompt_id, prompt.execution_generation, outcome]);
+  if (outcome === 'accepted' && result.rows[0]?.outcome !== 'accepted') throw new Error('Decision dispatch lease expired');
   if (choice === 'deny' || outcome === 'uncertain') await pool.query('UPDATE jean_ci_review_runs SET denied=TRUE WHERE check_id=$1 AND segment=$2', [binding.check_id, binding.segment]);
 }
 export interface ApprovalCommentClaim { check_id: number; identity: string; marker: string; lease: string; uncertain: boolean; candidate_id: string | null; }
