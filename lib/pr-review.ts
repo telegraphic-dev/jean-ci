@@ -1,7 +1,7 @@
 import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db.ts';
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
 import { callOpenClaw } from './llm.ts';
-import { boundReviewMarkdown, linkReviewedLocations, buildPRReviewBody, buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
+import { withReviewInterruption, REVIEW_INTERRUPTION_NOTICE, boundReviewMarkdown, linkReviewedLocations, buildPRReviewBody, buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
 import { APP_BASE_URL } from './config.ts';
 import { buildExecutionFailureOutcome } from './review-failure.ts';
 import { buildReviewContexts, truncateReviewDiff } from './review-context.ts';
@@ -207,8 +207,8 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
             conclusion: 'failure',
             title: preservedFailure.title,
-            summary: `${linkReviewedLocations(preservedFailure.reviewMarkdown, { owner, repo, headSha, diff })}\n\nReview of remaining segments stopped after a reviewer execution failure. [View full details](${BASE_URL}/checks/${dbId})`,
-            diagnostics: `${preservedFailure.normalized}\n\n- Review of remaining segments stopped after a reviewer execution failure: ${executionFailure.summary}`,
+            summary: `${linkReviewedLocations(preservedFailure.reviewMarkdown, { owner, repo, headSha, diff })}\n\n${REVIEW_INTERRUPTION_NOTICE} [View full details](${BASE_URL}/checks/${dbId})`,
+            diagnostics: withReviewInterruption(preservedFailure.normalized, executionFailure.summary),
           });
           console.log(`Check "${check.name}" preserved an earlier blocking finding after a later reviewer execution failure`);
           continue;

@@ -219,9 +219,29 @@ export function linkReviewedLocations(markdown: string, source: { owner: string;
   ));
 }
 
+const INTERRUPTION_MARKER = '<!-- jean-ci:review-execution-incomplete -->';
+export const REVIEW_INTERRUPTION_NOTICE = 'Review of remaining segments stopped after a reviewer execution failure.';
+
+/** Persist execution status outside segment content; errors are diagnostics, not findings. */
+export function withReviewInterruption(normalized: string, diagnostics: string): string {
+  // Keep arbitrary reviewer/gateway output literal, including embedded fences.
+  const fence = '~'.repeat(Math.max(3, ...Array.from(diagnostics.matchAll(/~+/g), (match) => match[0].length + 1)));
+  return `${normalized}\n\n${INTERRUPTION_MARKER}\n\n${REVIEW_INTERRUPTION_NOTICE}\n\n${fence}text\n${diagnostics}\n${fence}`;
+}
+
 /** Present persisted legacy/current summaries without claiming unavailable historic data. */
 export function readableReviewSummary(summary: string): string {
   if (!/^\s*\**VERDICT:\s*(PASS|FAIL)\b/i.test(summary)) return summary;
+  // Only recognize a complete, root-level diagnostic footer. Marker/status text
+  // inside CommonMark code containers remains literal review evidence.
+  const nodes = fromMarkdown(summary).children;
+  const [marker, notice, diagnostics] = nodes.slice(-3);
+  if (marker?.type === 'html' && marker.value === INTERRUPTION_MARKER
+    && notice?.type === 'paragraph' && diagnostics?.type === 'code'
+    && summary.slice(notice.position!.start.offset!, notice.position!.end.offset!) === REVIEW_INTERRUPTION_NOTICE) {
+    const review = summary.slice(0, marker.position!.start.offset!).trimEnd();
+    return `${readableReviewSummary(review)}\n\n${REVIEW_INTERRUPTION_NOTICE}`;
+  }
   const chunkMarker = '\u0000review-segment\u0000';
   const segmented = mapOutsideCode(summary, (line) => line.replace(/^## ([^\n]+ \(\d+\/\d+\))\s*$/, `${chunkMarker}$1${chunkMarker}`)).split(chunkMarker);
   if (segmented.length > 1 && /^\s*\**VERDICT:\s*(?:PASS|FAIL)\**\s*$/i.test(segmented[0])) {

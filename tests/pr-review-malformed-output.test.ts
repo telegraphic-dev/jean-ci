@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 // experimental flags, credentials, database, or network access.
 test('PR reviews report malformed output without requesting changes and preserve prior findings', () => {
   const result = spawnSync(process.execPath, [
-    '--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', String.raw`
+    '--experimental-strip-types', '--experimental-test-module-mocks', '--loader', new URL('./support/tsx-loader.mjs', import.meta.url).href, '--input-type=module', '-e', String.raw`
     import { mock } from 'node:test';
     import assert from 'node:assert/strict';
     let responses = [];
@@ -38,7 +38,7 @@ test('PR reviews report malformed output without requesting changes and preserve
     }});
     mock.module(moduleUrl('review-context'), { namedExports: {
       truncateReviewDiff: (diff) => diff,
-      buildReviewContexts: (input) => useRealContexts ? actualContexts.buildReviewContexts(input) : responses.map((_, i) => ({ label: 'segment ' + i, context: 'diff' })),
+      buildReviewContexts: (input) => useRealContexts ? actualContexts.buildReviewContexts(input) : responses.map((_, i) => ({ label: 'segment ' + i + ' (' + (i + 1) + '/' + responses.length + ')', context: 'diff' })),
     }});
     const { runPRReview } = await import(moduleUrl('pr-review'));
     const malformed = 'VERDICT: FAIL\n- Review profile: diff=reviewed; repository=inspected; tests=not needed.';
@@ -73,6 +73,33 @@ test('PR reviews report malformed output without requesting changes and preserve
     assert.equal(updates.at(-1).conclusion, 'failure');
     assert.match(updates.at(-1).output.summary, /Authorization is missing/);
     assert.match(stored.at(-1).summary, /INCOMPLETE/);
+
+    const { readableReviewSummary, REVIEW_INTERRUPTION_NOTICE } = await import(moduleUrl('review-output'));
+    const { createElement } = await import('react');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { CheckReviewContent } = await import(new URL('../components/CheckReviewContent.tsx', ${JSON.stringify(import.meta.url)}).href);
+    for (const passing of [[], ['VERDICT: PASS\nSUCCESSFUL_SEGMENT_ONLY']]) {
+      const count = reviews.length;
+      responses = ['VERDICT: FAIL\n### Genuine defect\nAuthorization is missing in api.ts.', ...passing, incomplete];
+      await runPRReview(1, 'owner', 'repo', 1, 'head');
+      assert.equal(reviews.length, count, 'unfinished reviews must not publish a PR verdict');
+      const summary = stored.at(-1).summary;
+      const readable = readableReviewSummary(summary);
+      assert.equal(readable, '### Genuine defect\nAuthorization is missing in api.ts.\n\n' + REVIEW_INTERRUPTION_NOTICE);
+      assert.match(summary, /tool approval was denied/);
+      assert.match(updates.at(-1).output.summary, /remaining segments stopped.*\[View full details\]\(.*\/checks\/1\)/);
+      assert.doesNotMatch(updates.at(-1).output.summary, /SUCCESSFUL_SEGMENT_ONLY|INCOMPLETE|tool approval was denied/);
+      const html = renderToStaticMarkup(createElement(CheckReviewContent, { summary, repo: 'owner/repo', headSha: 'head' }));
+      const visible = html.split('<details')[0];
+      assert.match(visible, /Genuine defect/);
+      assert.ok(visible.includes(REVIEW_INTERRUPTION_NOTICE));
+      assert.doesNotMatch(visible, /SUCCESSFUL_SEGMENT_ONLY|tool approval was denied|VERDICT:/);
+      const disclosure = html.slice(html.indexOf('<details'), html.indexOf('</details>'));
+      assert.match(disclosure, /Review details/);
+      assert.match(disclosure, /tool approval was denied/);
+      assert.doesNotMatch(disclosure, /<details[^>]*\bopen\b/);
+      if (passing.length) assert.match(disclosure, /SUCCESSFUL_SEGMENT_ONLY/);
+    }
 
     useRealContexts = true;
     reviewDiff = 'diff --git a/app/dashboard.ts b/app/dashboard.ts\n@@ -1 +1 @@\n' + '+changed line\n'.repeat(14000) + '+TAIL_SENTINEL\n';
