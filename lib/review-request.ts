@@ -19,6 +19,7 @@ After the verdict, provide a brief explanation (2-5 bullet points max).
 5. Before finalizing, do an internal pseudo-result check: mentally apply each required blocking fix and confirm whether anything else would still block the PR
 6. FAIL requires a concrete blocking code finding. Use INCOMPLETE for an unfinished review, not PASS or a speculative FAIL. A blocked optional test is not INCOMPLETE. Never bypass tool approvals.
 7. Review only the supplied scope. Intentional segment boundaries are not missing code; other segments are reviewed separately. If necessary cross-segment evidence cannot be obtained, use INCOMPLETE and explain the dependency.
+8. Prefer native read_file/search_files tools for source inspection rather than running Python or shell just to read files. Inspect only the exact reviewed commit in a pinned checkout you can verify; do not assume an existing mutable checkout matches the supplied diff. This guidance does not grant access, provision a checkout, or bypass any approval.
 
 ## Lightweight Review Profile (REQUIRED)
 Track the work you actually performed: direct diff review, repository inspection, tests, and any blocked step. In the final response, include one concise bullet in this exact form:

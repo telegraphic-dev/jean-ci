@@ -1,4 +1,7 @@
 import pg from 'pg';
+import { randomUUID } from 'node:crypto';
+import { approvalPrompts } from './hermes-runs.ts';
+import type { RunBinding, RunStore, HermesRun, ApprovalPrompt } from './hermes-runs.ts';
 import { buildGatewayChatSessionUrl } from './openclaw-chat-links.ts';
 
 const { Pool } = pg;
@@ -134,6 +137,50 @@ export async function initDatabase() {
         overridden_at TIMESTAMP,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS jean_ci_review_runs (
+        check_id INTEGER NOT NULL REFERENCES jean_ci_check_runs(id) ON DELETE CASCADE,
+        segment INTEGER NOT NULL,
+        request_key TEXT NOT NULL UNIQUE,
+        fingerprint TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        run_id TEXT UNIQUE,
+        status TEXT NOT NULL DEFAULT 'submitting',
+        pending JSONB NOT NULL DEFAULT '[]',
+        denied BOOLEAN NOT NULL DEFAULT FALSE,
+        PRIMARY KEY (check_id, segment)
+      );
+      CREATE TABLE IF NOT EXISTS jean_ci_review_approval_comments (
+        check_id INTEGER NOT NULL REFERENCES jean_ci_check_runs(id) ON DELETE CASCADE,
+        identity TEXT NOT NULL,
+        marker TEXT NOT NULL,
+        lease TEXT NOT NULL,
+        lease_until TIMESTAMP NOT NULL,
+        uncertain BOOLEAN NOT NULL DEFAULT FALSE,
+        candidate_id BIGINT,
+        comment_id BIGINT,
+        comment_url TEXT,
+        PRIMARY KEY (check_id, identity)
+      );
+      CREATE TABLE IF NOT EXISTS jean_ci_review_notifications (
+        check_id INTEGER NOT NULL REFERENCES jean_ci_check_runs(id) ON DELETE CASCADE,
+        identity TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (check_id, identity)
+      );
+      CREATE TABLE IF NOT EXISTS jean_ci_review_decisions (
+        check_id INTEGER NOT NULL,
+        segment INTEGER NOT NULL,
+        prompt_id TEXT NOT NULL,
+        generation BIGINT NOT NULL,
+        choice TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        outcome TEXT NOT NULL DEFAULT 'dispatching',
+        notified BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (check_id, segment, prompt_id, generation),
+        FOREIGN KEY (check_id, segment) REFERENCES jean_ci_review_runs(check_id, segment) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS jean_ci_pr_reviews (
@@ -348,6 +395,95 @@ export async function getAllRepos(): Promise<Repo[]> {
 }
 
 // Check run helpers
+export const reviewRunStore: RunStore = {
+  async reserve(check, segment, scope, fingerprint) {
+    await pool.query(`INSERT INTO jean_ci_review_runs (check_id, segment, scope, fingerprint, request_key)
+      VALUES ($1,$2,$3,$4,$5) ON CONFLICT (check_id, segment) DO NOTHING`,
+    [check, segment, scope, fingerprint, `jean-review-${randomUUID()}`]);
+    const result = await pool.query('SELECT * FROM jean_ci_review_runs WHERE check_id=$1 AND segment=$2', [check, segment]);
+    const row = result.rows[0];
+    if (!row || row.scope !== scope || row.fingerprint !== fingerprint) throw new Error('Review run requester or payload changed; cannot resubmit.');
+    return row;
+  },
+  async bind(check, segment, run) {
+    const result = await pool.query(`UPDATE jean_ci_review_runs SET run_id=$3 WHERE check_id=$1 AND segment=$2
+      AND (run_id IS NULL OR run_id=$3) RETURNING run_id`, [check, segment, run]);
+    if (!result.rowCount) throw new Error('Review run identity conflict');
+  },
+  async get(check) {
+    return (await pool.query(`SELECT r.*, (r.denied OR EXISTS (
+      SELECT 1 FROM jean_ci_review_decisions d WHERE d.check_id=r.check_id AND d.segment=r.segment
+      AND (d.choice='deny' OR d.outcome NOT IN ('accepted', 'dispatching') OR
+        (d.outcome='dispatching' AND (d.created_at IS NULL OR d.created_at <= NOW()-INTERVAL '60 seconds'))))) AS denied,
+      EXISTS (SELECT 1 FROM jean_ci_review_decisions d WHERE d.check_id=r.check_id AND d.segment=r.segment
+        AND d.choice='once' AND d.outcome='dispatching' AND d.created_at > NOW()-INTERVAL '60 seconds') AS settling
+      FROM jean_ci_review_runs r WHERE r.check_id=$1 ORDER BY r.segment`, [check])).rows;
+  },
+  async observe(binding, fetchRun) {
+    // Serialize observations so concurrent page/runner polls cannot erase a
+    // decision or miss a native expiry. No commands enter public check summaries.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const row = (await client.query('SELECT * FROM jean_ci_review_runs WHERE check_id=$1 AND segment=$2 FOR UPDATE', [binding.check_id, binding.segment])).rows[0];
+      if (!row || row.run_id !== binding.run_id) throw new Error('Review run identity conflict');
+      // Cross-process lock covers the fetch as well as the write. No client clock
+      // or pre-lock snapshot may erase a newer native approval.
+      const run = await fetchRun();
+      if (row.run_id !== run.run_id) throw new Error('Review run identity conflict');
+      const pending = approvalPrompts(run);
+      let denied = row.denied;
+      for (const previous of row.pending as ApprovalPrompt[]) {
+        if (pending.some(p => p.prompt_id === previous.prompt_id && p.execution_generation === previous.execution_generation)) continue;
+        const decision = (await client.query(`SELECT choice, outcome FROM jean_ci_review_decisions
+          WHERE check_id=$1 AND segment=$2 AND prompt_id=$3 AND generation=$4`,
+        [binding.check_id, binding.segment, previous.prompt_id, previous.execution_generation])).rows[0];
+        if (!decision || decision.choice === 'deny' || decision.outcome === 'uncertain') denied = true;
+      }
+      await client.query('UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5 WHERE check_id=$1 AND segment=$2',
+      [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied]);
+      await client.query('COMMIT');
+      return run;
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  },
+};
+
+export async function claimReviewDecision(binding: RunBinding, prompt: ApprovalPrompt, choice: 'once' | 'deny', actor: string): Promise<boolean> {
+  const result = await pool.query(`INSERT INTO jean_ci_review_decisions (check_id,segment,prompt_id,generation,choice,actor)
+    VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING prompt_id`,
+  [binding.check_id, binding.segment, prompt.prompt_id, prompt.execution_generation, choice, actor]);
+  return !!result.rowCount;
+}
+export async function finishReviewDecision(binding: RunBinding, prompt: ApprovalPrompt, outcome: 'accepted' | 'uncertain', choice: 'once' | 'deny') {
+  const result = await pool.query(`UPDATE jean_ci_review_decisions
+    SET outcome=CASE WHEN outcome='uncertain' OR created_at IS NULL OR created_at <= NOW()-INTERVAL '60 seconds' THEN 'uncertain' ELSE $5 END
+    WHERE check_id=$1 AND segment=$2 AND prompt_id=$3 AND generation=$4 RETURNING outcome`,
+  [binding.check_id, binding.segment, prompt.prompt_id, prompt.execution_generation, outcome]);
+  if (outcome === 'accepted' && result.rows[0]?.outcome !== 'accepted') throw new Error('Decision dispatch lease expired');
+  if (choice === 'deny' || outcome === 'uncertain') await pool.query('UPDATE jean_ci_review_runs SET denied=TRUE WHERE check_id=$1 AND segment=$2', [binding.check_id, binding.segment]);
+}
+export interface ApprovalCommentClaim { check_id: number; identity: string; marker: string; lease: string; uncertain: boolean; candidate_id: string | null; }
+export async function claimApprovalComment(check: number, identity: string): Promise<ApprovalCommentClaim | null> {
+  const result = await pool.query(`INSERT INTO jean_ci_review_approval_comments(check_id,identity,marker,lease,lease_until)
+    VALUES ($1,$2,$3,$4,NOW()+INTERVAL '30 seconds') ON CONFLICT (check_id,identity) DO UPDATE
+    SET lease=EXCLUDED.lease,lease_until=EXCLUDED.lease_until
+    WHERE jean_ci_review_approval_comments.comment_id IS NULL AND jean_ci_review_approval_comments.lease_until<NOW()
+    RETURNING *`, [check, identity, randomUUID(), randomUUID()]);
+  return result.rows[0] || null;
+}
+export async function updateApprovalComment(claim: ApprovalCommentClaim, data: { uncertain?: boolean; candidateId?: number; commentId?: number; url?: string }) {
+  await pool.query(`UPDATE jean_ci_review_approval_comments SET uncertain=COALESCE($4,uncertain),
+    candidate_id=COALESCE($5,candidate_id),comment_id=COALESCE($6,comment_id),comment_url=COALESCE($7,comment_url)
+    WHERE check_id=$1 AND identity=$2 AND lease=$3`,
+  [claim.check_id, claim.identity, claim.lease, data.uncertain, data.candidateId, data.commentId, data.url]);
+}
+
+export async function claimReviewNotification(check: number, identity: string): Promise<boolean> {
+  const result = await pool.query(`INSERT INTO jean_ci_review_notifications(check_id,identity) VALUES ($1,$2)
+    ON CONFLICT DO NOTHING RETURNING check_id`, [check, identity]);
+  return !!result.rowCount;
+}
+
 export interface CheckRun {
   id: number;
   github_check_id?: number;

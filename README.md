@@ -11,6 +11,7 @@ GitHub webhook handler for automated PR reviews with LLM assistance.
 - **Additive Per-Repo Checks**: Add `.jean-ci/pr-checks/*.md` files for extra checks without replacing the default review
 - **GitHub Checks Integration**: Results appear as nested checks on PRs
 - **Admin Dashboard**: GitHub OAuth protected management interface
+- **Approval-aware Hermes Reviews**: When a reviewer tool needs permission, a deduplicated PR comment links directly to the authenticated review detail page for **Approve once** / **Deny**. The same run resumes; no approval bypass is enabled. See [tool approval setup and API](docs/review-tool-approvals.md).
 
 ## Architecture
 
@@ -170,7 +171,7 @@ Required permissions:
 - **Actions**: Read (for successful `workflow_run` fallback deploy checks)
 - **Checks**: Read & Write
 - **Contents**: Read (for fetching `.jean-ci/` files)
-- **Pull requests**: Read
+- **Pull requests**: Read & Write (reviews and approval-needed PR comments)
 - **Packages**: Read (for GHCR publish verification after build workflows finish)
 - **Metadata**: Read
 

@@ -157,12 +157,34 @@ export async function runPRReview(installationId: number, owner: string, repo: s
       const chunkedResponses = [];
       let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
       for (const [index, reviewContext] of reviewContexts.entries()) {
+        let approvalWaitReported = false;
         const result = await callOpenClaw(check.prompt, reviewContext.context, {
           owner,
           repo,
           prNumber,
           promptName: `${check.isGlobal ? 'review' : check.name}-${index + 1}`,
           headSha,
+          checkId: dbId,
+          segment: index + 1,
+          onWaiting: async () => {
+            const title = 'Tool approval required';
+            const summary = `Review paused for an operator decision. [Open the authenticated check page](${BASE_URL}/checks/${dbId}) to approve once or deny. Native approval expiry still applies.`;
+            if (!approvalWaitReported) {
+              await updateCheckRun(dbId, { status: 'in_progress', title, summary });
+              try {
+                await updateCheck(octokit, owner, repo, checkRun.id, {
+                  status: 'in_progress', details_url: `${BASE_URL}/checks/${dbId}`,
+                  output: { title, summary },
+                });
+                approvalWaitReported = true;
+              } catch { console.warn('Optional GitHub approval status unavailable; will retry while polling'); }
+            }
+            const { postReviewApprovalComments } = await import('./review-approval-comments.ts');
+            await postReviewApprovalComments(dbId);
+            // Only a link and server-owned repo/SHA are sent, never tool text.
+            const { notifyReviewApproval } = await import('./review-approvals.ts');
+            await notifyReviewApproval(dbId);
+          },
         });
         if (!result.success) {
           executionFailure = buildExecutionFailureOutcome(result.errorType, result.error);

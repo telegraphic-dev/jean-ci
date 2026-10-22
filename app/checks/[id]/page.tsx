@@ -2,7 +2,8 @@ import { getCheckRun } from '@/lib/db';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { Markdown } from '@/components/Markdown';
-import { requireAuth } from '@/lib/auth';
+import { requireAuth, requireReviewAdmin } from '@/lib/auth';
+import { ReviewApprovalPanel } from '@/components/ReviewApprovalPanel';
 
 export default async function CheckPage({ params }: { params: Promise<{ id: string }> }) {
   const auth = await requireAuth();
@@ -10,6 +11,7 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
     redirect('/admin');
   }
 
+  const reviewAdmin = await requireReviewAdmin();
   const { id } = await params;
   const checkRun = await getCheckRun(parseInt(id));
   
@@ -53,6 +55,7 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
             </div>
           </div>
           
+          {reviewAdmin.authorized && checkRun.status !== 'completed' && <ReviewApprovalPanel checkId={checkRun.id} />}
           {/* Review Result */}
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
