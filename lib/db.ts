@@ -533,12 +533,37 @@ export async function reserveReviewRestart(id: number, actor: string, validate: 
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 export async function claimReviewRestart(sourceId: number): Promise<CheckRun | null> {
-  const result = await pool.query(`UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW()
-    WHERE source_check_id=$1 AND dispatch_status='queued' RETURNING new_check_id`, [sourceId]);
-  return result.rowCount ? getCheckRun(result.rows[0].new_check_id) : null;
+  // Return the reserved check in the claim statement itself: no committed claim
+  // can be stranded by a subsequent getCheckRun failure. Statement failure rolls
+  // back both the claim and its timestamp before any external effect is possible.
+  const result = await pool.query(`WITH claimed AS (
+    UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW()
+    WHERE source_check_id=$1 AND dispatch_status='queued' RETURNING new_check_id
+  ) SELECT c.* FROM jean_ci_check_runs c JOIN claimed r ON r.new_check_id=c.id`, [sourceId]);
+  return result.rows[0] || null;
 }
+
+// Local terminalization and queue settlement are one transaction, even before a
+// GitHub ID exists. Never replay a claimed request: external writes may have
+// succeeded without an acknowledgement. Keep the source mapping for deduplication.
 export async function finishReviewRestart(sourceId: number) {
-  await pool.query(`UPDATE jean_ci_review_restarts SET dispatch_status='done' WHERE source_check_id=$1`, [sourceId]);
+  await settleReviewRestarts(sourceId, null);
+}
+export async function reconcileReviewRestarts(startedBefore: Date) {
+  await settleReviewRestarts(null, startedBefore);
+}
+async function settleReviewRestarts(sourceId: number | null, startedBefore: Date | null) {
+  await pool.query(`WITH settled AS (
+    UPDATE jean_ci_review_restarts SET dispatch_status='done'
+    WHERE dispatch_status='dispatching' AND
+      (($1::int IS NOT NULL AND source_check_id=$1) OR
+       ($2::timestamptz IS NOT NULL AND (dispatch_started_at<$2 OR dispatch_started_at IS NULL)))
+    RETURNING new_check_id
+  ) UPDATE jean_ci_check_runs c SET status='completed',conclusion='failure',
+    title='Review restart interrupted',
+    summary='INCOMPLETE: The explicit restart could not finish. No approval was granted and no execution was automatically retried. External effects may have occurred; their outcome is not assumed.',
+    completed_at=NOW()
+    FROM settled r WHERE c.id=r.new_check_id AND c.status IN ('queued','in_progress')`, [sourceId, startedBefore]);
 }
 export async function queuedReviewRestarts(): Promise<number[]> {
   return (await pool.query(`SELECT source_check_id FROM jean_ci_review_restarts WHERE dispatch_status='queued'`)).rows.map(r => r.source_check_id);

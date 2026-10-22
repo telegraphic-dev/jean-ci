@@ -17,7 +17,10 @@ export async function register() {
       const startupStartedAt = new Date();
       // Initialize database
       await initDatabase();
-      const { queuedReviewRestarts } = await import('./lib/db');
+      const { queuedReviewRestarts, reconcileReviewRestarts } = await import('./lib/db');
+      // Reconcile old claimed requests before draining the durable queued set.
+      // This includes claims that crashed before saving a GitHub check ID.
+      await reconcileReviewRestarts(startupStartedAt);
       const { dispatchReviewRestart } = await import('./lib/review-restart');
       const drainRestarts = async () => {
         for (const id of await queuedReviewRestarts()) void dispatchReviewRestart(id).catch(console.error);

@@ -4,6 +4,10 @@ import { claimReviewDecision, claimReviewNotification, finishReviewDecision, get
 import { getInstallationOctokit, getPRInfo } from './github.ts';
 import { APP_BASE_URL } from './config.ts';
 
+export function isInterruptedRestart(check: { status: string; title?: string; conclusion?: string; summary?: string }): boolean {
+  return check.status === 'completed' && check.conclusion === 'failure' && check.title === 'Review restart interrupted' && !!check.summary?.startsWith('INCOMPLETE:');
+}
+
 export class ApprovalError extends Error {
   status: number;
   constructor(status: number, message: string) { super(message); this.status = status; }
@@ -72,7 +76,7 @@ export async function getReviewApprovals(id: number, deps: ApprovalDeps = defaul
     check_status: check.status, approval_incomplete: incomplete, requests, history,
     // Legacy denied bindings have no recorded prompt history; do not invent a timeout cause.
     legacy_incomplete: incomplete && !history.length,
-    can_restart: check.status === 'completed' && (incomplete || history.some(h => h.outcome === 'expired' || h.outcome === 'unconfirmed')) };
+    can_restart: check.status === 'completed' && (isInterruptedRestart(check) || incomplete || history.some(h => h.outcome === 'expired' || h.outcome === 'unconfirmed')) };
 }
 export async function decideReviewApproval(id: number, decision: ApprovalDecision, actor: string, deps: ApprovalDeps = defaultDeps) {
   const check = await activeCheck(id, deps);

@@ -1,6 +1,6 @@
-import { claimReviewRestart, finishReviewRestart, getCheckRun, getRepo, reserveReviewRestart, reviewRunStore, updateCheckRun } from './db.ts';
+import { claimReviewRestart, finishReviewRestart, getCheckRun, getRepo, reserveReviewRestart, reviewRunStore } from './db.ts';
 import { hermesClient } from './hermes-runs.ts';
-import { ApprovalError } from './review-approvals.ts';
+import { ApprovalError, isInterruptedRestart } from './review-approvals.ts';
 import { getInstallationOctokit, getPRInfo } from './github.ts';
 import { runPRReview } from './pr-review.ts';
 
@@ -11,7 +11,7 @@ export async function restartReview(id: number, actor: string, deps = defaults) 
   const newId = await deps.reserve(id, actor, async check => {
     if (check.status !== 'completed' || !check.head_sha) throw new ApprovalError(409, 'Only a completed, interrupted approval review can be restarted');
     const bindings = await deps.store.get(id);
-    if (!bindings.some(b => b.denied || b.pending.length || b.history?.some(h => ['expired', 'unconfirmed'].includes(h.outcome)))) throw new ApprovalError(409, 'This review has no expired or unconfirmed approval');
+    if (!bindings.some(b => b.denied || b.pending.length || b.history?.some(h => ['expired', 'unconfirmed'].includes(h.outcome))) && !isInterruptedRestart(check)) throw new ApprovalError(409, 'This review has no expired or unconfirmed approval');
     const client = deps.client();
     for (const b of bindings) {
       if (!b.run_id || b.scope !== client.scope) throw new ApprovalError(409, 'Existing execution cannot be verified in this requester scope');
@@ -24,7 +24,9 @@ export async function restartReview(id: number, actor: string, deps = defaults) 
     const pr = await deps.getPRInfo(await deps.getInstallationOctokit(repo.installation_id), owner, name, check.pr_number);
     if (pr.state !== 'open' || pr.head?.sha !== check.head_sha) throw new ApprovalError(409, 'PR closed or review head changed; request a review of the current head instead');
   });
-  return { status: 'queued', check_id: newId, url: `/checks/${newId}` };
+  const reserved = await deps.getCheck(newId);
+  if (!reserved) throw new ApprovalError(404, 'Reserved check not found');
+  return { status: reserved.status, check_id: newId, url: `/checks/${newId}` };
 }
 
 // A committed queued request survives a crash before dispatch. A claimed request
@@ -37,7 +39,9 @@ export async function dispatchReviewRestart(sourceId: number) {
     if (!repo?.pr_review_enabled || !check.head_sha) throw new Error('Repository review disabled or head unavailable');
     const [owner, name] = check.repo.split('/');
     await runPRReview(repo.installation_id, owner, name, check.pr_number, check.head_sha, { checkId: check.id, checkName: check.check_name });
-  } catch {
-    await updateCheckRun(check.id, { status: 'completed', conclusion: 'failure', title: 'Review restart interrupted', summary: 'INCOMPLETE: The explicit restart could not finish. No approval was granted and no execution was automatically retried.', completed_at: new Date() });
-  } finally { await finishReviewRestart(sourceId); }
+  } finally {
+    // Also handles pre-GitHub-ID failures. If settlement fails, leave the claim
+    // dispatching so startup reconciliation can atomically terminalize it later.
+    await finishReviewRestart(sourceId);
+  }
 }
