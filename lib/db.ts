@@ -1543,6 +1543,8 @@ export interface OpenPR {
   url: string;
   checkStatus: 'pending' | 'success' | 'failure';
   updatedAt: string;
+  latestReviewId: number | null;
+  latestReviewIsCurrent: boolean;
 }
 
 export async function getLatestCheckForPR(repo: string, prNumber: number): Promise<{ status: string; conclusion?: string } | null> {
@@ -1567,11 +1569,26 @@ export async function getOpenPRsFromEvents(): Promise<OpenPR[]> {
       FROM jean_ci_webhook_events
       WHERE event_type = 'pull_request'
         AND repo IN (SELECT full_name FROM jean_ci_repos WHERE pr_review_enabled = TRUE)
-      ORDER BY repo, (payload->>'number')::int, created_at DESC
+      ORDER BY repo, (payload->>'number')::int, created_at DESC, id DESC
     )
-    SELECT * FROM latest_pr_events
-    WHERE payload->>'action' != 'closed'
-    ORDER BY created_at DESC
+    SELECT events.*, review.id AS latest_review_id, review.head_sha AS latest_review_head_sha,
+      latest_check.status AS check_status, latest_check.conclusion AS check_conclusion
+    FROM latest_pr_events events
+    LEFT JOIN LATERAL (
+      SELECT id, head_sha FROM jean_ci_check_runs
+      WHERE repo = events.repo AND pr_number = events.pr_number AND check_name = 'Code Review'
+      ORDER BY (head_sha = NULLIF(COALESCE(events.payload->'pull_request'->'head'->>'sha', events.payload->'head'->>'sha'), '')) DESC NULLS LAST,
+        created_at DESC, id DESC
+      LIMIT 1
+    ) review ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT status, conclusion FROM jean_ci_check_runs
+      WHERE repo = events.repo AND pr_number = events.pr_number
+        AND head_sha = NULLIF(COALESCE(events.payload->'pull_request'->'head'->>'sha', events.payload->'head'->>'sha'), '')
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    ) latest_check ON TRUE
+    WHERE events.payload->>'action' != 'closed'
+    ORDER BY events.created_at DESC, events.repo, events.pr_number
   `);
 
   const prs: OpenPR[] = [];
@@ -1580,14 +1597,9 @@ export async function getOpenPRsFromEvents(): Promise<OpenPR[]> {
     const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
     const pr = payload.pull_request || payload;
     
-    // Get latest check status for this PR
-    const check = await getLatestCheckForPR(row.repo, row.pr_number);
-    
     let checkStatus: 'pending' | 'success' | 'failure' = 'pending';
-    if (check) {
-      if (check.status === 'completed') {
-        checkStatus = check.conclusion === 'success' ? 'success' : 'failure';
-      }
+    if (row.check_status === 'completed') {
+      checkStatus = row.check_conclusion === 'success' ? 'success' : 'failure';
     }
     
     prs.push({
@@ -1599,6 +1611,8 @@ export async function getOpenPRsFromEvents(): Promise<OpenPR[]> {
       url: pr.html_url || `https://github.com/${row.repo}/pull/${row.pr_number}`,
       checkStatus,
       updatedAt: pr.updated_at || row.created_at,
+      latestReviewId: row.latest_review_id ?? null,
+      latestReviewIsCurrent: Boolean(pr.head?.sha && row.latest_review_head_sha === pr.head.sha),
     });
   }
   

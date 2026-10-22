@@ -11,6 +11,7 @@ export interface SessionData {
     avatar: string;
   };
   oauthState?: string;
+  oauthReturnTo?: string;
 }
 
 export async function getSession() {

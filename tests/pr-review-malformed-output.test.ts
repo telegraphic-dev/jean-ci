@@ -17,16 +17,18 @@ test('PR reviews report malformed output without requesting changes and preserve
     const actualContexts = await import(new URL('../lib/review-context.ts', ${JSON.stringify(import.meta.url)}).href);
     let updates = [];
     let reviews = [];
+    let stored = [];
+    let currentHead = 'head';
     const moduleUrl = (name) => new URL('../lib/' + name + '.ts', ${JSON.stringify(import.meta.url)}).href;
     mock.module(moduleUrl('db'), { namedExports: {
       getRepo: async () => ({ pr_review_enabled: true }),
       getConfig: async () => configuredPrompt, DEFAULT_USER_PROMPT: 'Review',
       insertCheckRun: async () => 1, setCheckRunGithubId: async () => {},
-      updateCheckRun: async () => {},
+      updateCheckRun: async (...args) => { stored.push(args.at(-1)); },
     }});
     mock.module(moduleUrl('github'), { namedExports: {
       getInstallationOctokit: async () => ({}), fetchPRCheckFiles: async () => [],
-      getPRInfo: async () => ({ title: 'Example', head: { sha: 'head' }, base: { sha: 'base' } }),
+      getPRInfo: async () => ({ title: 'Example', head: { sha: currentHead }, base: { sha: 'base' } }),
       getPRDiff: async () => reviewDiff, createCheck: async () => ({ id: 1 }),
       updateCheck: async (...args) => { updates.push(args.at(-1)); },
       createPRReview: async (...args) => { reviews.push(args); },
@@ -92,6 +94,33 @@ test('PR reviews report malformed output without requesting changes and preserve
     assert.equal(reviews.length, reviewCount);
     assert.equal(updates.at(-1).conclusion, 'failure');
     assert.match(updates.at(-1).output.summary, /transport budget/);
+
+    useRealContexts = false;
+    configuredPrompt = 'Review';
+    const fixture = await import(new URL('./fixtures/readable-review.ts', ${JSON.stringify(import.meta.url)}).href);
+    currentHead = fixture.syntheticSource.headSha;
+    reviewDiff = fixture.syntheticSource.diff;
+    for (const preceding of [[], ['VERDICT: PASS\nNo blocking UI defects.'], ['VERDICT: FAIL\n### Another defect\nProblem and fix.']]) {
+      responses = [...preceding, fixture.structuredOutput];
+      await runPRReview(1, 'owner', 'repo', 1, currentHead);
+      const review = reviews.at(-1);
+      assert.equal(review[4], 'REQUEST_CHANGES');
+      assert.equal(review[6], currentHead);
+      assert.match(review[5], /### Failed sends are reported as successful/);
+      assert.match(review[5], /\*\*Problem:\*\*/);
+      assert.match(review[5], /\/blob\/[a-f0-9]{40}\/src\/send.ts#L42/);
+      assert.match(review[5], /\n  Keep continuation indentation/);
+      assert.doesNotMatch(review[5], /VERDICT:|Review profile|segment \d|No blocking UI/);
+      if (preceding[0]?.includes('FAIL')) assert.match(review[5], /### Another defect/);
+      assert.match(stored.at(-1).summary, /Review profile/);
+      if (preceding.length) assert.match(stored.at(-1).summary, /segment 0/);
+    }
+    responses = ['VERDICT: FAIL\n' + 'Finding detail. '.repeat(5000) + '\nTAIL_FINDING', fixture.structuredOutput];
+    await runPRReview(1, 'owner', 'repo', 1, currentHead);
+    assert.match(stored.at(-1).summary, /TAIL_FINDING/);
+    assert.ok(stored.at(-1).summary.length > 65535);
+    assert.ok(updates.at(-1).output.summary.length <= 65535);
+    assert.match(reviews.at(-1)[5], /remaining findings are available in full details/);
   `], { encoding: 'utf8', timeout: 30_000 });
   assert.equal(result.status, 0, `${result.error || ''}\n${result.stdout}\n${result.stderr}`);
 });

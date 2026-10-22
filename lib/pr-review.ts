@@ -1,7 +1,7 @@
 import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, updateCheckRun } from './db.ts';
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
 import { callOpenClaw } from './llm.ts';
-import { buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
+import { buildPRReviewBody, buildPromptValidationSummary, combineChunkedReviewResponses, parseReviewResponse, validateReviewPrompt } from './review-output.ts';
 import { APP_BASE_URL } from './config.ts';
 import { buildExecutionFailureOutcome } from './review-failure.ts';
 import { buildReviewContexts, truncateReviewDiff } from './review-context.ts';
@@ -52,7 +52,7 @@ async function completeCheck(
     conclusion: payload.conclusion,
     completed_at: new Date().toISOString(),
     details_url: `${BASE_URL}/checks/${dbId}`,
-    output: { title: payload.title, summary: payload.summary },
+    output: { title: payload.title, summary: payload.summary.length <= 65535 ? payload.summary : `${payload.summary.slice(0, 65000)}\n\n[Full review diagnostics](${BASE_URL}/checks/${dbId})` },
   });
 
   await updateCheckRun(dbId, {
@@ -204,7 +204,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
             conclusion: 'failure',
             title: preservedFailure.title,
-            summary: `${preservedFailure.summary}\n\n- Review of remaining segments stopped after a reviewer execution failure: ${executionFailure.summary}`,
+            summary: `${preservedFailure.normalized}\n\n- Review of remaining segments stopped after a reviewer execution failure: ${executionFailure.summary}`,
           });
           console.log(`Check "${check.name}" preserved an earlier blocking finding after a later reviewer execution failure`);
           continue;
@@ -235,7 +235,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
       if (check.isGlobal) {
         try {
           const reviewEvent = conclusion === 'success' ? 'APPROVE' : 'REQUEST_CHANGES';
-          const reviewBody = `## ${parsed.title}\n\n${parsed.normalized.substring(0, 65000)}\n\n---\n*[View full details](${BASE_URL}/checks/${dbId})*`;
+          const reviewBody = buildPRReviewBody(parsed, { owner, repo, headSha, diff }, `${BASE_URL}/checks/${dbId}`);
 
           await createPRReview(octokit, owner, repo, prNumber, reviewEvent, reviewBody, headSha);
           console.log(`Created PR review: ${reviewEvent}`);
@@ -247,7 +247,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
       await completeCheck(octokit, owner, repo, checkRun.id, dbId, {
         conclusion,
         title: parsed.title,
-        summary: parsed.summary,
+        summary: parsed.normalized,
       });
 
       console.log(`Check "${check.name}" completed: ${conclusion}`);

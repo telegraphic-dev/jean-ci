@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getRepoAdminPath } from '@/lib/admin/repo-links';
+import { OpenPRReviewLink } from '@/components/OpenPRReviewLink';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface CheckRun {
@@ -31,6 +32,8 @@ interface OpenPR {
   url: string;
   checkStatus: 'pending' | 'success' | 'failure';
   updatedAt: string;
+  latestReviewId: number | null;
+  latestReviewIsCurrent: boolean;
 }
 
 interface PaginatedResult<T> {
@@ -230,14 +233,7 @@ export default function ReviewsContent({ section }: { section: ReviewsSection })
                         {getCheckStatusIcon(pr.checkStatus)}
                       </td>
                       <td className="py-3 px-4 max-w-xs" title={pr.title}>
-                        <a
-                          href={pr.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block truncate text-[var(--accent)] hover:underline font-medium"
-                        >
-                          {pr.title}
-                        </a>
+                        <OpenPRReviewLink {...pr} />
                       </td>
                       <td className="py-3 px-4">
                         <a
@@ -246,7 +242,7 @@ export default function ReviewsContent({ section }: { section: ReviewsSection })
                           rel="noopener noreferrer"
                           className="text-[var(--accent)] hover:underline font-medium"
                         >
-                          #{pr.number}
+                          GitHub #{pr.number}
                         </a>
                         <span className="ml-2 text-xs text-[var(--text-muted)] font-mono">{pr.headSha}</span>
                       </td>

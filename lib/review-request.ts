@@ -9,7 +9,7 @@ Your response MUST start with one of these exact strings:
 - **VERDICT: FAIL** - if there are confirmed blocking code issues
 - **VERDICT: INCOMPLETE** - if genuinely required evidence cannot be obtained (including denied tool approval or missing necessary context); explain what is missing and why it is necessary
 
-After the verdict, provide a brief explanation (2-5 bullet points max).
+After the verdict, use readable Markdown, not a wall of bullets. For each confirmed blocking finding, use a concise descriptive ### heading, then separate **Location**, **Problem**, and **Fix** paragraphs. Include every blocking finding; do not impose a finding-count limit. Preserve relevant continuation indentation and fenced code examples when useful. Supply only locations verified at the reviewed commit: use file:line (and symbol if known) when the line is established; otherwise name the known file or symbol without inventing a line number. Do not invent findings or titles unsupported by the evidence. Explain the failure and its impact, then the smallest blocking fix. For PASS, briefly explain why no blocking issues were found. Keep execution diagnostics and the review profile separate from findings.
 
 ## Rules
 1. Be objective and consistent
