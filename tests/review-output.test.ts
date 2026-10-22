@@ -48,7 +48,7 @@ Everything critical looks covered.`);
 
   assert.equal(parsed.verdict, 'PASS');
   assert.equal(parsed.title, '✅ Approved');
-  assert.ok(parsed.normalized.includes('- Everything critical looks covered.'));
+  assert.ok(parsed.normalized.includes('\n\nEverything critical looks covered.'));
 });
 
 test('parseReviewResponse requires verdict on first non-empty line', () => {
@@ -107,7 +107,9 @@ test('combineChunkedReviewResponses retains late findings and prose', () => {
     { label: 'dashboard (2/2)', parsed: parseReviewResponse('VERDICT: FAIL\nCritical authorization issue in the last segment.\n- Review profile: diff=reviewed; repository=inspected; tests=not needed.') },
   ]);
   assert.match(combined.summary, /Finding 13/);
-  assert.match(combined.summary, /\[dashboard \(2\/2\)\] Critical authorization issue/);
+  assert.match(combined.normalized, /## dashboard \(2\/2\)\n\nVERDICT: FAIL\n\nCritical authorization issue/);
+  assert.match(combined.reviewMarkdown, /Critical authorization issue/);
+  assert.doesNotMatch(combined.reviewMarkdown, /dashboard|Review profile|VERDICT:/);
 });
 
 test('combineChunkedReviewResponses fails the whole review when any subsystem fails', () => {
@@ -117,6 +119,7 @@ test('combineChunkedReviewResponses fails the whole review when any subsystem fa
   ]);
 
   assert.equal(combined.verdict, 'FAIL');
-  assert.match(combined.summary, /\[backend \(2\/2\)\] Authorization is missing/);
-  assert.doesNotMatch(combined.summary, /UI is safe/);
+  assert.match(combined.normalized, /## backend \(2\/2\)/);
+  assert.match(combined.reviewMarkdown, /Authorization is missing/);
+  assert.doesNotMatch(combined.reviewMarkdown, /UI is safe/);
 });

@@ -1,18 +1,20 @@
 import { getCheckRun } from '@/lib/db';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { Markdown } from '@/components/Markdown';
+import { CheckReviewContent } from '@/components/CheckReviewContent';
+import { validateReturnTo } from '@/lib/auth-return-to';
 import { requireAuth, requireReviewAdmin } from '@/lib/auth';
 import { ReviewApprovalPanel } from '@/components/ReviewApprovalPanel';
 
 export default async function CheckPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const auth = await requireAuth();
   if (!auth.authorized) {
-    redirect('/admin');
+    const returnTo = validateReturnTo(`/checks/${id}`);
+    redirect(returnTo ? `/admin?next=${encodeURIComponent(returnTo)}` : '/admin');
   }
 
   const reviewAdmin = await requireReviewAdmin();
-  const { id } = await params;
   const checkRun = await getCheckRun(parseInt(id));
   
   if (!checkRun) {
@@ -69,31 +71,8 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
                 {checkRun.override_reason && <div className="mt-2">Reason: {checkRun.override_reason}</div>}
               </div>
             )}
-            <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4 text-sm">
-              <Markdown content={checkRun.summary || 'No summary available'} />
-            </div>
+            <CheckReviewContent summary={checkRun.summary} prompt={checkRun.prompt} diff={checkRun.diff_preview} repo={checkRun.repo} headSha={checkRun.head_sha || ''} />
           </div>
-          
-          {/* Prompt Used */}
-          <div className="mb-6">
-            <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-              <span>🎯</span> Prompt Used
-            </h2>
-            <div className="bg-[var(--yellow)]/10 border border-[var(--yellow)]/20 rounded-xl p-4 text-sm max-h-80 overflow-y-auto">
-              <Markdown content={checkRun.prompt || 'Default prompt'} />
-            </div>
-          </div>
-          
-          {checkRun.diff_preview && (
-            <div>
-              <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                <span>📄</span> Diff Preview
-              </h2>
-              <div className="bg-[#1e293b] border border-[var(--border)] rounded-xl p-4 font-mono text-xs whitespace-pre overflow-x-auto max-h-96 text-slate-200">
-                {checkRun.diff_preview}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

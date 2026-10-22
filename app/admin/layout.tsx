@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
+import { githubSignInHref, validateReturnTo } from '@/lib/auth-return-to';
 
 interface User {
   id: string;
@@ -32,6 +33,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const [loading, setLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
+  const [signInHref, setSignInHref] = useState('/api/auth/github');
+
+  useEffect(() => {
+    const requestedReturn = new URL(window.location.href).searchParams.get('next');
+    setSignInHref(githubSignInHref(validateReturnTo(requestedReturn) || validateReturnTo(pathname) || '/admin'));
+  }, [pathname]);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,7 +87,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <span className="bg-gradient-to-r from-[#b7642b] to-[#9f5522] bg-clip-text text-transparent">jean-ci Admin</span>
             </h1>
             <p className="text-[var(--text-secondary)] mb-6">Sign in with GitHub to manage PR reviews and deployments.</p>
-            <a href="/api/auth/github" className="inline-block bg-[var(--accent)] text-[var(--on-accent)] px-8 py-3 rounded-full font-medium hover:bg-[var(--accent-hover)] transition-colors">
+            <a href={signInHref} className="inline-block bg-[var(--accent)] text-[var(--on-accent)] px-8 py-3 rounded-full font-medium hover:bg-[var(--accent-hover)] transition-colors">
               Sign in with GitHub
             </a>
           </div>
