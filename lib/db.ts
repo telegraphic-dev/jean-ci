@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { approvalPrompts, observedApproval, approvalDeadline } from './hermes-runs.ts';
+import { approvalPrompts, observedApproval, approvalDeadline, terminalDiagnostic } from './hermes-runs.ts';
 import type { RunBinding, RunStore, HermesRun, ApprovalPrompt } from './hermes-runs.ts';
 import { buildGatewayChatSessionUrl } from './openclaw-chat-links.ts';
 
@@ -151,6 +151,7 @@ export async function initDatabase() {
         denied BOOLEAN NOT NULL DEFAULT FALSE,
         PRIMARY KEY (check_id, segment)
       );
+      ALTER TABLE jean_ci_review_runs ADD COLUMN IF NOT EXISTS diagnostic JSONB;
       ALTER TABLE jean_ci_review_runs ADD COLUMN IF NOT EXISTS history JSONB NOT NULL DEFAULT '[]';
       CREATE TABLE IF NOT EXISTS jean_ci_review_restarts (
         source_check_id INTEGER PRIMARY KEY REFERENCES jean_ci_check_runs(id),
@@ -444,7 +445,7 @@ export const reviewRunStore: RunStore = {
     try {
       await client.query('BEGIN');
       const row = (await client.query('SELECT * FROM jean_ci_review_runs WHERE check_id=$1 AND segment=$2 FOR UPDATE', [binding.check_id, binding.segment])).rows[0];
-      if (!row || row.run_id !== binding.run_id) throw new Error('Review run identity conflict');
+      if (!row || row.run_id !== binding.run_id || row.scope !== binding.scope) throw new Error('Review run identity conflict');
       // Cross-process lock covers the fetch as well as the write. No client clock
       // or pre-lock snapshot may erase a newer native approval.
       const run = await fetchRun();
@@ -476,8 +477,11 @@ export const reviewRunStore: RunStore = {
         const h = history.find(h => h.prompt_id === previous.prompt_id && h.execution_generation === previous.execution_generation)!;
         h.outcome = !decision ? (approvalDeadline(previous) && approvalDeadline(previous)! * 1000 <= Date.now() ? 'expired' : 'unconfirmed') : decision.choice === 'deny' ? 'denied' : decision.outcome === 'accepted' ? 'approved' : 'unconfirmed';
       }
-      await client.query('UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5,history=$6::jsonb WHERE check_id=$1 AND segment=$2',
-      [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied, JSON.stringify(history)]);
+      // Save terminal evidence before the worker's fail-closed denial check.
+      // Never persist the native envelope (which can contain private tool data).
+      const diagnostic = terminalDiagnostic(run);
+      await client.query(`UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5,history=$6::jsonb,diagnostic=CASE WHEN diagnostic->>'output' IS NOT NULL THEN diagnostic ELSE COALESCE($7::jsonb,diagnostic) END WHERE check_id=$1 AND segment=$2`,
+      [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied, JSON.stringify(history), diagnostic ? JSON.stringify(diagnostic) : null]);
       await client.query('COMMIT');
       return run;
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }

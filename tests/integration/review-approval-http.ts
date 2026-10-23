@@ -22,6 +22,7 @@ test('built approval endpoint and page authenticate, reject CSRF/malformed bodie
     // Optional loopback-only preview login for a disposable test cookie. Never
     // added to the application or exposed outside this test's local fixture.
     if (req.url === '/login' && uiCookie && uiUrl) { res.writeHead(302, { 'Set-Cookie': `${uiCookie}; HttpOnly; SameSite=Lax; Path=/`, Location: uiUrl }); res.end(); return; }
+    if (req.url === '/v1/runs/run_http_historical') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ run_id: 'run_http_historical', status: 'completed', output: 'VERDICT: INCOMPLETE\nPinned dependency contracts unavailable because approval was not granted.', messages: ['SECRET_TOOL_ARGUMENT'], error: 'SECRET_NATIVE_ERROR' })); return; }
     res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ run_id: 'run_http_test', status: 'waiting_for_approval', execution_generation: 3, pending_controls: [{ kind: 'approval', prompt_id: 'prompt_http', execution_generation: 3, command: '<script>alert("escaped")</script> source inspection', description: 'Read required context', choices: ['once', 'deny'], timeout_s: 60 }] }));
   });
   await new Promise<void>(resolve => fixture.listen(0, '127.0.0.1', resolve));
@@ -48,6 +49,14 @@ test('built approval endpoint and page authenticate, reject CSRF/malformed bodie
   await db.reviewRunStore.observe(bound, async () => ({ run_id: bound.run_id, status: 'waiting_for_approval', execution_generation: 3, pending_controls: [{ kind: 'approval', prompt_id: 'prompt_expired_http', execution_generation: 3, command: 'private expired command', description: 'private expired description', choices: ['once', 'deny'], timeout_s: 1800, expires_at: Date.now() / 1000 - 1 }] }));
   await db.reviewRunStore.observe(bound, async () => ({ run_id: bound.run_id, status: 'completed', pending_controls: [], output: 'INCOMPLETE' }));
   await db.updateCheckRun(expiredId, { status: 'completed', conclusion: 'failure' });
+  const historical = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Historical diagnostic fixture', head_sha: 'a'.repeat(40) });
+  await db.reviewRunStore.reserve(historical, 1, hermesClient().scope, 'historical');
+  await db.reviewRunStore.bind(historical, 1, 'run_http_historical');
+  await db.updateCheckRun(historical, { status: 'completed', conclusion: 'failure' });
+  const foreignScope = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Foreign scope fixture', head_sha: 'a'.repeat(40) });
+  await db.reviewRunStore.reserve(foreignScope, 1, 'foreign-scope', 'foreign');
+  await db.reviewRunStore.bind(foreignScope, 1, 'run_http_foreign');
+  await db.updateCheckRun(foreignScope, { status: 'completed', conclusion: 'failure' });
   const portProbe = createServer();
   await new Promise<void>(resolve => portProbe.listen(0, '127.0.0.1', resolve));
   const port = (portProbe.address() as { port: number }).port;
@@ -76,6 +85,26 @@ test('built approval endpoint and page authenticate, reject CSRF/malformed bodie
     assert.equal((await fetch(endpoint, { headers: { cookie: `jean-ci-session=${foreign}` } })).status, 403);
     const sealed = await sealData({ user: { id: '42', login: 'test-admin' } }, { password: secret });
     const cookie = `jean-ci-session=${sealed}`;
+    const diagnosticUrl = `${origin}/api/checks/${historical}/diagnostics`;
+    assert.equal((await fetch(diagnosticUrl)).status, 403);
+    assert.equal((await fetch(diagnosticUrl, { headers: { cookie: `jean-ci-session=${foreign}` } })).status, 403);
+    assert.equal((await fetch(diagnosticUrl + '?run_id=foreign', { headers: { cookie } })).status, 400);
+    assert.equal((await fetch(diagnosticUrl, { method: 'POST', headers: { cookie } })).status, 405);
+    const diagnosticResponse = await fetch(diagnosticUrl, { headers: { cookie } });
+    assert.match(diagnosticResponse.headers.get('cache-control') || '', /no-store/);
+    const diagnosticData = await diagnosticResponse.json();
+    assert.equal(diagnosticData.parts[0].source, 'canonical');
+    assert.match(diagnosticData.parts[0].diagnostic.output, /Pinned dependency contracts unavailable/);
+    assert.doesNotMatch(JSON.stringify(diagnosticData), /SECRET_|test-only|run_http_historical/);
+    assert.equal((await db.reviewRunStore.get(historical))[0].diagnostic, null, 'historical hydration makes no database writes');
+    const diagnosticCallsBefore = gatewayCalls;
+    const mismatch = await (await fetch(`${origin}/api/checks/${foreignScope}/diagnostics`, { headers: { cookie } })).json();
+    assert.equal(mismatch.parts[0].source, 'unavailable');
+    assert.equal(gatewayCalls, diagnosticCallsBefore, 'scope mismatch cannot fetch native data');
+    const storedDiagnostic = await (await fetch(`${origin}/api/checks/${expiredId}/diagnostics`, { headers: { cookie } })).json();
+    assert.equal(storedDiagnostic.parts[0].source, 'persisted');
+    assert.equal(storedDiagnostic.parts[0].diagnostic.output, 'INCOMPLETE');
+    assert.doesNotMatch(JSON.stringify(storedDiagnostic), /private expired/);
     assert.equal((await fetch(restart, { method: 'POST', headers: { cookie: `jean-ci-session=${foreign}`, origin, 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
     const status = await fetch(endpoint, { headers: { cookie } });
     assert.equal(status.status, 200); assert.match(status.headers.get('cache-control') || '', /no-store/);

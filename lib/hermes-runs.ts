@@ -71,7 +71,14 @@ export function observedApproval(prompt: ApprovalPrompt, previous?: ApprovalProm
 export const approvalDeadline = (prompt: ApprovalPrompt) => prompt.app_deadline_at ?? prompt.expires_at;
 
 export interface ApprovalHistory { prompt_id: string; execution_generation: number; outcome: 'pending' | 'expired' | 'denied' | 'approved' | 'unconfirmed'; expiresAt: string | null; deadlineApproximate?: boolean; firstObservedAt?: number; }
-export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; history?: ApprovalHistory[]; denied: boolean; settling?: boolean; }
+// Whitelist only the canonical final assistant response, never messages/tools/reasoning.
+export interface RunDiagnostic { status: string; output: string | null; error: 'native_run_failed' | null; }
+export function terminalDiagnostic(run: HermesRun): RunDiagnostic | null {
+  if (!terminalRun(run.status)) return null;
+  return { status: run.status, output: typeof run.output === 'string' ? run.output : null,
+    error: run.status === 'failed' ? 'native_run_failed' : null };
+}
+export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; history?: ApprovalHistory[]; denied: boolean; settling?: boolean; diagnostic?: RunDiagnostic | null; }
 export interface RunStore {
   reserve(check: number, segment: number, scope: string, fingerprint: string): Promise<RunBinding>;
   bind(check: number, segment: number, run: string): Promise<void>;

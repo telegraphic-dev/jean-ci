@@ -10,6 +10,7 @@
     "lint": "next lint",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
     "test:approvals:integration": "node --test --experimental-strip-types --experimental-test-module-mocks tests/integration/review-approvals.ts",
+    "test:diagnostics:integration": "node --test --experimental-strip-types tests/integration/review-diagnostics.ts",
     "test:approvals:http": "node --test --experimental-strip-types tests/integration/review-approval-http.ts",
     "test:approvals:native": "node --test --experimental-strip-types --experimental-test-module-mocks tests/integration/review-approval-native.ts"
   },

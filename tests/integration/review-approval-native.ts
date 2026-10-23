@@ -28,12 +28,13 @@ const octokit = { request: async (route: string, params: any) => {
   }
   return { data: comments.find(c => c.id === params.comment_id) };
 } };
+const publicUpdates: any[] = [];
 let nextCheck = 0;
 mock.module(new URL('../../lib/github.ts', import.meta.url).href, { namedExports: {
   getInstallationOctokit: async () => octokit, fetchPRCheckFiles: async () => [],
   getPRInfo: async () => ({ title: 'Native approval proof', state: 'open', head: { sha: head }, base: { sha: 'b'.repeat(40) } }),
   getPRDiff: async () => 'diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
-  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async () => {}, createPRReview: async () => {},
+  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { publicUpdates.push(args.at(-1)); }, createPRReview: async () => {},
 } });
 
 test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry retain exact run and never bypass', { timeout: 60_000 }, async t => {
@@ -102,6 +103,19 @@ test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry re
       assert.deepEqual(outcome[before.run_id!], mode === 'expiry' ? { resolved: false, choice: null } : { resolved: true, choice: mode });
       assert.equal((await db.getCheckRun(id))?.conclusion, mode === 'once' ? 'success' : 'failure');
       assert.equal(binding.denied, mode !== 'once');
+      assert.equal(binding.diagnostic?.status, 'completed');
+      assert.match(binding.diagnostic?.output || '', /VERDICT: PASS[\s\S]*Fixture review complete/);
+      assert.doesNotMatch(JSON.stringify(binding.diagnostic), /fixture required source read|pending_controls|messages/);
+      const published = publicUpdates.at(-1);
+      assert.doesNotMatch(JSON.stringify(published), /Fixture review complete|Review profile/);
+      if (mode !== 'once') {
+        assert.match(published.output.summary, /Reviewer execution did not finish/);
+        assert.match((await db.getCheckRun(id))?.summary || '', /INCOMPLETE/);
+      }
+      const { reviewDiagnostics } = await import('../../lib/review-diagnostics.ts');
+      const details = await reviewDiagnostics(id, 0, { getCheck: db.getCheckRun, getBindings: db.reviewRunStore.get, client });
+      assert.equal(details?.parts[0].source, 'persisted');
+      assert.equal(details?.parts[0].diagnostic?.output, binding.diagnostic?.output);
       await assert.rejects(decideReviewApproval(id, decision, 'replay'), /no longer active/);
       const completed = await getReviewApprovals(id);
       assert.equal(completed.requests.length, 0); assert.equal(completed.history.length, 1);

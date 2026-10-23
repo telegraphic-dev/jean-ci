@@ -1,8 +1,10 @@
+import { NativeReviewDetails } from './NativeReviewDetails';
 import { Markdown } from './Markdown';
 import { linkReviewedLocations, readableReviewSummary } from '../lib/review-output';
 
 /** Receives persisted check fields only; never fetches native runs/tool arguments. */
-export function CheckReviewContent({ summary, prompt, diff, repo, headSha }: {
+export function CheckReviewContent({ summary, prompt, diff, repo, headSha, diagnosticCheckId }: {
+  diagnosticCheckId?: number;
   summary?: string | null; prompt?: string | null; diff?: string | null; repo: string; headSha: string;
 }) {
   const [owner, name, extra] = repo.split('/');
@@ -14,11 +16,13 @@ export function CheckReviewContent({ summary, prompt, diff, repo, headSha }: {
     <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-4 text-sm mb-6">
       <Markdown content={readable} />
     </div>
-    <details className={disclosure}>
+    {diagnosticCheckId ? <NativeReviewDetails checkId={diagnosticCheckId}>
+      {summary && summary !== result && <div className="text-sm"><h3 className="font-semibold">Combined review output and profiles</h3><Markdown content={summary} /></div>}
+    </NativeReviewDetails> : <details className={disclosure}>
       <summary className={trigger}>Review details</summary>
       <p className="mt-3 mb-3 text-xs text-[var(--text-muted)]">Persisted review output, including available profiles and segment identity. Historical reviews may only contain the summary originally stored.</p>
-      <div className="text-sm"><Markdown content={summary || 'No review details were stored.'} /></div>
-    </details>
+      <div className="text-sm"><Markdown content={summary && summary !== result ? summary : 'No additional review details were stored.'} /></div>
+    </details>}
     <details className={disclosure}>
       <summary className={trigger}>Prompt Used</summary>
       <div className="mt-3 bg-[var(--yellow)]/10 border border-[var(--yellow)]/20 rounded-xl p-4 text-sm max-h-80 overflow-y-auto">

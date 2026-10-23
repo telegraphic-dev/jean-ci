@@ -34,9 +34,17 @@ Authorized same-source retries read the durable reservation under the source-row
 
 Overall PASS publication uses one concise statement, “No blocking issues were identified in the reviewed changes,” with a full-details link in both the GitHub review and check summary. It makes no assertion that tests passed or that the entire repository was audited. All normalized model responses, profiles, scope and validation remain in authenticated diagnostics, collapsed beneath the concise result. FAIL publication retains genuine findings, including late-segment findings; INCOMPLETE cannot publish an approval. Presentation requires no additional model call and does not change verdict aggregation or consent semantics.
 
+## Authenticated terminal review details
+
+Final native assistant responses and terminal status are stored in the additive `jean_ci_review_runs.diagnostic` JSONB column, migrated idempotently by `initDatabase`. Observation persists this whitelisted evidence before the worker checks denied/expired/unconfirmed consent. Even a completed native response saying PASS cannot override that fail-closed check. Later source loss cannot erase a stored final response. Native envelopes, tool arguments/transcripts, reasoning and raw provider errors are not copied into this column; failed native execution has only a safe error code.
+
+Review-admin users expand **Review details** to load numbered **Review part N** responses. Large reviews are partitioned; numbering identifies those parts, not separate review attempts. Existing meaningful combined output/profiles remain available, while a generic summary is not duplicated as details. Missing responses are explicitly unavailable. The page does not fetch native output eagerly. The private, no-store `GET /api/checks/:id/diagnostics?after=N` endpoint requires the existing review-admin guard, selects only server-owned bindings matching the current client requester/profile scope, rejects run-ID query parameters, and hydrates at most four historical canonical terminal responses per page. Historical hydration is read-only: no observation writes, permission changes, new reviews, or approvals. Persisted evidence needs no native fetch. The browser can request another bounded page explicitly.
+
+Public GitHub output is unchanged: concise PASS, genuine FAIL findings, and generic execution-failure notices with a details link. Exact incomplete causes remain authenticated. This change does not backfill production storage or claim check 4948 was modified; retained canonical outputs become viewable after deployment only when their exact binding and scope still match.
+
 ## Verification boundaries
 
-- Recorded app results for this revision: **191 unit tests passed, 0 skipped; 16 PostgreSQL integration tests passed; 1 cross-language native integration passed; 1 built-app HTTP integration passed; production build passed**. `git diff --check` passed.
+- Recorded app results for this revision: **196 unit tests passed, 0 skipped; 17 approval/restart PostgreSQL integration tests plus 1 diagnostic-worker PostgreSQL test passed; 1 cross-language native integration passed; 1 built-app HTTP integration passed; production build passed**. `git diff --check` passed.
 - Full app unit suite, production Next build, and built-app HTTP approval/restart handlers are exercised. HTTP tests use task-local sealed cookies and no live credentials; this is authorization coverage, not real GitHub OAuth-provider coverage.
 - PostgreSQL integration covers process-death crash settlement, claim/settlement rollback, concurrency, restart deduplication and no duplicate external creation, plus two actual app processes with live ownership across newer startup/recovery, owner disconnect, rolling legacy safety, receipt retries during external-state changes, same-name typed restart selection, and durable approximate deadlines. Hermes and GitHub are fixtures in this suite. Runner/render tests exercise seven PASS responses, verify every normalized response remains in diagnostics, and preserve late FAIL findings and INCOMPLETE refusal.
 - The cross-language integration pins the unmodified installed baseline above and rejects another HEAD or modified tracked Python source. It runs the real app PR runner/PostgreSQL against real native HTTP, SQLite authority and blocking waiter; only the LLM and GitHub are fixtures. The task-local HOME/config sets `approvals.timeout: 1800`, and the fixture asserts the native config reader returns 1800. Once resumes the exact run; deny and actual native expiry remain incomplete; replay and late HTTP once are refused. Clock acceleration is only a disposable fixture seam, not modified native source. Native launcher lazy installs and Python bytecode writes are disabled in the test child.
@@ -50,8 +58,9 @@ Use a disposable loopback PostgreSQL database named with prefix `jean_approval_t
 
 ```bash
 npm ci --no-audit --no-fund
-npm test
+READABLE_REVIEW_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test npm test
 npm run build
+REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test npm run test:diagnostics:integration
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test npm run test:approvals:integration
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test \
   HERMES_APPROVAL_NATIVE_SOURCE=/home/openclaw/.hermes/hermes-agent \
