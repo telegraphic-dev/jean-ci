@@ -317,7 +317,8 @@ export async function updateDeploymentStatus(
   state: string, 
   description: string, 
   logUrl?: string, 
-  environmentUrl?: string
+  environmentUrl?: string,
+  throwOnError = false,
 ) {
   try {
     await octokit.request('POST /repos/{owner}/{repo}/deployments/{deployment_id}/statuses', {
@@ -329,6 +330,7 @@ export async function updateDeploymentStatus(
     });
   } catch (error: any) {
     console.error('Error updating deployment status:', error.message);
+    if (throwOnError) throw error;
   }
 }
 

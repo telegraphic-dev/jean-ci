@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getPendingDeployment, completePendingDeployment } from '@/lib/coolify';
+import { getPendingDeployment } from '@/lib/coolify';
+import { finishCoolifyDeployment, matchesCoolifyDeployment } from '@/lib/coolify-completion';
 import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from '@/lib/github';
-import { insertEvent, getRepoForApp, getLastDeploymentShaForApp, getPendingDeploymentByDeploymentUuid, getShaForDeploymentUuid } from '@/lib/db';
+import { insertEvent, deletePendingDeployment, getRepoForApp, getLastDeploymentShaForApp, getPendingDeploymentByDeploymentUuid, getShaForDeploymentUuid } from '@/lib/db';
 import { runSmokeTests } from '@/lib/smoke-tests';
 
 export async function POST(req: NextRequest) {
@@ -79,58 +80,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, event, ignored: 'no pending deployment' });
   }
   
-  // Get Octokit for this installation
-  const octokit = await getInstallationOctokit(pending.installation_id);
-  const { owner, repo, deployment_id: deploymentId, check_run_id: checkRunId, app_url: appUrl, logs_url: pendingLogsUrl } = pending;
-  const logsUrl = deployment_url || pendingLogsUrl;
-  
-  let ghState = 'in_progress';
-  let description = message || 'Deploying...';
-  let checkConclusion: string | null = null;
-  
-  if (event === 'deployment_success') {
-    ghState = 'success';
-    checkConclusion = 'success';
-    description = message || 'Deployment successful';
-    await completePendingDeployment(application_uuid);
-    
-    // Trigger smoke tests asynchronously (don't block webhook response)
-    if (headSha) {
-      runSmokeTests({
-        owner,
-        repo,
-        head_sha: headSha,
-        installation_id: pending.installation_id,
-        app_url: appUrl,
-        logs_url: logsUrl,
-      }).catch(err => console.error('Smoke test error:', err));
-    }
-  } else if (event === 'deployment_failed') {
-    ghState = 'failure';
-    checkConclusion = 'failure';
-    description = message || 'Deployment failed';
-    await completePendingDeployment(application_uuid);
-  } else {
-    return NextResponse.json({ received: true, event });
+  if (!matchesCoolifyDeployment(pending, application_uuid, deploymentUuid) || payload.pull_request_id) {
+    return NextResponse.json({ received: true, ignored: 'deployment identity mismatch' });
   }
-  
-  if (deploymentId) {
-    await updateDeploymentStatus(octokit, owner, repo, deploymentId, ghState, description, logsUrl, appUrl);
-    console.log(`[Coolify] Updated GitHub deployment ${deploymentId} to ${ghState}`);
-  }
-  
-  if (checkRunId) {
-    await updateCheck(octokit, owner, repo, checkRunId, {
-      status: 'completed',
-      conclusion: checkConclusion,
-      details_url: logsUrl,
-      output: {
-        title: checkConclusion === 'success' ? 'Deployment successful' : 'Deployment failed',
-        summary: `${description}\n\n[View deployment](${appUrl}) | [View logs](${logsUrl})`,
-      },
-    });
-    console.log(`[Coolify] Updated GitHub check ${checkRunId} to ${checkConclusion}`);
-  }
-  
-  return NextResponse.json({ received: true, state: ghState });
+  const conclusion = event === 'deployment_success' ? 'success' : event === 'deployment_failed' ? 'failure' : null;
+  if (!conclusion) return NextResponse.json({ received: true, event });
+  await finishCoolifyDeployment(pending, conclusion, {
+    getInstallationOctokit, updateDeploymentStatus, updateCheck, deletePendingDeployment, runSmokeTests,
+  }, deployment_url || pending.logs_url, message || undefined);
+  return NextResponse.json({ received: true, state: conclusion });
 }

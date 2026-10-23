@@ -67,7 +67,8 @@ export async function getCoolifyAppDetails(appUuid: string) {
       fqdn: data.fqdn,
       name: data.name,
       status: data.status,
-      projectUuid: data.project?.uuid,
+      projectUuid: data.environment?.project?.uuid || data.project?.uuid,
+      environmentUuid: data.environment?.uuid,
       environmentName: data.environment?.name,
     };
   } catch (e: any) {
@@ -86,13 +87,13 @@ export async function getCoolifyAppDetails(appUuid: string) {
 
 export async function triggerCoolifyDeploy(appUuid: string) {
   if (!COOLIFY_TOKEN || !COOLIFY_URL) {
-    console.log('[MOCK] Would trigger Coolify deploy for:', appUuid);
-    return { success: true, mock: true };
+    return { success: false, error: 'Coolify URL and token are required' };
   }
   const url = `${COOLIFY_URL}/api/v1/applications/${appUuid}/start`;
 
   try {
-    // Use /start instead of /restart - /start triggers deployment webhooks, /restart doesn't
+    // POST is supported by both tags; v4.4.7 no longer accepts GET here.
+    // /start queues a deployment, unlike the restart-only workflow.
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -116,6 +117,11 @@ export async function triggerCoolifyDeploy(appUuid: string) {
     }
     
     const data = await response.json();
+    // Both tags return HTTP 200 with only a message when queueing is skipped.
+    // Never register an untrackable deployment or automatically retry a POST.
+    if (typeof data?.deployment_uuid !== 'string' || !data.deployment_uuid.trim()) {
+      return { success: false, error: 'Coolify did not return a deployment UUID (request skipped or invalid response)' };
+    }
     return { success: true, deploymentUuid: data.deployment_uuid };
   } catch (error: any) {
     logExternalCallFailure({

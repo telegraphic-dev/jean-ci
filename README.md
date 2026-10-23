@@ -310,6 +310,8 @@ Optional bootstrap token(s) can be set via env vars:
 
 jean-ci can automatically deploy to Coolify when new container images are published to GHCR.
 
+Before upgrading Coolify 4.0.0 to 4.4.7, use the [deployment migration gate](docs/coolify-4.4-migration-gate.md) for API changes, completion guarantees, and required operational checks.
+
 ## Paperclip PR Sync
 
 If `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are set, jean-ci also watches merged GitHub pull requests and marks linked Paperclip issues as `done`.
@@ -377,7 +379,7 @@ jean-ci is **buildpack-agnostic** — it doesn't know or care whether your Cooli
 
 1. Receives `registry_package` webhook from GitHub, or a successful default-branch `workflow_run` completion with a matching GHCR `sha-<commit>` tag
 2. Matches the package URL to a `coolify_app` UUID in your `.jean-ci/coolify.yml`
-3. Calls `POST /applications/{uuid}/restart` on Coolify API
+3. Calls `POST /api/v1/applications/{uuid}/start` on the Coolify API and requires a deployment UUID receipt
 4. Coolify handles the rest based on its own app configuration
 
 This means the **buildpack is configured in Coolify UI**, not in `coolify.yml`. The `coolify.yml` is just a mapping from GHCR package → Coolify app UUID.
