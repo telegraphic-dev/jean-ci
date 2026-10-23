@@ -1,4 +1,4 @@
-import { approvalPrompts, hermesClient, validControlId, terminalRun } from './hermes-runs.ts';
+import { approvalDeadline, approvalPrompts, hermesClient, validControlId, terminalRun } from './hermes-runs.ts';
 import type { ApprovalPrompt, RunBinding } from './hermes-runs.ts';
 import { claimReviewDecision, claimReviewNotification, finishReviewDecision, getCheckRun, getRepo, reviewRunStore } from './db.ts';
 import { getInstallationOctokit, getPRInfo } from './github.ts';
@@ -65,7 +65,7 @@ export async function getReviewApprovals(id: number, deps: ApprovalDeps = defaul
     if (terminalRun(binding.status)) { statuses.push(binding.status); continue; }
     const run = await deps.store.observe(binding, () => client.status(binding.run_id!));
     statuses.push(run.status);
-    for (const prompt of approvalPrompts(run)) if (!prompt.expires_at || prompt.expires_at * 1000 > Date.now()) requests.push({ ...prompt, segment: binding.segment });
+    for (const prompt of approvalPrompts(run)) if (!approvalDeadline(prompt) || approvalDeadline(prompt)! * 1000 > Date.now()) requests.push({ ...prompt, segment: binding.segment });
   }
   const saved = await deps.store.get(id);
   const history = saved.flatMap(b => (b.history || []).map(h => ({ ...h, segment: b.segment,
@@ -90,10 +90,11 @@ export async function decideReviewApproval(id: number, decision: ApprovalDecisio
   const pr = await deps.getPRInfo(octokit, owner, name, check.pr_number);
   if (pr.head?.sha !== check.head_sha || pr.state !== 'open') throw new ApprovalError(409, 'Review head changed or PR closed');
   // Canonical request immediately before dispatch, never a cached command or
-  // run ID from the browser. Hermes atomically enforces expiry and generation.
+  // run ID from the browser. Native authority enforces generation and first settlement;
+  // the approximate app bound cannot override or revive an expired native waiter.
   const run = await deps.store.observe(binding, () => client.status(binding.run_id!));
   const prompt = approvalPrompts(run).find(p => p.prompt_id === decision.prompt_id && p.execution_generation === decision.execution_generation);
-  if (!prompt || (prompt.expires_at && prompt.expires_at * 1000 <= Date.now()) || !prompt.choices.includes(decision.choice)) throw new ApprovalError(409, 'Approval expired, changed, or already resolved');
+  if (!prompt || (approvalDeadline(prompt) && approvalDeadline(prompt)! * 1000 <= Date.now()) || !prompt.choices.includes(decision.choice)) throw new ApprovalError(409, 'Approval expired, changed, or already resolved');
   await activeCheck(id, deps);
   if (!await deps.claim(binding, prompt, decision.choice, actor)) throw new ApprovalError(409, 'Decision already submitted; refresh status');
   try {

@@ -1,47 +1,55 @@
 # Approval wait window qualification
 
-## Native cause, not an assumed default
+## Native cause and approved configuration
 
-The read-only incident check for `telegraphic-dev/a2a-exposed-site` PR 171, check 4941, confirmed three completed native segments. Only segment 3 (`run_1d0ae77d080249d19c817a3f77d6f3c2`) had `denied=true`; all pending arrays were empty.
+The read-only incident check for `telegraphic-dev/a2a-exposed-site` PR 171, check 4941, confirmed three completed native segments. Only segment 3 (`run_1d0ae77d080249d19c817a3f77d6f3c2`) had `denied=true`; all pending arrays were empty. Its native transcript recorded “No answer within 1 minute — the command did not run” at 2026-10-22T19:46:23.140211Z. This establishes the actual short native timeout; a longer app deadline alone cannot fix it.
 
-Its exact native tool transcript records a blocked terminal result at **2026-10-22T19:46:23.140211Z**, with the native user summary **“No answer within 1 minute — the command did not run.”** This is evidence of the actual one-minute approval expiry, not a deduction from Hermes's current 300-second config default. The check completed at 19:46:34.697Z, 70.697 seconds after the reported 19:45:24Z notification. The nine-minute app deadline could also consume human waiting time, but was not the demonstrated expiry cause for this incident. No command text or credentials are retained here.
+The installed **unmodified** Hermes baseline is `e6f57427c198cfd96854522b7a9159eb007e13c2`. Its blocking waiter reads `approvals.timeout` in `tools/approval_context.py`; canonical Runs controls use that same waiter. No upstream extension is required. New app submissions contain only `input` and `instructions`, with the existing durable Idempotency-Key header. Decisions contain only exact native `request_id`, `execution_generation`, and `choice: once|deny`. The canonical authority response uses `status: resolved`; the app then reads back the same run before recording accepted consent.
 
-The installed source at `e6f57427c198cfd96854522b7a9159eb007e13c2` reads `approvals.timeout` in `tools/approval_context.py`; its native blocking waiter reads that value, and canonical API controls project the same waiter. The installed Runs request has no safe per-run timeout field. The authoritative API documentation was checked at <https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server> before defining an additive extension.
+The user explicitly approved and the parent operator applied:
 
-## Coordinated prerequisite
+```bash
+hermes --profile jean config set approvals.timeout 1800
+```
 
-The isolated native extension is committed at **`625b7bdd35ff9bf29dc797c24bd051909d957c3a`**, branch `fix/api-run-approval-window`, in `/home/openclaw/worktrees/hermes-approval-wait-window`. It is based on the installed source above, not edited into the shared runtime.
+This affects **all Jean-profile approvals**, not only jean-ci reviews. It does **not** modify the default profile and does not enable bypass, session-wide consent, or permanent approval. No test writes either shared configuration. Serving processes must load this configuration before the app is enabled; no gateway restart or deployment is part of this change. Existing expired incident executions cannot be revived. Native upstream PR 143230 is not a prerequisite and is left unchanged.
 
-It adds `features.run_approval_timeout_v1` and a validated fresh-Runs `approval_timeout_s` field, bounded to 1–1800 seconds. The value is durable per admission, is part of exact retry identity, is not saved as a session default, and does not change approval policy. Pending controls expose a stable native deadline; late exact approvals fail closed. Existing unscoped approval timing and session/always semantics are unchanged. Continuations and room grants cannot acquire this override.
+## Honest baseline deadline and budget
 
-**Deployment order:** independently review/install the native extension first; confirm this capability from the exact reviewer base/profile/credential route; then deploy the app. No global/default/Jean approval configuration should be changed. An older gateway is a hard prerequisite failure for new Runs reviews, not an app-only 30-minute promise. Already completed incident executions cannot be revived. Unknown/unreachable native executions remain fail-closed rather than being silently recreated.
+Baseline pending controls can omit both `timeout_s` and `expires_at`. The app persists first-observed time and a bounded calculated deadline under the existing PostgreSQL observation row lock. It uses native `timeout_s` when available, otherwise the configured 1800-second bound; no calculated wait exceeds 30 minutes per prompt/generation. The UI labels that deadline **approximate**, including history, and explicitly warns native expiry may be earlier. The app never invents a native `expires_at` or promises its estimate overrides the native waiter. Refresh, concurrent polling, database reload, or reappearance of an old exact prompt cannot renew the recorded window.
 
-Startup app migrations add safe history and the durable restart mapping/queue. Existing run bindings, the cross-process observation lock, exact decision identities, and the 60-second database-clock decision lease remain in force. Explicit restart creates one new check, verifies current open PR/head/enabled repository and known-terminal native executions, and still requires separate approval. Queued requests survive dispatch interruption; claimed executions are never automatically replayed. Full multi-segment worker continuation after a process crash is not provided.
+The nine-minute active-execution budget excludes canonical approval waiting only up to that bounded deadline. A simulated twenty-minute human wait is tested with and without native timeout metadata, followed by successful completion or active-work timeout. A stuck canonical wait cannot pause the app indefinitely. This is not a thirty-minute wall-clock soak.
 
-Restart claims return the reserved check in the same SQL statement that claims it; a failed statement cannot commit a claim before a separate check read. Startup atomically settles pre-startup dispatching reservations and marks their unfinished local checks **INCOMPLETE / failure**, including reservations with no saved GitHub ID. Normal dispatcher cleanup uses the same atomic settlement; a failed persistence attempt leaves the reservation available for reconciliation at the next startup, not silently done. Completed results, queued requests, and claims begun at or after startup are preserved. Source deduplication mappings remain permanent. A later explicit restart of the terminal incomplete check is a separate request and still checks current PR/head/repository state and every existing native binding; unbound, unknown or live executions prevent replacement. An external check created before its ID was saved may remain orphaned on GitHub: reconciliation does not infer its identity, recreate it, submit another native run, or publish another review. Local incomplete settlement does not promise synchronization of external GitHub checks.
+The baseline uses native first-settlement arbitration, not the extension's entry-deadline semantics. Qualification advances the disposable waiter's monotonic clock, waits for actual native timeout and queue removal, and then submits the old exact once over HTTP. It is refused without resurrecting the run. This does not claim an unmodified baseline atomically rejects a once that races ahead of timeout settlement solely because a wall-clock estimate has elapsed.
+
+## Security and restart durability retained
+
+Existing same-run bindings, exact prompt/generation controls, requester/profile scope, admin/CSRF guards, cross-process observation locking, ambiguous-delivery refusal, and the 60-second database-clock decision lease remain. Denial, expiry or unconfirmed consent cannot turn optimistic reviewer text into a complete PASS. Completed checks show safe approval history without private command/arguments and cannot accept old approvals. Explicit restart verifies known-terminal native executions, current open PR/head and enabled repository, deduplicates source-check reservations, and still requires new consent.
+
+Restart claims return the reserved check in the same SQL statement that claims it. Startup atomically settles pre-startup dispatching reservations and marks unfinished checks INCOMPLETE/failure, including before GitHub ID persistence. Failed settlement rolls back and is recoverable at next startup. Queued requests, fresh claims, completed results and permanent source deduplication remain intact. Claimed uncertain external work is never automatically replayed. An externally created check whose ID was not persisted can remain orphaned; local settlement does not promise external check synchronization. Full crash-resumable multi-segment execution is not provided.
 
 ## Verification boundaries
 
-- All app unit tests and production build are exercised; the build includes `/api/checks/[id]/restart`. Standalone whole-tree `tsc --noEmit` also reports unrelated test-fixture typing errors in unchanged `openclaw-playground`, `openclaw-status`, `public-openapi-parity`, and `repo-feature-sessions` tests; this handoff does not claim that separate baseline check is green.
-- The PostgreSQL integration suite drives the real PR runner/controller, concurrent observations and decision dispatch, lease expiry, denial/expiry, notification failures, durable restart deduplication (12 clicks and 8 dispatchers), changed head, closed/disabled PR, live/unknown original execution and replay rejection. Restart durability coverage also abruptly terminates child processes after a committed claim before the old check-read boundary, after the new atomic claim before GitHub ID persistence, and after a loopback HTTP fixture has accepted external creation. Database triggers deterministically fail claim/terminal persistence to prove atomic rollback and subsequent startup reconciliation. It asserts no duplicate external creation/native submission/review, retained source deduplication, truthful terminal response status, and guarded later explicit restart. Hermes/GitHub boundaries in this suite are fixtures.
-- The separate **cross-language native integration** uses the real app PR runner and PostgreSQL against the committed native HTTP API, SQLite authority and blocking approval waiter. Only GitHub and the LLM are fixtures. It proves a negotiated 1800-second deadline, concurrent polls without consent, once resuming the same live run, deny, native rejection of an exact approval after simulated monotonic expiry, incomplete results despite optimistic reviewer text, and replay refusal. The isolated fixture owns its HOME, state DB and child process and removes them. The expiry race advances only the disposable waiter's clock; it does not claim a thirty-minute wall-clock soak.
-- Native API/approval regression: **108 files, 890 passed, 1 macOS-only skip** through the canonical `scripts/run_tests.sh`. The new native HTTP test also lets a one-second waiter expire naturally while a simultaneous 1800-second waiter remains actionable, then resumes that exact live waiter.
-- Built Next HTTP tests use local sealed administrator/foreign cookies and a strong task-local secret. They exercise actual approval/restart handlers, origin/type/body-size guards, default-secret/unset-admin refusal, completed-check history and retained panel rendering. Test server environments do not inherit live credentials. This is cookie/authorization coverage, not live GitHub OAuth-provider coverage.
-- A real browser loaded the authenticated completed-check fixture and rendered **Approval expired**, its deadline, **Restart review**, and no Approve-once action. No private expired command appeared in that completed view.
+- Recorded app results for this revision: **190 unit tests passed, 1 skipped; 11 PostgreSQL integration tests passed; 1 cross-language native integration passed; 1 built-app HTTP integration passed; production build passed**. `git diff --check` passed.
+- Full app unit suite, production Next build, and built-app HTTP approval/restart handlers are exercised. HTTP tests use task-local sealed cookies and no live credentials; this is authorization coverage, not real GitHub OAuth-provider coverage.
+- PostgreSQL integration retains all ten existing tests, including process-death crash settlement, claim/settlement rollback, concurrency, restart deduplication and no duplicate external creation. An additional regression proves durable approximate deadlines survive reload and cannot renew after canonical settlement. Hermes and GitHub are fixtures in this suite.
+- The cross-language integration pins the unmodified installed baseline above and rejects another HEAD or modified tracked Python source. It runs the real app PR runner/PostgreSQL against real native HTTP, SQLite authority and blocking waiter; only the LLM and GitHub are fixtures. The task-local HOME/config sets `approvals.timeout: 1800`, and the fixture asserts the native config reader returns 1800. Once resumes the exact run; deny and actual native expiry remain incomplete; replay and late HTTP once are refused. Clock acceleration is only a disposable fixture seam, not modified native source. Native launcher lazy installs and Python bytecode writes are disabled in the test child.
+- The tests own and remove their native HOME/process. Use a separately owned disposable PostgreSQL container/database and retire that exact resource after qualification. Never reuse or stop another task's database.
 
-No live approval, PR comment, retry, push, deployment, gateway restart, shared runtime source edit or runtime configuration change was performed.
+No PR push, live approval/comment, deployment, gateway restart, native source modification, default-profile change, or upstream PR change is performed by this revision. The profile-wide operator change above is intentional and separately approved.
 
 ## Repeatable local checks
 
-Use a disposable loopback PostgreSQL database with a name beginning `jean_approval_test` (the suites deliberately reset fixture checks), and a native test interpreter with the committed checkout's dependencies:
+Use a disposable loopback PostgreSQL database named with prefix `jean_approval_test`:
 
 ```bash
+npm ci --no-audit --no-fund
 npm test
 npm run build
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test npm run test:approvals:integration
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test \
-  HERMES_APPROVAL_NATIVE_SOURCE=/path/to/isolated/native/checkout \
-  HERMES_APPROVAL_NATIVE_PYTHON=/path/to/native/test/python \
+  HERMES_APPROVAL_NATIVE_SOURCE=/home/openclaw/.hermes/hermes-agent \
+  HERMES_APPROVAL_NATIVE_PYTHON=/path/to/native/dependency/python \
   npm run test:approvals:native
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/jean_approval_test npm run test:approvals:http
 ```

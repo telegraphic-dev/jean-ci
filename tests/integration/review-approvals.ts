@@ -76,7 +76,7 @@ const oldFetch = global.fetch;
 const fixtureFetch: typeof fetch = async (url, init = {}) => {
   const path = String(url);
   assert.ok(path.startsWith('http://hermes-fixture.invalid/v1/'), 'no live network requests');
-  if (path.endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true, run_approval_timeout_v1: true } });
+  if (path.endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true } });
   if (path.endsWith('/runs') && init.method === 'POST') {
     const key = (init.headers as Record<string, string>)['Idempotency-Key'];
     assert.ok(key);
@@ -477,4 +477,26 @@ test('startup covers saved GitHub IDs but preserves queued and new claims and co
   assert.equal((await pool.query('SELECT dispatch_status FROM jean_ci_review_restarts WHERE source_check_id=$1', [fresh.source])).rows[0].dispatch_status, 'dispatching');
   assert.equal((await db.getCheckRun(completed.target))?.conclusion, 'success');
   assert.equal((await db.getCheckRun(completed.target))?.title, 'PASS');
+});
+
+test('baseline observation deadline survives database reload and cannot be renewed after canonical settlement', async () => {
+  const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Code Review', head_sha: currentHead });
+  let binding = await db.reviewRunStore.reserve(id, 1, hermesClient().scope, 'baseline-deadline');
+  await db.reviewRunStore.bind(id, 1, 'run_baseline_deadline');
+  binding = { ...binding, run_id: 'run_baseline_deadline' };
+  const native = () => ({ run_id: binding.run_id!, status: 'waiting_for_approval', execution_generation: 11, pending_controls: [{ ...prompt, kind: 'approval' as const }] });
+  const first = await db.reviewRunStore.observe(binding, async () => native());
+  const deadline = first.pending_controls![0].app_deadline_at;
+  assert.ok(deadline); assert.equal(first.pending_controls![0].deadline_approximate, true);
+  assert.equal(first.pending_controls![0].expires_at, undefined);
+  const reloaded = (await db.reviewRunStore.get(id))[0];
+  const second = await db.reviewRunStore.observe(reloaded, async () => native());
+  assert.equal(second.pending_controls![0].app_deadline_at, deadline);
+  await db.reviewRunStore.observe(reloaded, async () => ({ run_id: binding.run_id!, status: 'running', pending_controls: [] }));
+  const third = await db.reviewRunStore.observe((await db.reviewRunStore.get(id))[0], async () => native());
+  assert.equal(third.pending_controls![0].app_deadline_at, deadline, 'old exact identity cannot mint a new pause');
+  const saved = (await db.reviewRunStore.get(id))[0];
+  assert.equal(saved.history![0].expiresAt, new Date(deadline! * 1000).toISOString());
+  assert.equal(saved.history![0].deadlineApproximate, true);
+  assert.equal(saved.denied, true, 'unconfirmed disappearance remains fail-closed');
 });

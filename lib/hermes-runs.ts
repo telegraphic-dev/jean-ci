@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 export interface ApprovalPrompt {
   kind: 'approval'; prompt_id: string; execution_generation: number;
   command: string; description: string; choices: string[]; timeout_s?: number; expires_at?: number;
+  first_observed_at?: number; app_deadline_at?: number; deadline_approximate?: boolean;
 }
 export interface HermesRun {
   run_id: string; status: string; execution_generation?: number;
@@ -35,11 +36,10 @@ export function hermesClient() {
       const features = data.features || {};
       if (features.run_submission !== true) return false;
       if (features.run_status !== true || features.run_approval_response !== true || features.approval_events !== true) throw new Error('Hermes Runs lacks approval capabilities');
-      if (features.run_approval_timeout_v1 !== true) throw new Error('INCOMPLETE: Hermes requires the per-run approval window extension; no review was submitted.');
       return true;
     },
     async create(input: string, instructions: string, key: string): Promise<HermesRun> {
-      const result = await request('/runs', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ input, instructions, approval_timeout_s: 1800 }) });
+      const result = await request('/runs', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ input, instructions }) });
       if (!validControlId(result.run_id)) throw new Error('Invalid Hermes run identity');
       return result;
     },
@@ -60,7 +60,17 @@ export function approvalPrompts(run: HermesRun): ApprovalPrompt[] {
   return (run.pending_controls || []).filter(p => p.kind === 'approval' && validControlId(p.prompt_id) && p.execution_generation === run.execution_generation && typeof p.command === 'string' && typeof p.description === 'string' && Array.isArray(p.choices));
 }
 
-export interface ApprovalHistory { prompt_id: string; execution_generation: number; outcome: 'pending' | 'expired' | 'denied' | 'approved' | 'unconfirmed'; expiresAt: string | null; }
+// Baseline Hermes may expose neither timeout_s nor a native absolute deadline.
+// This durable observation estimate bounds app waiting; it never extends native consent.
+export function observedApproval(prompt: ApprovalPrompt, previous?: ApprovalPrompt, now = Date.now()): ApprovalPrompt {
+  const first = previous?.first_observed_at ?? now / 1000;
+  const timeout = Number.isFinite(prompt.timeout_s) && prompt.timeout_s! > 0 ? Math.min(prompt.timeout_s!, 1800) : 1800;
+  const deadline = previous?.app_deadline_at ?? Math.min(first + timeout, Number.isFinite(prompt.expires_at) ? prompt.expires_at! : Infinity);
+  return { ...prompt, first_observed_at: first, app_deadline_at: deadline, deadline_approximate: !Number.isFinite(prompt.expires_at) };
+}
+export const approvalDeadline = (prompt: ApprovalPrompt) => prompt.app_deadline_at ?? prompt.expires_at;
+
+export interface ApprovalHistory { prompt_id: string; execution_generation: number; outcome: 'pending' | 'expired' | 'denied' | 'approved' | 'unconfirmed'; expiresAt: string | null; deadlineApproximate?: boolean; firstObservedAt?: number; }
 export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; history?: ApprovalHistory[]; denied: boolean; settling?: boolean; }
 export interface RunStore {
   reserve(check: number, segment: number, scope: string, fingerprint: string): Promise<RunBinding>;
@@ -94,6 +104,7 @@ export async function runHermesReview(input: string, instructions: string, optio
   let remaining = options.deadlineMs ?? 540_000;
   let pausedUntil = 0;
   let failures = 0;
+  const observed = new Map<string, ApprovalPrompt>();
   while (remaining > 0) {
     const tick = now();
     remaining -= Math.max(0, tick - Math.max(previous, Math.min(tick, pausedUntil)));
@@ -110,9 +121,13 @@ export async function runHermesReview(input: string, instructions: string, optio
     if (run.status === 'waiting_for_approval') {
       if (!binding) throw new Error('INCOMPLETE: Tool approval requires an authenticated PR check page; local reviews never auto-approve.');
       if (approvalPrompts(run).length) {
-        // Only a server-attested deadline pauses execution accounting. Old native
-        // versions cannot silently promise a longer approval wait.
-        pausedUntil = Math.max(0, ...approvalPrompts(run).map(p => Number.isFinite(p.expires_at) ? p.expires_at! * 1000 : 0));
+        pausedUntil = Math.max(0, ...approvalPrompts(run).map(p => {
+          const key = `${p.execution_generation}:${p.prompt_id}`;
+          const prior = observed.get(key);
+          const timed = p.app_deadline_at != null ? p : observedApproval(p, prior, tick);
+          observed.set(key, timed);
+          return Math.min(approvalDeadline(timed)! * 1000, (timed.first_observed_at! + 1800) * 1000);
+        }));
         try { await options.onWaiting?.(); } catch { console.warn('Optional approval wait announcement unavailable; existing run retained'); }
       }
     } else pausedUntil = 0;

@@ -2,8 +2,8 @@
 // real jean-ci PR runner/PostgreSQL. Only the LLM and GitHub boundaries are fixtures.
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawn, execFileSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const database = process.env.REVIEW_APPROVAL_TEST_DATABASE_URL;
@@ -11,6 +11,8 @@ const source = process.env.HERMES_APPROVAL_NATIVE_SOURCE;
 const python = process.env.HERMES_APPROVAL_NATIVE_PYTHON;
 if (!database || !['localhost', '127.0.0.1'].includes(new URL(database).hostname) || !new URL(database).pathname.startsWith('/jean_approval_test')) throw new Error('Explicit disposable local jean_approval_test database required');
 if (!source?.startsWith('/') || !python?.startsWith('/') || !process.env.TMPDIR) throw new Error('Explicit isolated native checkout, test interpreter, and TMPDIR required');
+assert.equal(execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), 'e6f57427c198cfd96854522b7a9159eb007e13c2', 'qualify installed baseline, never the extension worktree');
+assert.equal(execFileSync('git', ['-C', source, 'diff', 'HEAD', '--', '*.py'], { encoding: 'utf8' }), '', 'native Python source must be unmodified');
 process.env.DATABASE_URL = database;
 process.env.OPENCLAW_USE_WEBSOCKET = 'false';
 process.env.OPENCLAW_USE_RUNS = 'true';
@@ -36,8 +38,9 @@ mock.module(new URL('../../lib/github.ts', import.meta.url).href, { namedExports
 
 test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry retain exact run and never bypass', { timeout: 60_000 }, async t => {
   const home = await mkdtemp(join(process.env.TMPDIR!, 'jean-native-approval-'));
+  await writeFile(join(home, 'config.yaml'), 'approvals:\n  timeout: 1800\n');
   const child = spawn(python!, [new URL('./native-approval-fixture.py', import.meta.url).pathname], {
-    env: { PATH: process.env.PATH, NODE_ENV: 'test', HOME: home, HERMES_HOME: home, HERMES_RUNTIME_DIR: join(home, 'runtime'), TMPDIR: home, PYTHONPATH: source! },
+    env: { PATH: process.env.PATH, NODE_ENV: 'test', PYTHONDONTWRITEBYTECODE: '1', HERMES_DISABLE_LAZY_INSTALLS: '1', HOME: home, HERMES_HOME: home, HERMES_RUNTIME_DIR: join(home, 'runtime'), TMPDIR: home, PYTHONPATH: source! },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let logs = '';
@@ -65,7 +68,7 @@ test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry re
     await db.initDatabase();
     await db.upsertRepo('fixture/native', 1, true);
     const client = hermesClient();
-    assert.equal(await client.supported(), true, 'native negotiates the exact per-run window capability');
+    assert.equal(await client.supported(), true, 'unmodified baseline advertises canonical Runs without an extension');
     for (const mode of ['once', 'deny', 'expiry']) {
       const running = runPRReview(1, 'fixture', 'native', 1, head);
       let id: number | undefined;
@@ -80,8 +83,9 @@ test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry re
       assert.ok(before?.run_id); assert.equal(before.pending.length, 1);
       const native = await client.status(before.run_id!);
       assert.equal(native.status, 'waiting_for_approval');
-      assert.equal(native.pending_controls![0].timeout_s, 1800);
-      assert.ok(native.pending_controls![0].expires_at! * 1000 - Date.now() > 1_790_000);
+      assert.equal(native.pending_controls![0].expires_at, undefined, 'baseline has no absolute native deadline');
+      assert.ok(before.pending[0].app_deadline_at! * 1000 - Date.now() > 1_790_000);
+      assert.equal(before.pending[0].deadline_approximate, true);
       const panels = await Promise.all([getReviewApprovals(id), getReviewApprovals(id)]);
       assert.equal(panels[0].requests[0].prompt_id, panels[1].requests[0].prompt_id);
       assert.equal((await fetch(`${gateway}/_fixture/evidence`).then(r => r.json()))[before.run_id!], undefined, 'native waiter has not been answered by polling or a link');
@@ -89,6 +93,7 @@ test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry re
       if (mode === 'expiry') {
         const expired = await fetch(`${gateway}/_fixture/expire`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ run_id: before.run_id }) });
         assert.deepEqual(await expired.json(), { advanced: 1, resolved: 0 });
+        await assert.rejects(client.decide(before.run_id!, before.pending[0], 'once'), /refused/);
       } else await decideReviewApproval(id, decision, 'fixture-admin');
       await running;
       const binding = (await db.reviewRunStore.get(id))[0];
@@ -102,6 +107,9 @@ test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry re
       assert.equal(completed.requests.length, 0); assert.equal(completed.history.length, 1);
       assert.ok(!JSON.stringify(completed.history).includes('fixture required source read'));
     }
+  } catch (error) {
+    console.error(logs);
+    throw error;
   } finally {
     child.kill('SIGTERM');
     await new Promise<void>(resolve => { if (child.exitCode != null) resolve(); else child.once('exit', () => resolve()); });

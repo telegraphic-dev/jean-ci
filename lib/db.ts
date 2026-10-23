@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { approvalPrompts } from './hermes-runs.ts';
+import { approvalPrompts, observedApproval, approvalDeadline } from './hermes-runs.ts';
 import type { RunBinding, RunStore, HermesRun, ApprovalPrompt } from './hermes-runs.ts';
 import { buildGatewayChatSessionUrl } from './openclaw-chat-links.ts';
 
@@ -447,12 +447,21 @@ export const reviewRunStore: RunStore = {
       // or pre-lock snapshot may erase a newer native approval.
       const run = await fetchRun();
       if (row.run_id !== run.run_id) throw new Error('Review run identity conflict');
-      const pending = approvalPrompts(run);
       const history: import('./hermes-runs.ts').ApprovalHistory[] = row.history || [];
-      for (const prompt of [...row.pending, ...pending] as ApprovalPrompt[]) {
+      const pending = approvalPrompts(run).map(prompt => {
+        const prior = (row.pending as ApprovalPrompt[]).find(p => p.prompt_id === prompt.prompt_id && p.execution_generation === prompt.execution_generation);
+        const recorded = history.find(h => h.prompt_id === prompt.prompt_id && h.execution_generation === prompt.execution_generation);
+        // Re-observation, including after process restart or a settled projection,
+        // cannot mint a new window for an old exact native identity.
+        const saved = recorded?.expiresAt ? { ...prompt, first_observed_at: recorded.firstObservedAt ?? Date.parse(recorded.expiresAt) / 1000 - 1800, app_deadline_at: Date.parse(recorded.expiresAt) / 1000 } : undefined;
+        return observedApproval(prompt, prior?.app_deadline_at != null ? prior : saved);
+      });
+      run.pending_controls = pending;
+      for (const prompt of [...pending, ...row.pending] as ApprovalPrompt[]) {
         if (!history.some(h => h.prompt_id === prompt.prompt_id && h.execution_generation === prompt.execution_generation)) history.push({
           prompt_id: prompt.prompt_id, execution_generation: prompt.execution_generation, outcome: 'pending',
-          expiresAt: Number.isFinite(prompt.expires_at) ? new Date(prompt.expires_at! * 1000).toISOString() : null,
+          expiresAt: approvalDeadline(prompt) ? new Date(approvalDeadline(prompt)! * 1000).toISOString() : null,
+          deadlineApproximate: prompt.deadline_approximate, firstObservedAt: prompt.first_observed_at,
         });
       }
       let denied = row.denied;
@@ -463,7 +472,7 @@ export const reviewRunStore: RunStore = {
         [binding.check_id, binding.segment, previous.prompt_id, previous.execution_generation])).rows[0];
         if (!decision || decision.choice === 'deny' || decision.outcome === 'uncertain') denied = true;
         const h = history.find(h => h.prompt_id === previous.prompt_id && h.execution_generation === previous.execution_generation)!;
-        h.outcome = !decision ? (previous.expires_at && previous.expires_at * 1000 <= Date.now() ? 'expired' : 'unconfirmed') : decision.choice === 'deny' ? 'denied' : decision.outcome === 'accepted' ? 'approved' : 'unconfirmed';
+        h.outcome = !decision ? (approvalDeadline(previous) && approvalDeadline(previous)! * 1000 <= Date.now() ? 'expired' : 'unconfirmed') : decision.choice === 'deny' ? 'denied' : decision.outcome === 'accepted' ? 'approved' : 'unconfirmed';
       }
       await client.query('UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5,history=$6::jsonb WHERE check_id=$1 AND segment=$2',
       [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied, JSON.stringify(history)]);

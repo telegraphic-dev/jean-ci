@@ -73,7 +73,7 @@ export function ReviewApprovalPanel({ checkId }: { checkId: number }) {
     {history.length > 0 && <div className="mt-3" aria-label="Approval history"><h3 className="font-semibold">Approval history</h3><ul className="text-sm">
       {history.map(h => <li className="mt-2" key={`${h.segment}:${h.execution_generation}:${h.prompt_id}`}>
         Segment {h.segment}: {h.outcome === 'expired' ? 'Approval expired — this request can no longer be approved.' : h.outcome.replaceAll('_', ' ')}
-        {h.expiresAt && <> · deadline <time dateTime={h.expiresAt}>{h.expiresAt}</time></>}
+        {h.expiresAt && <> · {h.deadlineApproximate ? 'approximate deadline' : 'deadline'} <time dateTime={h.expiresAt}>{h.expiresAt}</time></>}
       </li>)}
     </ul></div>}
     {canRestart && <div className="mt-4"><p className="text-sm mb-2">Restart creates one new review after verifying the PR is still open at this exact head. It does not approve tools or revive this completed check. Repeated clicks open the same new review.</p>
@@ -85,7 +85,7 @@ export function ReviewApprovalPanel({ checkId }: { checkId: number }) {
       <pre className="p-3 rounded-lg bg-[var(--bg-card)] text-xs whitespace-pre-wrap break-all max-h-80 overflow-auto">{prompt.command}</pre>
       {prompt.edit != null && <pre className="mt-2 text-xs whitespace-pre-wrap break-all max-h-80 overflow-auto">{JSON.stringify(prompt.edit, null, 2)}</pre>}
       <p className="text-xs text-[var(--text-muted)] my-2 break-all">Request {prompt.prompt_id} · generation {prompt.execution_generation}. Approve once resumes this exact live run.</p>
-      {prompt.expires_at ? <p className="text-xs my-2">Approval expires at <time dateTime={new Date(prompt.expires_at * 1000).toISOString()}>{new Date(prompt.expires_at * 1000).toISOString()}</time>. Waiting is excluded from the 9-minute execution budget.</p> : <p className="text-xs my-2">Native expiry applies; no extended approval window was negotiated for this older execution.</p>}
+      {prompt.app_deadline_at ? <p className="text-xs my-2">{prompt.deadline_approximate ? 'Approximate approval deadline' : 'Approval deadline'}: <time dateTime={new Date(prompt.app_deadline_at * 1000).toISOString()}>{new Date(prompt.app_deadline_at * 1000).toISOString()}</time>. {prompt.deadline_approximate && 'Calculated from first observation and native timeout when available, otherwise the configured 30-minute bound. Native expiry may be earlier; this app cannot extend it. '}Waiting is excluded from the 9-minute execution budget for at most 30 minutes per request.</p> : <p className="text-xs my-2">Native expiry applies; the app cannot extend it.</p>}
       <div className="flex flex-wrap gap-3">
         <button type="button" disabled={busy || !prompt.choices.includes('once')} onClick={() => void decide(prompt, 'once')} className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white disabled:opacity-50">Approve once</button>
         <button type="button" disabled title="The gateway does not attest complete tool arguments, working directory and environment." className="px-4 py-2 rounded-lg border border-[var(--border)] opacity-50">Always approve this command in this repository</button>
