@@ -1,4 +1,4 @@
-import { assertReviewRestartOwner, claimReviewRestart, finishReviewRestart, getCheckRun, getRepo, reserveReviewRestart, reviewRunStore } from './db.ts';
+import { assertReviewRestartOwner, claimReviewRestart, finishReviewRestart, getCheckRun, getRepo, reserveReviewRestart, reviewRunStore, updateReviewRestartCheck } from './db.ts';
 import { hermesClient } from './hermes-runs.ts';
 import { ApprovalError, isInterruptedRestart } from './review-approvals.ts';
 import { getInstallationOctokit, getPRInfo } from './github.ts';
@@ -38,7 +38,11 @@ export async function dispatchReviewRestart(sourceId: number) {
     const repo = await getRepo(check.repo);
     if (!repo?.pr_review_enabled || !check.head_sha) throw new Error('Repository review disabled or head unavailable');
     const [owner, name] = check.repo.split('/');
-    await runPRReview(repo.installation_id, owner, name, check.pr_number, check.head_sha, { checkId: check.id, checkName: check.check_name, checkIdentity: check.check_identity, assertOwner: () => assertReviewRestartOwner(sourceId) });
+    await runPRReview(repo.installation_id, owner, name, check.pr_number, check.head_sha, {
+      checkId: check.id, checkName: check.check_name, checkIdentity: check.check_identity,
+      assertOwner: () => assertReviewRestartOwner(sourceId),
+      persist: (id, data) => updateReviewRestartCheck(sourceId, id, data),
+    });
   } finally {
     // Also handles pre-GitHub-ID failures. If settlement fails, leave the claim
     // dispatching so startup reconciliation can atomically terminalize it later.

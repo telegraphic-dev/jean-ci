@@ -562,6 +562,23 @@ export async function assertReviewRestartOwner(sourceId: number) {
   // probe fences late publication after PostgreSQL has released its lock.
   await client.query('SELECT 1');
 }
+// Persist on the lock-owning session, never the general pool. Connection loss
+// aborts this statement before recovery can acquire ownership; the active-claim
+// and unfinished-check guards also refuse writes after settlement. A separate
+// liveness probe (even after GitHub returns) cannot fence a later pooled UPDATE.
+export async function updateReviewRestartCheck(sourceId: number, id: number, data: Parameters<typeof updateCheckRun>[1]) {
+  const client = restartOwners.get(sourceId);
+  if (!client) throw new Error('Review restart owner lost');
+  const result = await client.query(`UPDATE jean_ci_check_runs c SET
+    status=COALESCE($3,c.status), conclusion=COALESCE($4,c.conclusion),
+    title=COALESCE($5,c.title), summary=COALESCE($6,c.summary),
+    completed_at=COALESCE($7,c.completed_at)
+    WHERE c.id=$2 AND c.status IN ('queued','in_progress') AND EXISTS (
+      SELECT 1 FROM jean_ci_review_restarts r WHERE r.source_check_id=$1
+      AND r.new_check_id=c.id AND r.dispatch_status='dispatching' AND r.dispatch_fenced
+    ) RETURNING c.id`, [sourceId, id, data.status, data.conclusion, data.title, data.summary, data.completed_at]);
+  if (!result.rowCount) throw new Error('Review restart owner lost or check already settled');
+}
 export async function claimReviewRestart(sourceId: number): Promise<CheckRun | null> {
   // Do not occupy the query pool for the whole approval wait (pool starvation
   // would otherwise prevent status/decision queries from completing).

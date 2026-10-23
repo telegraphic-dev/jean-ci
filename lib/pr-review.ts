@@ -50,6 +50,7 @@ async function completeCheck(
     /** Full authenticated diagnostic record; defaults to summary for status-only outcomes. */
     diagnostics?: string;
   },
+  persist: typeof updateCheckRun = updateCheckRun,
 ) {
   await updateCheck(octokit, owner, repo, checkRunId, {
     status: 'completed',
@@ -59,7 +60,7 @@ async function completeCheck(
     output: { title: payload.title, summary: boundReviewMarkdown(payload.summary, 65535, `${BASE_URL}/checks/${dbId}`) },
   });
 
-  await updateCheckRun(dbId, {
+  await persist(dbId, {
     status: 'completed',
     conclusion: payload.conclusion,
     title: payload.title,
@@ -68,10 +69,11 @@ async function completeCheck(
   });
 }
 
-export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string, restart?: { checkId: number; checkName: string; checkIdentity?: string; assertOwner?: () => Promise<void> }) {
-  const complete = async (...args: Parameters<typeof completeCheck>) => {
+export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string, restart?: { checkId: number; checkName: string; checkIdentity?: string; assertOwner: () => Promise<void>; persist: typeof updateCheckRun }) {
+  const persist = restart ? restart.persist : updateCheckRun;
+  const complete = async (...args: [any, string, string, number, number, Parameters<typeof completeCheck>[5]]) => {
     await restart?.assertOwner?.();
-    return completeCheck(...args);
+    return completeCheck(...args, persist);
   };
   const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
@@ -188,7 +190,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
             const title = 'Tool approval required';
             const summary = `Review paused for an operator decision. [Open the authenticated check page](${BASE_URL}/checks/${dbId}) to approve once or deny. Native approval expiry still applies.`;
             if (!approvalWaitReported) {
-              await updateCheckRun(dbId, { status: 'in_progress', title, summary });
+              await persist(dbId, { status: 'in_progress', title, summary });
               try {
                 await updateCheck(octokit, owner, repo, checkRun.id, {
                   status: 'in_progress', details_url: `${BASE_URL}/checks/${dbId}`,

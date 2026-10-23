@@ -48,6 +48,7 @@ let currentState = 'open';
 let customFiles: Array<{ name: string; path: string; content: string }> = [];
 let nextCheck = 100;
 let githubCreateFailure: 'before' | 'ambiguous' | null = null;
+let githubCompletion: { entered: ReturnType<typeof gate>; response: ReturnType<typeof gate>; reject: boolean } | null = null;
 const moduleUrl = (name: string) => new URL(`../../lib/${name}.ts`, import.meta.url).href;
 mock.module(moduleUrl('github'), { namedExports: {
   getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => customFiles,
@@ -60,7 +61,14 @@ mock.module(moduleUrl('github'), { namedExports: {
     return { id };
   }, updateCheck: async (...args: any[]) => { const payload = args.at(-1);
     if (payload.output?.title === 'Tool approval required' && waitStatusFailures > 0) { waitStatusFailures--; throw new Error('GitHub 503'); }
-    updates.push(payload); },
+    updates.push(payload);
+    if (payload.status === 'completed' && githubCompletion) {
+      const completion = githubCompletion;
+      completion.entered.release();
+      await completion.response.promise;
+      if (completion.reject) throw new Error('GitHub completion acknowledgement lost');
+    }
+  },
   createPRReview: async (...args: any[]) => { reviews.push(args); },
 } });
 const { runPRReview } = await import('../../lib/pr-review.ts');
@@ -533,6 +541,51 @@ test('disconnected owner is fenced and safely terminalized without replay', asyn
   await db.reconcileReviewRestarts(); await assertInterrupted(source, target);
   await assert.rejects(db.finishReviewRestart(source));
   assert.equal((await db.getCheckRun(target))?.conclusion, 'failure');
+});
+
+test('actual restart runner fences terminal persistence when owner dies inside GitHub completion await', { timeout: 20_000 }, async () => {
+  const { dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  global.fetch = fixtureFetch;
+  try {
+    // Both a successful in-flight external write and an ambiguous error must
+    // leave recovery's terminal result intact, including catch/finally cleanup.
+    for (const reject of [false, true]) {
+      const { source, target } = await reservedRestart();
+      mode = 'once';
+      const before = [createCount, nextCheck, approvalPosts];
+      githubCompletion = { entered: gate(), response: gate(), reject };
+      // Capture dispatch rejection immediately: its owning PG session will die.
+      const running = dispatchReviewRestart(source).then(() => null, error => error);
+      try {
+        for (let i = 0; i < 200 && !(await db.reviewRunStore.get(target))[0]?.pending.length; i++) await new Promise(r => setTimeout(r, 10));
+        assert.ok((await db.reviewRunStore.get(target))[0]?.pending.length);
+        await decideReviewApproval(target, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 11, choice: 'once' }, 'operator');
+        await Promise.race([githubCompletion.entered.promise, new Promise((_, fail) => setTimeout(() => fail(new Error('runner never reached GitHub completion')), 5000))]);
+        assert.notEqual((await db.getCheckRun(target))?.status, 'completed');
+        const owner = (await pool.query("SELECT pid FROM pg_locks WHERE locktype='advisory' AND classid=165 AND objid=$1 AND granted", [source])).rows[0];
+        assert.ok(owner);
+        await pool.query('SELECT pg_terminate_backend($1)', [owner.pid]);
+        // This pool is distinct from the dedicated owner connection. Recovery
+        // acquires the released cross-process lock before the response resumes.
+        await db.reconcileReviewRestarts();
+        await assertInterrupted(source, target);
+        const settled = await db.getCheckRun(target);
+        const publications = [updates.length, reviews.length, comments.length, githubRequests.length];
+        githubCompletion.response.release();
+        assert.ok(await running, 'dead owner dispatch must reject rather than report successful completion');
+        assert.deepEqual(await db.getCheckRun(target), settled, 'no post-loss PASS or error cleanup may overwrite INCOMPLETE');
+        await db.reconcileReviewRestarts();
+        await dispatchReviewRestart(source);
+        assert.deepEqual([updates.length, reviews.length, comments.length, githubRequests.length], publications, 'no follow-on publication after ownership loss');
+        assert.deepEqual([createCount, nextCheck, approvalPosts], [before[0] + 1, before[1] + 1, before[2] + 1], 'no new run, check or approval on replay');
+        await assertInterrupted(source, target);
+      } finally {
+        githubCompletion.response.release();
+        await running;
+        githubCompletion = null;
+      }
+    }
+  } finally { global.fetch = oldFetch; }
 });
 
 test('lost reservation acknowledgement returns same receipt despite gateway outage, PR closure and changed head', async () => {
