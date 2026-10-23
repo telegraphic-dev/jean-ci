@@ -45,11 +45,12 @@ const githubFixture = { request: async (route: string, params: any) => {
 } };
 let currentHead = 'a'.repeat(40);
 let currentState = 'open';
+let customFiles: Array<{ name: string; path: string; content: string }> = [];
 let nextCheck = 100;
 let githubCreateFailure: 'before' | 'ambiguous' | null = null;
 const moduleUrl = (name: string) => new URL(`../../lib/${name}.ts`, import.meta.url).href;
 mock.module(moduleUrl('github'), { namedExports: {
-  getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => [],
+  getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => customFiles,
   getPRInfo: async () => ({ title: 'CSRF context fixture', head: { sha: currentHead }, base: { sha: 'b'.repeat(40) }, state: currentState }),
   getPRDiff: async () => 'diff --git a/auth.ts b/auth.ts\n@@ -1 +1 @@\n-old\n+new\n',
   createCheck: async () => {
@@ -350,7 +351,7 @@ test('committed claim crash before check read and before GitHub ID reconciles at
     import pg from 'pg';
     const c = new pg.Client({ connectionString: process.env.REVIEW_APPROVAL_TEST_DATABASE_URL });
     await c.connect();
-    await c.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW() WHERE source_check_id=$1", [${source}]);
+    await c.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW(),dispatch_fenced=TRUE WHERE source_check_id=$1", [${source}]);
     process.exit(73);
   `], { env: process.env, encoding: 'utf8' });
   assert.equal(crash.status, 73, crash.stderr);
@@ -372,11 +373,12 @@ test('committed claim crash before check read and before GitHub ID reconciles at
   await db.setRepoReviewEnabled('fixture/repo', false); await assert.rejects(restartReview(target, 'operator'), /disabled/); await db.setRepoReviewEnabled('fixture/repo', true);
   const later = await restartReview(target, 'operator'); assert.notEqual(later.check_id, target);
   assert.equal((await restartReview(target, 'operator')).check_id, later.check_id);
-  const binding = await db.reviewRunStore.reserve(target, 1, hermesClient().scope, 'uncertain-create');
-  await assert.rejects(restartReview(target, 'operator'), /cannot be verified/);
-  await db.reviewRunStore.bind(target, 1, 'run_uncertain_restart');
+  const binding = await db.reviewRunStore.reserve(later.check_id, 1, hermesClient().scope, 'uncertain-create');
+  await db.updateCheckRun(later.check_id, { status: 'completed', conclusion: 'failure', title: 'Review restart interrupted', summary: 'INCOMPLETE: fixture' });
+  await assert.rejects(restartReview(later.check_id, 'operator'), /cannot be verified/);
+  await db.reviewRunStore.bind(later.check_id, 1, 'run_uncertain_restart');
   global.fetch = async () => Response.json({ run_id: 'run_uncertain_restart', status: 'unknown', pending_controls: [] });
-  try { await assert.rejects(restartReview(target, 'operator'), /live or unknown/); }
+  try { await assert.rejects(restartReview(later.check_id, 'operator'), /live or unknown/); }
   finally { global.fetch = oldFetch; }
   assert.ok(binding);
 });
@@ -463,8 +465,8 @@ test('pre-ID failure and ambiguous GitHub creation terminalize without duplicate
 test('startup covers saved GitHub IDs but preserves queued and new claims and completed outcomes', async () => {
   const queued = await reservedRestart(); const old = await reservedRestart();
   const fresh = await reservedRestart(); const completed = await reservedRestart();
-  await db.claimReviewRestart(old.source); await db.setCheckRunGithubId(old.target, 98765);
-  await db.claimReviewRestart(completed.source);
+  await pool.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW(),dispatch_fenced=TRUE WHERE source_check_id=ANY($1::int[])", [[old.source, completed.source]]);
+  await db.setCheckRunGithubId(old.target, 98765);
   await db.updateCheckRun(completed.target, { status: 'completed', conclusion: 'success', title: 'PASS' });
   const startup = (await pool.query("SELECT clock_timestamp()+INTERVAL '1 second' AS at")).rows[0].at;
   await db.claimReviewRestart(fresh.source);
@@ -477,6 +479,106 @@ test('startup covers saved GitHub IDs but preserves queued and new claims and co
   assert.equal((await pool.query('SELECT dispatch_status FROM jean_ci_review_restarts WHERE source_check_id=$1', [fresh.source])).rows[0].dispatch_status, 'dispatching');
   assert.equal((await db.getCheckRun(completed.target))?.conclusion, 'success');
   assert.equal((await db.getCheckRun(completed.target))?.title, 'PASS');
+  await db.finishReviewRestart(fresh.source);
+});
+
+test('two actual app processes: live old ownership survives startup and periodic recovery, death settles bounded without replay', { timeout: 15_000 }, async () => {
+  const { source, target } = await reservedRestart();
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', `
+    const db = await import(${JSON.stringify(moduleUrl('db'))});
+    const check = await db.claimReviewRestart(${source});
+    if (!check) process.exit(2);
+    console.log('owned'); setInterval(() => {}, 1000);
+  `], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.once('data', () => resolve()); child.once('error', reject);
+      child.once('exit', code => reject(new Error(`owner exited ${code}`)));
+    });
+    await pool.query("UPDATE jean_ci_review_restarts SET dispatch_started_at=NOW()-INTERVAL '2 hours' WHERE source_check_id=$1", [source]);
+    await db.setCheckRunGithubId(target, 777777);
+    for (let i = 0; i < 3; i++) {
+      await db.reconcileReviewRestarts(new Date());
+      assert.equal((await db.getCheckRun(target))?.status, 'queued');
+      assert.equal(await db.claimReviewRestart(source), null);
+      assert.ok(!(await db.getInterruptedCheckRuns(new Date())).some(c => c.id === target), 'generic startup recovery must also respect ownership');
+    }
+    child.kill('SIGKILL'); await exited;
+    for (let i = 0; i < 100 && (await db.getCheckRun(target))?.status !== 'completed'; i++) {
+      await db.reconcileReviewRestarts(); await new Promise(r => setTimeout(r, 10));
+    }
+    await assertInterrupted(source, target);
+  } finally { child.kill('SIGKILL'); await exited; }
+});
+
+test('rolling upgrade preserves unfenced legacy claims; absent legacy lock does not prove death', async () => {
+  const { source, target } = await reservedRestart();
+  await pool.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW()-INTERVAL '2 hours' WHERE source_check_id=$1", [source]);
+  await db.setCheckRunGithubId(target, 888888);
+  await db.reconcileReviewRestarts();
+  assert.equal((await db.getCheckRun(target))?.status, 'queued');
+  assert.equal(await db.claimReviewRestart(source), null);
+  assert.ok(!(await db.getInterruptedCheckRuns(new Date())).some(c => c.id === target));
+});
+
+test('disconnected owner is fenced and safely terminalized without replay', async () => {
+  const { source, target } = await reservedRestart();
+  assert.equal((await db.claimReviewRestart(source))?.id, target);
+  await db.assertReviewRestartOwner(source);
+  const owner = (await pool.query('SELECT pid FROM pg_locks WHERE locktype=\'advisory\' AND classid=165 AND objid=$1 AND granted', [source])).rows[0];
+  assert.ok(owner);
+  await pool.query('SELECT pg_terminate_backend($1)', [owner.pid]);
+  await assert.rejects(db.assertReviewRestartOwner(source));
+  await db.reconcileReviewRestarts(); await assertInterrupted(source, target);
+  await assert.rejects(db.finishReviewRestart(source));
+  assert.equal((await db.getCheckRun(target))?.conclusion, 'failure');
+});
+
+test('lost reservation acknowledgement returns same receipt despite gateway outage, PR closure and changed head', async () => {
+  const { source, target } = await reservedRestart();
+  const { restartReview } = await import('../../lib/review-restart.ts');
+  const before = [createCount, nextCheck, approvalPosts];
+  global.fetch = async () => { throw new Error('gateway unavailable'); };
+  try {
+    for (const state of ['open', 'closed']) {
+      currentState = state; currentHead = 'd'.repeat(40);
+      assert.equal((await restartReview(source, 'operator')).check_id, target);
+      assert.equal(await db.reserveReviewRestart(source, 'operator', async () => { throw new Error('must not validate receipt'); }), target);
+    }
+    assert.deepEqual([createCount, nextCheck, approvalPosts], before);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM jean_ci_review_restarts WHERE source_check_id=$1', [source])).rows[0].n, 1);
+  } finally { global.fetch = oldFetch; currentState = 'open'; currentHead = 'a'.repeat(40); }
+});
+
+test('same display name global and custom checks restart independently by durable identity; legacy ambiguity fails honestly', async () => {
+  const { dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  const customPrompt = '# Custom collision check\n\n## Review Instructions\nInspect source for actionable defects.\n\n## Verdict Criteria\nReturn VERDICT: PASS or VERDICT: FAIL with actionable findings.';
+  customFiles = [{ name: 'Code Review', path: '.jean-ci/pr-checks/Code Review.md', content: customPrompt }];
+  global.fetch = async (url, init) => {
+    if (String(url).includes('/runs/') && !String(url).endsWith('/approval')) return Response.json({ ...current, status: 'completed', pending_controls: [], output: 'VERDICT: PASS\nNo blocking defects.\n- Review profile: diff=reviewed; repository=inspected; tests=not needed.' });
+    return fixtureFetch(url, init);
+  };
+  try {
+    await runPRReview(1, 'fixture', 'repo', 1, currentHead);
+    const originals = (await pool.query('SELECT * FROM jean_ci_check_runs ORDER BY id DESC LIMIT 2')).rows;
+    assert.deepEqual(originals.map(c => c.check_identity).sort(), ['global:code-review', 'path:.jean-ci/pr-checks/Code Review.md']);
+    for (const identity of ['global:code-review', 'path:.jean-ci/pr-checks/Code Review.md']) {
+      const source = originals.find(c => c.check_identity === identity).id;
+      await db.updateCheckRun(source, { status: 'completed', conclusion: 'failure', title: 'Review restart interrupted', summary: 'INCOMPLETE: fixture' });
+      const target = await db.reserveReviewRestart(source, 'operator', async () => {});
+      const before = createCount; const reviewsBefore = reviews.length;
+      await dispatchReviewRestart(source);
+      const result = await db.getCheckRun(target);
+      assert.equal(result?.check_identity, identity);
+      assert.equal(result?.conclusion, 'success'); assert.equal(createCount, before + 1);
+      assert.equal(result?.prompt, identity.startsWith('path:') ? customPrompt : await db.getConfig('user_prompt'));
+      assert.equal(reviews.length - reviewsBefore, identity.startsWith('global:') ? 1 : 0, 'only built-in review publishes PR approval');
+    }
+    const legacy = await reservedRestart(); const before = createCount;
+    await assert.rejects(dispatchReviewRestart(legacy.source), /legacy name is ambiguous/);
+    await assertInterrupted(legacy.source, legacy.target); assert.equal(createCount, before);
+  } finally { customFiles = []; global.fetch = oldFetch; }
 });
 
 test('baseline observation deadline survives database reload and cannot be renewed after canonical settlement', async () => {

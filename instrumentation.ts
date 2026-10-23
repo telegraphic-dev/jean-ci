@@ -23,6 +23,7 @@ export async function register() {
       await reconcileReviewRestarts(startupStartedAt);
       const { dispatchReviewRestart } = await import('./lib/review-restart');
       const drainRestarts = async () => {
+        await reconcileReviewRestarts();
         for (const id of await queuedReviewRestarts()) void dispatchReviewRestart(id).catch(console.error);
       };
       await drainRestarts();

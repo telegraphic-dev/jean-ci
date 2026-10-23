@@ -14,7 +14,11 @@ test('built approval endpoint and page authenticate, reject CSRF/malformed bodie
   const secret = randomBytes(32).toString('hex');
   let uiCookie = '';
   let uiUrl = '';
+  let gatewayDown = false;
+  let gatewayCalls = 0;
   const fixture = createServer((req, res) => {
+    gatewayCalls++;
+    if (gatewayDown) { res.writeHead(503); res.end(); return; }
     // Optional loopback-only preview login for a disposable test cookie. Never
     // added to the application or exposed outside this test's local fixture.
     if (req.url === '/login' && uiCookie && uiUrl) { res.writeHead(302, { 'Set-Cookie': `${uiCookie}; HttpOnly; SameSite=Lax; Path=/`, Location: uiUrl }); res.end(); return; }
@@ -114,6 +118,19 @@ test('built approval endpoint and page authenticate, reject CSRF/malformed bodie
     const terminal = await fetch(endpoint, { headers: { cookie } });
     assert.deepEqual((await terminal.json()).requests, []);
     assert.equal((await fetch(endpoint, { method: 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ segment: 1, prompt_id: 'prompt_http', execution_generation: 3, choice: 'once' }) })).status, 409);
+    // Model a committed reservation whose initial 202 was lost. Settle the local
+    // queue so replaying the receipt cannot dispatch an external fixture request.
+    const receipt = await db.reserveReviewRestart(check, '42:test-admin', async () => {});
+    await db.claimReviewRestart(check); await db.finishReviewRestart(check);
+    gatewayDown = true;
+    const callsBefore = gatewayCalls;
+    assert.equal((await fetch(restart, { method: 'POST', headers: { cookie: `jean-ci-session=${foreign}`, origin, 'Content-Type': 'application/json' }, body: '{}' })).status, 403, 'receipt lookup cannot bypass admin auth');
+    assert.equal((await fetch(restart, { method: 'POST', headers: { cookie, origin: 'https://evil.example', 'Content-Type': 'application/json' }, body: '{}' })).status, 403, 'receipt lookup cannot bypass CSRF');
+    for (let i = 0; i < 2; i++) {
+      const retry = await fetch(restart, { method: 'POST', headers: { cookie, origin, 'Content-Type': 'application/json' }, body: '{}' });
+      assert.equal(retry.status, 202); assert.equal((await retry.json()).check_id, receipt);
+    }
+    assert.equal(gatewayCalls, callsBefore, 'durable retry never consults unavailable gateway');
   } finally {
     child.kill('SIGTERM');
     await new Promise<void>(resolve => { if (child.exitCode != null) resolve(); else child.once('exit', () => resolve()); });

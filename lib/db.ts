@@ -161,6 +161,8 @@ export async function initDatabase() {
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       ALTER TABLE jean_ci_review_restarts ADD COLUMN IF NOT EXISTS dispatch_started_at TIMESTAMPTZ;
+      ALTER TABLE jean_ci_review_restarts ADD COLUMN IF NOT EXISTS dispatch_fenced BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE jean_ci_check_runs ADD COLUMN IF NOT EXISTS check_identity TEXT;
       CREATE TABLE IF NOT EXISTS jean_ci_review_approval_comments (
         check_id INTEGER NOT NULL REFERENCES jean_ci_check_runs(id) ON DELETE CASCADE,
         identity TEXT NOT NULL,
@@ -520,6 +522,14 @@ export async function claimReviewNotification(check: number, identity: string): 
 
 // Source-row locking and a unique durable mapping deduplicate cross-process clicks.
 export async function reserveReviewRestart(id: number, actor: string, validate: (check: CheckRun) => Promise<void>) {
+  const receiptClient = await pool.connect();
+  try {
+    await receiptClient.query('BEGIN');
+    await receiptClient.query('SELECT id FROM jean_ci_check_runs WHERE id=$1 FOR UPDATE', [id]);
+    const receipt = (await receiptClient.query('SELECT new_check_id FROM jean_ci_review_restarts WHERE source_check_id=$1', [id])).rows[0];
+    await receiptClient.query('COMMIT');
+    if (receipt) return Number(receipt.new_check_id);
+  } catch (error) { await receiptClient.query('ROLLBACK'); throw error; } finally { receiptClient.release(); }
   const validated = await getCheckRun(id);
   if (!validated) throw new Error('Check not found');
   // No pool connection is held while validation queries the run store and GitHub.
@@ -529,11 +539,11 @@ export async function reserveReviewRestart(id: number, actor: string, validate: 
     await client.query('BEGIN');
     const check = (await client.query('SELECT * FROM jean_ci_check_runs WHERE id=$1 FOR UPDATE', [id])).rows[0];
     if (!check) throw new Error('Check not found');
-    if (check.status !== 'completed' || check.repo !== validated.repo || check.pr_number !== validated.pr_number || check.head_sha !== validated.head_sha || check.check_name !== validated.check_name) throw new Error('Source check changed');
     let row = (await client.query('SELECT new_check_id FROM jean_ci_review_restarts WHERE source_check_id=$1', [id])).rows[0];
     if (!row) {
-      const created = await client.query(`INSERT INTO jean_ci_check_runs(repo,pr_number,check_name,head_sha,status)
-        VALUES($1,$2,$3,$4,'queued') RETURNING id`, [check.repo, check.pr_number, check.check_name, check.head_sha]);
+      if (check.status !== 'completed' || check.repo !== validated.repo || check.pr_number !== validated.pr_number || check.head_sha !== validated.head_sha || check.check_name !== validated.check_name || check.check_identity !== validated.check_identity) throw new Error('Source check changed');
+      const created = await client.query(`INSERT INTO jean_ci_check_runs(repo,pr_number,check_name,head_sha,status,check_identity)
+        VALUES($1,$2,$3,$4,'queued',$5) RETURNING id`, [check.repo, check.pr_number, check.check_name, check.head_sha, check.check_identity]);
       row = { new_check_id: created.rows[0].id };
       await client.query('INSERT INTO jean_ci_review_restarts(source_check_id,new_check_id,actor) VALUES($1,$2,$3)', [id, row.new_check_id, actor]);
     }
@@ -541,44 +551,86 @@ export async function reserveReviewRestart(id: number, actor: string, validate: 
     return Number(row.new_check_id);
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
+// Dedicated sessions fence dispatch across actual app instances, including long
+// approval waits. PostgreSQL releases ownership on connection/process death.
+const restartOwners = new Map<number, pg.Client>();
+const RESTART_LOCK_NAMESPACE = 165;
+export async function assertReviewRestartOwner(sourceId: number) {
+  const client = restartOwners.get(sourceId);
+  if (!client) throw new Error('Review restart owner lost');
+  // The dedicated session is never returned to a pool or reconnected. A failed
+  // probe fences late publication after PostgreSQL has released its lock.
+  await client.query('SELECT 1');
+}
 export async function claimReviewRestart(sourceId: number): Promise<CheckRun | null> {
-  // Return the reserved check in the claim statement itself: no committed claim
-  // can be stranded by a subsequent getCheckRun failure. Statement failure rolls
-  // back both the claim and its timestamp before any external effect is possible.
-  const result = await pool.query(`WITH claimed AS (
-    UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW()
-    WHERE source_check_id=$1 AND dispatch_status='queued' RETURNING new_check_id
-  ) SELECT c.* FROM jean_ci_check_runs c JOIN claimed r ON r.new_check_id=c.id`, [sourceId]);
-  return result.rows[0] || null;
+  // Do not occupy the query pool for the whole approval wait (pool starvation
+  // would otherwise prevent status/decision queries from completing).
+  const client = new pg.Client({ connectionString: DATABASE_URL, keepAlive: true, keepAliveInitialDelayMillis: 10_000 });
+  client.on('error', () => {});
+  let owned = false;
+  try {
+    await client.connect();
+    owned = (await client.query('SELECT pg_try_advisory_lock($1,$2) AS owned', [RESTART_LOCK_NAMESPACE, sourceId])).rows[0].owned;
+    if (!owned) return null;
+    const result = await client.query(`WITH claimed AS (
+      UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW(),dispatch_fenced=TRUE
+      WHERE source_check_id=$1 AND dispatch_status='queued' RETURNING new_check_id
+    ) SELECT c.* FROM jean_ci_check_runs c JOIN claimed r ON r.new_check_id=c.id`, [sourceId]);
+    if (!result.rows[0]) return null;
+    restartOwners.set(sourceId, client);
+    return result.rows[0];
+  } finally {
+    if (restartOwners.get(sourceId) !== client) {
+      try { if (owned) await client.query('SELECT pg_advisory_unlock($1,$2)', [RESTART_LOCK_NAMESPACE, sourceId]); }
+      finally { await client.end(); }
+    }
+  }
 }
 
 // Local terminalization and queue settlement are one transaction, even before a
 // GitHub ID exists. Never replay a claimed request: external writes may have
 // succeeded without an acknowledgement. Keep the source mapping for deduplication.
 export async function finishReviewRestart(sourceId: number) {
-  await settleReviewRestarts(sourceId, null);
+  const client = restartOwners.get(sourceId);
+  if (!client) return;
+  try { await settleReviewRestarts(sourceId, client); }
+  finally {
+    restartOwners.delete(sourceId);
+    try { await client.query('SELECT pg_advisory_unlock($1,$2)', [RESTART_LOCK_NAMESPACE, sourceId]); }
+    finally { await client.end(); }
+  }
 }
-export async function reconcileReviewRestarts(startedBefore: Date) {
-  await settleReviewRestarts(null, startedBefore);
+export async function reconcileReviewRestarts(_startedBefore?: Date) {
+  // Legacy processes never took this lock: absence cannot prove their death.
+  // Preserve those uncertain claims for operator inspection, never replay them.
+  const candidates = (await pool.query("SELECT source_check_id FROM jean_ci_review_restarts WHERE dispatch_status='dispatching' AND dispatch_fenced")).rows;
+  for (const row of candidates) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const owned = (await client.query('SELECT pg_try_advisory_xact_lock($1,$2) AS owned', [RESTART_LOCK_NAMESPACE, row.source_check_id])).rows[0].owned;
+      if (owned) await settleReviewRestarts(row.source_check_id, client);
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
 }
-async function settleReviewRestarts(sourceId: number | null, startedBefore: Date | null) {
-  await pool.query(`WITH settled AS (
+async function settleReviewRestarts(sourceId: number, client: pg.Client | pg.PoolClient) {
+  await client.query(`WITH settled AS (
     UPDATE jean_ci_review_restarts SET dispatch_status='done'
-    WHERE dispatch_status='dispatching' AND
-      (($1::int IS NOT NULL AND source_check_id=$1) OR
-       ($2::timestamptz IS NOT NULL AND (dispatch_started_at<$2 OR dispatch_started_at IS NULL)))
+    WHERE dispatch_status='dispatching' AND source_check_id=$1
     RETURNING new_check_id
   ) UPDATE jean_ci_check_runs c SET status='completed',conclusion='failure',
     title='Review restart interrupted',
     summary='INCOMPLETE: The explicit restart could not finish. No approval was granted and no execution was automatically retried. External effects may have occurred; their outcome is not assumed.',
     completed_at=NOW()
-    FROM settled r WHERE c.id=r.new_check_id AND c.status IN ('queued','in_progress')`, [sourceId, startedBefore]);
+    FROM settled r WHERE c.id=r.new_check_id AND c.status IN ('queued','in_progress')`, [sourceId]);
 }
 export async function queuedReviewRestarts(): Promise<number[]> {
   return (await pool.query(`SELECT source_check_id FROM jean_ci_review_restarts WHERE dispatch_status='queued'`)).rows.map(r => r.source_check_id);
 }
 
 export interface CheckRun {
+  check_identity?: string;
   id: number;
   github_check_id?: number;
   repo: string;
@@ -611,6 +663,7 @@ export interface PRReviewState {
 }
 
 export async function insertCheckRun(data: {
+  check_identity?: string;
   github_check_id?: number;
   repo: string;
   pr_number: number;
@@ -623,11 +676,11 @@ export async function insertCheckRun(data: {
 }): Promise<number> {
   const result = await pool.query(`
     INSERT INTO jean_ci_check_runs 
-    (github_check_id, repo, pr_number, check_name, head_sha, status, prompt, pr_title, pr_body, diff_preview)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    (github_check_id, repo, pr_number, check_name, head_sha, status, prompt, pr_title, pr_body, diff_preview, check_identity)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING id
   `, [data.github_check_id, data.repo, data.pr_number, data.check_name, data.head_sha, 
-      'queued', data.prompt, data.pr_title, data.pr_body, data.diff_preview]);
+      'queued', data.prompt, data.pr_title, data.pr_body, data.diff_preview, data.check_identity]);
   return result.rows[0].id;
 }
 
@@ -671,7 +724,7 @@ export async function getInterruptedCheckRuns(startedBefore: Date): Promise<Chec
        AND github_check_id IS NOT NULL
        AND created_at < $1
        AND NOT EXISTS (SELECT 1 FROM jean_ci_review_restarts r WHERE r.new_check_id=jean_ci_check_runs.id
-         AND (r.dispatch_status='queued' OR r.dispatch_started_at >= $1))
+         AND r.dispatch_status IN ('queued','dispatching'))
      ORDER BY created_at ASC`,
     [startedBefore],
   );

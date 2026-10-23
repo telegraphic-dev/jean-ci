@@ -155,10 +155,30 @@ test('PR reviews report malformed output without requesting changes and preserve
       assert.match(stored.at(-1).summary, /Review profile/);
       if (preceding.length) assert.match(stored.at(-1).summary, /Safe UI/);
     }
-    responses = ['VERDICT: PASS\nSafe UI.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.', 'VERDICT: PASS\nSafe API.'];
+    responses = Array.from({ length: 7 }, (_, i) => 'VERDICT: PASS\nNo blocking issues in supplied frontend segment; this verdict covers only segment ' + (i + 1) + '/7.\nScope: private_scope_' + i + '. Validation: private_validation_' + i + '.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.');
+    const sevenResponses = responses.slice();
     await runPRReview(1, 'owner', 'repo', 1, currentHead);
-    assert.equal(updates.at(-1).output.summary, 'Safe UI.\n\n---\n\nSafe API.');
-    assert.match(stored.at(-1).summary, /segment 0[\s\S]*Review profile[\s\S]*segment 1/);
+    const publicPass = 'No blocking issues were identified in the reviewed changes.';
+    assert.equal(updates.at(-1).output.summary, publicPass + '\n\n[View full details](http://localhost:3000/checks/1)');
+    assert.equal(reviews.at(-1)[4], 'APPROVE');
+    for (const text of [updates.at(-1).output.summary, reviews.at(-1)[5]]) {
+      assert.ok(text.includes(publicPass)); assert.match(text, /View full details/);
+      assert.doesNotMatch(text, /segment|frontend|scope|validation|tests|Review profile/i);
+    }
+    const diagnostics = stored.at(-1).summary;
+    const { parseReviewResponse } = await import(moduleUrl('review-output'));
+    for (const response of sevenResponses) assert.ok(diagnostics.includes(parseReviewResponse(response).normalized), 'every complete normalized segment response remains persisted');
+    assert.equal(readableReviewSummary(diagnostics), publicPass);
+    const passHtml = renderToStaticMarkup(createElement(CheckReviewContent, { summary: diagnostics, repo: 'owner/repo', headSha: currentHead }));
+    assert.ok(passHtml.split('<details')[0].includes(publicPass));
+    assert.doesNotMatch(passHtml.split('<details')[0], /supplied frontend|segment 7\/7/);
+    for (let i = 0; i < 7; i++) assert.ok(passHtml.slice(passHtml.indexOf('<details')).includes('private_validation_' + i));
+    responses = [...sevenResponses.slice(0, 5), 'VERDICT: FAIL\n### Sixth finding\nFix sixth defect.', 'VERDICT: FAIL\n### Seventh finding\nFix seventh defect.'];
+    await runPRReview(1, 'owner', 'repo', 1, currentHead);
+    assert.equal(reviews.at(-1)[4], 'REQUEST_CHANGES');
+    for (const text of [updates.at(-1).output.summary, reviews.at(-1)[5]]) {
+      assert.match(text, /Sixth finding/); assert.match(text, /Seventh finding/);
+    }
     for (const failure of [malformed, incomplete, { success: false, errorType: 'gateway', error: 'PRIVATE_GATEWAY_DETAIL' }]) {
       responses = ['VERDICT: PASS\nSafe UI.\nReview profile: diff=reviewed; repository=blocked; tests=blocked.', fixture.structuredOutput, failure];
       await runPRReview(1, 'owner', 'repo', 1, currentHead);
