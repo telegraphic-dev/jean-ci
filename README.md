@@ -310,6 +310,8 @@ Optional bootstrap token(s) can be set via env vars:
 
 jean-ci can automatically deploy to Coolify when new container images are published to GHCR.
 
+Before upgrading Coolify 4.0.0 to 4.4.7, use the [deployment migration gate](docs/coolify-4.4-migration-gate.md) for API changes, completion guarantees, and required operational checks.
+
 ## Paperclip PR Sync
 
 If `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` are set, jean-ci also watches merged GitHub pull requests and marks linked Paperclip issues as `done`.

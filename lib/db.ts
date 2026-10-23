@@ -1584,8 +1584,11 @@ export async function getPendingDeploymentByDeploymentUuid(deploymentUuid: strin
   return result.rows[0] || null;
 }
 
-export async function deletePendingDeployment(appUuid: string): Promise<void> {
-  await pool.query('DELETE FROM jean_ci_pending_deployments WHERE app_uuid = $1', [appUuid]);
+export async function deletePendingDeployment(appUuid: string, deploymentUuid?: string): Promise<void> {
+  await pool.query(
+    'DELETE FROM jean_ci_pending_deployments WHERE app_uuid = $1 AND ($2::text IS NULL OR coolify_deployment_uuid = $2)',
+    [appUuid, deploymentUuid ?? null],
+  );
 }
 
 export async function cleanupStalePendingDeployments(maxAgeMinutes = 30): Promise<number> {

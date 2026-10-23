@@ -75,7 +75,10 @@ const coolifyProvider: DeploymentProvider = {
     const appDetails = await getCoolifyAppDetails(appUuid);
     const appUrl = appDetails?.fqdn || buildRepoAppUrl(context.repo);
     const coolifyDashboard = COOLIFY_DASHBOARD_URL || APP_BASE_URL;
-    const logsUrl = `${coolifyDashboard}/project/${appDetails?.projectUuid || 'default'}/${appDetails?.environmentName || 'production'}/application/${appUuid}`;
+    // The app endpoint is flat on both tags. Do not invent project/environment IDs.
+    const logsUrl = appDetails?.projectUuid && appDetails.environmentUuid
+      ? `${coolifyDashboard}/project/${appDetails.projectUuid}/environment/${appDetails.environmentUuid}/application/${appUuid}`
+      : coolifyDashboard;
 
     const result = await triggerCoolifyDeploy(appUuid);
     if (!result.success) {

@@ -6,7 +6,9 @@ import {
   getAllPRReviewsForRepo,
   deletePRReview
 } from './db.ts';
-import { getInstallationOctokit } from './github.ts';
+import { getInstallationOctokit, updateDeploymentStatus, updateCheck } from './github.ts';
+import { runSmokeTests } from './smoke-tests.ts';
+import { coolifyStatusConclusion, finishCoolifyDeployment } from './coolify-completion.ts';
 import { COOLIFY_URL } from './config.ts';
 import { logExternalCallFailure, readResponseBodySnippet } from './external-call-logging.js';
 
@@ -40,10 +42,8 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
       const ageMinutes = (Date.now() - createdAt) / 1000 / 60;
       
       if (ageMinutes > STALE_DEPLOYMENT_MINUTES) {
-        console.log(`[Sync] Cleaning stale pending deployment for ${pd.app_uuid} (${Math.round(ageMinutes)}min old)`);
-        await deletePendingDeployment(pd.app_uuid);
-        cleaned++;
-        continue;
+        // Age is not evidence of failure: retain tracking and still poll long builds.
+        errors.push(`Deployment ${pd.app_uuid} is ${Math.round(ageMinutes)}min old; awaiting authoritative completion`);
       }
       
       // If we have deployment UUID, check Coolify for status
@@ -66,17 +66,16 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
         
         if (response.ok) {
           const data = await response.json();
-          // If deployment is finished (success or failed), clean up
-          if (data.status === 'finished' || data.status === 'failed' || data.status === 'cancelled') {
-            console.log(`[Sync] Cleaning completed deployment ${pd.coolify_deployment_uuid} (status: ${data.status})`);
-            await deletePendingDeployment(pd.app_uuid);
+          const conclusion = coolifyStatusConclusion(data.status);
+          if (conclusion) {
+            await finishCoolifyDeployment(pd, conclusion, {
+              getInstallationOctokit, updateDeploymentStatus, updateCheck, deletePendingDeployment, runSmokeTests,
+            });
             cleaned++;
           }
         } else if (response.status === 404) {
-          // Deployment not found in Coolify - clean up
-          console.log(`[Sync] Cleaning orphaned pending deployment ${pd.coolify_deployment_uuid} (not found in Coolify)`);
-          await deletePendingDeployment(pd.app_uuid);
-          cleaned++;
+          // 404 can also hide an unauthorized resource; it is not success/failure evidence.
+          errors.push(`Coolify deployment ${pd.coolify_deployment_uuid} not found; tracking retained`);
         } else {
           const responseBody = await readResponseBodySnippet(response);
           logExternalCallFailure({
