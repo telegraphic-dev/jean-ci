@@ -117,6 +117,35 @@ export function splitReviewDiffBySubsystem(diff: string, limit: number): ReviewD
   return chunks;
 }
 
+export type ReviewSource =
+  | { kind: 'github-pr'; headSha: string; baseSha?: string }
+  | { kind: 'local-diff'; promptRef: string; headSha?: string | null };
+
+function immutableSha(value?: string | null): string | null {
+  return value && /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/.test(value) ? value : null;
+}
+
+function sourceProvenance(source?: ReviewSource): string[] {
+  if (source?.kind === 'github-pr') {
+    return [
+      '- Source: GitHub PR diff; repository identity and head checked server-side against GitHub PR metadata.',
+      `- Server-verified reviewed head SHA: ${immutableSha(source.headSha) || 'unavailable (no full immutable SHA)'}`,
+      `- Server-reported base SHA: ${immutableSha(source.baseSha) || 'unavailable (no full immutable SHA)'}`,
+      '- Use the verified head for surrounding committed source; the supplied diff defines the changes under review.',
+    ];
+  }
+  if (source?.kind === 'local-diff') {
+    return [
+      '- Source: caller-provided local/working diff, possibly including uncommitted changes. Repository identity and source anchors are client-reported, not server-verified.',
+      `- Git-backed review prompt selector (not source verification): ${source.promptRef}`,
+      `- Client-reported head source anchor: ${immutableSha(source.headSha) || 'unavailable (no full immutable SHA)'}`,
+      '- Base source anchor: unavailable; this API does not receive a base SHA.',
+      '- A head source anchor identifies committed surrounding context only. It does not prove that the supplied diff or working files equal that commit; never substitute committed content for uncommitted changes.',
+    ];
+  }
+  return ['- Source provenance: unavailable; no server-verified reviewed commit or client-reported immutable source anchor was supplied.'];
+}
+
 export function buildReviewContext(
   input: {
     title?: string | null;
@@ -127,6 +156,7 @@ export function buildReviewContext(
     changedPaths?: string[];
     owner?: string;
     repo?: string;
+    source?: ReviewSource;
   },
 ): string {
   if (input.diff.length > input.diffLimit) throw new Error('Diff exceeds single-context limit; use buildReviewContexts for complete coverage.');
@@ -140,6 +170,10 @@ export function buildReviewContext(
 
   return [
     `# Pull Request: ${input.title?.trim() || 'Local review'}`,
+    '',
+    '## Source Provenance',
+    ...sourceProvenance(input.source),
+    '- If an immutable source ID is missing or unverified, do not guess it, resolve a moving branch, or use the repository default as reviewed source. Review the supplied diff first; use VERDICT: INCOMPLETE only if genuinely necessary context remains unavailable.',
     '',
     '## Description',
     input.body?.trim() || 'No description provided',
@@ -156,7 +190,7 @@ export function buildReviewContext(
                 `- Some changed files already begin with the repo-name directory prefix \`${input.repo}/...\`. Keep that prefix when reading files locally, for example \`${canonicalRepoPath}/${repoNamePrefixedPaths[0]}\`.`
               ]
             : []),
-          '- The diff below is the source of truth for PR changes. The local checkout is only for surrounding context and may not include the PR head commit yet.',
+          '- The supplied diff is the source of truth for changes under review. The local checkout is only a location hint, not verified source; it may differ from both the source anchor and uncommitted changes.',
           '- If a diff file is missing locally, review the diff instead of failing on the missing path.',
         ]
       : []),

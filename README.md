@@ -292,7 +292,9 @@ JSON
 
 Notes:
 - Use an existing public API token or one captured when created; token values are shown only once and are not visible again in the UI.
-- The caller supplies the local diff, but review prompts come only from git (`.jean-ci/pr-checks/*.md`) at the provided `headSha`/`ref`.
+- The caller supplies the local diff, but review prompts come only from git (`.jean-ci/pr-checks/*.md`) at the provided `headSha`/`ref`. This selector remains a git ref, not server verification that the diff matches a commit.
+- Every reviewer segment includes source provenance. A full immutable local `headSha` (or full-SHA `ref`) is labeled a client-reported anchor for committed surrounding source only; the submitted diff may contain uncommitted changes. Short SHAs and branch refs remain accepted prompt selectors, but are not immutable source anchors. This API receives no base SHA.
+- Missing or unverified immutable context is never replaced with a guessed SHA, moving branch, or repository default. The reviewer uses the supplied diff first and reports `INCOMPLETE` only when genuinely necessary evidence is unavailable.
 - `repo` must be `owner/repo`; `headSha` or `ref` is required.
 - `selectedChecks` only filters git-backed checks; the built-in `Code Review` always runs.
 - Request bodies are size-limited before parsing; oversized requests are rejected with HTTP 400.

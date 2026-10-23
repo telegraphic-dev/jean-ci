@@ -65,7 +65,7 @@ export function buildPublicOpenApiSpec() {
                       type: 'string',
                       minLength: 1,
                       pattern: '^[A-Za-z0-9._/-]+$',
-                      description: 'Commit SHA used to load git-backed .jean-ci/pr-checks prompts',
+                      description: 'Git ref used to load git-backed .jean-ci/pr-checks prompts; not server verification of the caller-provided diff. Only a full immutable SHA can be a client-reported surrounding-source anchor',
                     },
                     ref: {
                       type: 'string',
