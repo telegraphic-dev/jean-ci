@@ -86,8 +86,9 @@ test('PR and local source provenance reaches every actual outbound Hermes reques
       verifyCoverage(diff, [configuredPrompt, customPrompt]);
       for (const { input } of sent) {
         assert.ok(input.includes('Server-verified reviewed head SHA: ' + head));
-        assert.ok(input.includes('Server-reported base SHA: ' + base));
+        assert.ok(input.includes('Server-reported base branch tip SHA (not the diff base): ' + base));
         assert.match(input, /repository identity and head checked server-side/);
+        assert.match(input, /never use it as the diff base/);
         assert.doesNotMatch(input, /Client-reported head source anchor:/);
       }
       for (const selector of [{ headSha: head, ref: 'ignored-branch' }, { headSha: 'abc123' }, { headSha: 'feature/review' }, { ref: 'main' }, { ref: head }]) {

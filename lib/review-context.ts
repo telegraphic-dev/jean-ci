@@ -130,7 +130,8 @@ function sourceProvenance(source?: ReviewSource): string[] {
     return [
       '- Source: GitHub PR diff; repository identity and head checked server-side against GitHub PR metadata.',
       `- Server-verified reviewed head SHA: ${immutableSha(source.headSha) || 'unavailable (no full immutable SHA)'}`,
-      `- Server-reported base SHA: ${immutableSha(source.baseSha) || 'unavailable (no full immutable SHA)'}`,
+      `- Server-reported base branch tip SHA (not the diff base): ${immutableSha(source.baseSha) || 'unavailable (no full immutable SHA)'}`,
+      '- The base branch tip may have advanced since divergence. It is not a verified merge base or pre-change source anchor: never use it as the diff base. The actual diff base is unavailable unless independently established.',
       '- Use the verified head for surrounding committed source; the supplied diff defines the changes under review.',
     ];
   }
