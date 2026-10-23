@@ -229,6 +229,18 @@ export function withReviewInterruption(normalized: string, diagnostics: string):
   return `${normalized}\n\n${INTERRUPTION_MARKER}\n\n${REVIEW_INTERRUPTION_NOTICE}\n\n${fence}text\n${diagnostics}\n${fence}`;
 }
 
+export const PASS_REVIEW_MESSAGE = 'No blocking issues were identified in the reviewed changes.';
+
+/** Presentation only: normalized diagnostics and approval semantics stay intact. */
+export function publicReviewMarkdown(parsed: ParsedReviewResponse): string {
+  return parsed.verdict === 'PASS' ? PASS_REVIEW_MESSAGE : parsed.reviewMarkdown;
+}
+
+export function buildPublicCheckSummary(parsed: ParsedReviewResponse, source: Parameters<typeof linkReviewedLocations>[1], detailsUrl: string): string {
+  const content = linkReviewedLocations(publicReviewMarkdown(parsed), source);
+  return parsed.verdict === 'PASS' ? `${content}\n\n[View full details](${detailsUrl})` : content;
+}
+
 /** Present persisted legacy/current summaries without claiming unavailable historic data. */
 export function readableReviewSummary(summary: string): string {
   if (!/^\s*\**VERDICT:\s*(PASS|FAIL)\b/i.test(summary)) return summary;
@@ -250,9 +262,10 @@ export function readableReviewSummary(summary: string): string {
       for (let index = 1; index < segmented.length; index += 2) {
         chunks.push({ label: segmented[index], parsed: parseReviewResponse(segmented[index + 1]) });
       }
-      return combineChunkedReviewResponses(chunks).reviewMarkdown;
+      return publicReviewMarkdown(combineChunkedReviewResponses(chunks));
     } catch { /* Older/partial summaries may not follow the current chunk format. */ }
   }
+  if (/^\s*\**VERDICT:\s*PASS\**\s*(?:\n|$)/i.test(summary)) return PASS_REVIEW_MESSAGE;
   const content = mapOutsideCode(summary, (line) => {
     const verdict = line.match(/^\s*\**VERDICT:\s*(?:PASS|FAIL)\b\**(.*)$/i);
     if (verdict) return verdict[1].replace(/^\s*[-–—:]\s*/, '').trim() || null;
@@ -264,7 +277,7 @@ export function readableReviewSummary(summary: string): string {
 }
 
 export function buildPRReviewBody(parsed: ParsedReviewResponse, source: Parameters<typeof linkReviewedLocations>[1], detailsUrl: string): string {
-  const content = linkReviewedLocations(parsed.reviewMarkdown, source);
+  const content = linkReviewedLocations(publicReviewMarkdown(parsed), source);
   const header = `## ${parsed.title}\n\n`;
   const footer = `\n\n---\n*[View full details](${detailsUrl})*`;
   return header + boundReviewMarkdown(content, 65000 - header.length - footer.length, detailsUrl) + footer;

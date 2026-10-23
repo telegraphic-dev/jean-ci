@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { approvalPrompts } from './hermes-runs.ts';
+import { approvalPrompts, observedApproval, approvalDeadline, terminalDiagnostic } from './hermes-runs.ts';
 import type { RunBinding, RunStore, HermesRun, ApprovalPrompt } from './hermes-runs.ts';
 import { buildGatewayChatSessionUrl } from './openclaw-chat-links.ts';
 
@@ -151,6 +151,19 @@ export async function initDatabase() {
         denied BOOLEAN NOT NULL DEFAULT FALSE,
         PRIMARY KEY (check_id, segment)
       );
+      ALTER TABLE jean_ci_review_runs ADD COLUMN IF NOT EXISTS diagnostic JSONB;
+      ALTER TABLE jean_ci_review_runs ADD COLUMN IF NOT EXISTS history JSONB NOT NULL DEFAULT '[]';
+      CREATE TABLE IF NOT EXISTS jean_ci_review_restarts (
+        source_check_id INTEGER PRIMARY KEY REFERENCES jean_ci_check_runs(id),
+        new_check_id INTEGER NOT NULL UNIQUE REFERENCES jean_ci_check_runs(id),
+        actor TEXT NOT NULL,
+        dispatch_status TEXT NOT NULL DEFAULT 'queued',
+        dispatch_started_at TIMESTAMPTZ,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      ALTER TABLE jean_ci_review_restarts ADD COLUMN IF NOT EXISTS dispatch_started_at TIMESTAMPTZ;
+      ALTER TABLE jean_ci_review_restarts ADD COLUMN IF NOT EXISTS dispatch_fenced BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE jean_ci_check_runs ADD COLUMN IF NOT EXISTS check_identity TEXT;
       CREATE TABLE IF NOT EXISTS jean_ci_review_approval_comments (
         check_id INTEGER NOT NULL REFERENCES jean_ci_check_runs(id) ON DELETE CASCADE,
         identity TEXT NOT NULL,
@@ -411,13 +424,19 @@ export const reviewRunStore: RunStore = {
     if (!result.rowCount) throw new Error('Review run identity conflict');
   },
   async get(check) {
-    return (await pool.query(`SELECT r.*, (r.denied OR EXISTS (
+    const rows = (await pool.query(`SELECT r.*, (r.denied OR EXISTS (
       SELECT 1 FROM jean_ci_review_decisions d WHERE d.check_id=r.check_id AND d.segment=r.segment
       AND (d.choice='deny' OR d.outcome NOT IN ('accepted', 'dispatching') OR
         (d.outcome='dispatching' AND (d.created_at IS NULL OR d.created_at <= NOW()-INTERVAL '60 seconds'))))) AS denied,
       EXISTS (SELECT 1 FROM jean_ci_review_decisions d WHERE d.check_id=r.check_id AND d.segment=r.segment
         AND d.choice='once' AND d.outcome='dispatching' AND d.created_at > NOW()-INTERVAL '60 seconds') AS settling
       FROM jean_ci_review_runs r WHERE r.check_id=$1 ORDER BY r.segment`, [check])).rows;
+    const decisions = (await pool.query(`SELECT *, created_at > NOW()-INTERVAL '60 seconds' AS leased FROM jean_ci_review_decisions WHERE check_id=$1`, [check])).rows;
+    return rows.map(row => ({ ...row, history: (row.history || []).map((h: import('./hermes-runs.ts').ApprovalHistory) => {
+      const d = decisions.find(d => d.segment === row.segment && d.prompt_id === h.prompt_id && Number(d.generation) === h.execution_generation);
+      if (!d) return h;
+      return { ...h, outcome: d.choice === 'deny' ? 'denied' : d.outcome === 'accepted' ? 'approved' : d.outcome === 'dispatching' && d.leased ? 'pending' : 'unconfirmed' };
+    }) }));
   },
   async observe(binding, fetchRun) {
     // Serialize observations so concurrent page/runner polls cannot erase a
@@ -426,12 +445,28 @@ export const reviewRunStore: RunStore = {
     try {
       await client.query('BEGIN');
       const row = (await client.query('SELECT * FROM jean_ci_review_runs WHERE check_id=$1 AND segment=$2 FOR UPDATE', [binding.check_id, binding.segment])).rows[0];
-      if (!row || row.run_id !== binding.run_id) throw new Error('Review run identity conflict');
+      if (!row || row.run_id !== binding.run_id || row.scope !== binding.scope) throw new Error('Review run identity conflict');
       // Cross-process lock covers the fetch as well as the write. No client clock
       // or pre-lock snapshot may erase a newer native approval.
       const run = await fetchRun();
       if (row.run_id !== run.run_id) throw new Error('Review run identity conflict');
-      const pending = approvalPrompts(run);
+      const history: import('./hermes-runs.ts').ApprovalHistory[] = row.history || [];
+      const pending = approvalPrompts(run).map(prompt => {
+        const prior = (row.pending as ApprovalPrompt[]).find(p => p.prompt_id === prompt.prompt_id && p.execution_generation === prompt.execution_generation);
+        const recorded = history.find(h => h.prompt_id === prompt.prompt_id && h.execution_generation === prompt.execution_generation);
+        // Re-observation, including after process restart or a settled projection,
+        // cannot mint a new window for an old exact native identity.
+        const saved = recorded?.expiresAt ? { ...prompt, first_observed_at: recorded.firstObservedAt ?? Date.parse(recorded.expiresAt) / 1000 - 1800, app_deadline_at: Date.parse(recorded.expiresAt) / 1000 } : undefined;
+        return observedApproval(prompt, prior?.app_deadline_at != null ? prior : saved);
+      });
+      run.pending_controls = pending;
+      for (const prompt of [...pending, ...row.pending] as ApprovalPrompt[]) {
+        if (!history.some(h => h.prompt_id === prompt.prompt_id && h.execution_generation === prompt.execution_generation)) history.push({
+          prompt_id: prompt.prompt_id, execution_generation: prompt.execution_generation, outcome: 'pending',
+          expiresAt: approvalDeadline(prompt) ? new Date(approvalDeadline(prompt)! * 1000).toISOString() : null,
+          deadlineApproximate: prompt.deadline_approximate, firstObservedAt: prompt.first_observed_at,
+        });
+      }
       let denied = row.denied;
       for (const previous of row.pending as ApprovalPrompt[]) {
         if (pending.some(p => p.prompt_id === previous.prompt_id && p.execution_generation === previous.execution_generation)) continue;
@@ -439,9 +474,14 @@ export const reviewRunStore: RunStore = {
           WHERE check_id=$1 AND segment=$2 AND prompt_id=$3 AND generation=$4`,
         [binding.check_id, binding.segment, previous.prompt_id, previous.execution_generation])).rows[0];
         if (!decision || decision.choice === 'deny' || decision.outcome === 'uncertain') denied = true;
+        const h = history.find(h => h.prompt_id === previous.prompt_id && h.execution_generation === previous.execution_generation)!;
+        h.outcome = !decision ? (approvalDeadline(previous) && approvalDeadline(previous)! * 1000 <= Date.now() ? 'expired' : 'unconfirmed') : decision.choice === 'deny' ? 'denied' : decision.outcome === 'accepted' ? 'approved' : 'unconfirmed';
       }
-      await client.query('UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5 WHERE check_id=$1 AND segment=$2',
-      [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied]);
+      // Save terminal evidence before the worker's fail-closed denial check.
+      // Never persist the native envelope (which can contain private tool data).
+      const diagnostic = terminalDiagnostic(run);
+      await client.query(`UPDATE jean_ci_review_runs SET status=$3,pending=$4::jsonb,denied=$5,history=$6::jsonb,diagnostic=CASE WHEN diagnostic->>'output' IS NOT NULL THEN diagnostic ELSE COALESCE($7::jsonb,diagnostic) END WHERE check_id=$1 AND segment=$2`,
+      [binding.check_id, binding.segment, run.status, JSON.stringify(pending), denied, JSON.stringify(history), diagnostic ? JSON.stringify(diagnostic) : null]);
       await client.query('COMMIT');
       return run;
     } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -484,7 +524,134 @@ export async function claimReviewNotification(check: number, identity: string): 
   return !!result.rowCount;
 }
 
+// Source-row locking and a unique durable mapping deduplicate cross-process clicks.
+export async function reserveReviewRestart(id: number, actor: string, validate: (check: CheckRun) => Promise<void>) {
+  const receiptClient = await pool.connect();
+  try {
+    await receiptClient.query('BEGIN');
+    await receiptClient.query('SELECT id FROM jean_ci_check_runs WHERE id=$1 FOR UPDATE', [id]);
+    const receipt = (await receiptClient.query('SELECT new_check_id FROM jean_ci_review_restarts WHERE source_check_id=$1', [id])).rows[0];
+    await receiptClient.query('COMMIT');
+    if (receipt) return Number(receipt.new_check_id);
+  } catch (error) { await receiptClient.query('ROLLBACK'); throw error; } finally { receiptClient.release(); }
+  const validated = await getCheckRun(id);
+  if (!validated) throw new Error('Check not found');
+  // No pool connection is held while validation queries the run store and GitHub.
+  await validate(validated);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const check = (await client.query('SELECT * FROM jean_ci_check_runs WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!check) throw new Error('Check not found');
+    let row = (await client.query('SELECT new_check_id FROM jean_ci_review_restarts WHERE source_check_id=$1', [id])).rows[0];
+    if (!row) {
+      if (check.status !== 'completed' || check.repo !== validated.repo || check.pr_number !== validated.pr_number || check.head_sha !== validated.head_sha || check.check_name !== validated.check_name || check.check_identity !== validated.check_identity) throw new Error('Source check changed');
+      const created = await client.query(`INSERT INTO jean_ci_check_runs(repo,pr_number,check_name,head_sha,status,check_identity)
+        VALUES($1,$2,$3,$4,'queued',$5) RETURNING id`, [check.repo, check.pr_number, check.check_name, check.head_sha, check.check_identity]);
+      row = { new_check_id: created.rows[0].id };
+      await client.query('INSERT INTO jean_ci_review_restarts(source_check_id,new_check_id,actor) VALUES($1,$2,$3)', [id, row.new_check_id, actor]);
+    }
+    await client.query('COMMIT');
+    return Number(row.new_check_id);
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}
+// Dedicated sessions fence dispatch across actual app instances, including long
+// approval waits. PostgreSQL releases ownership on connection/process death.
+const restartOwners = new Map<number, pg.Client>();
+const RESTART_LOCK_NAMESPACE = 165;
+export async function assertReviewRestartOwner(sourceId: number) {
+  const client = restartOwners.get(sourceId);
+  if (!client) throw new Error('Review restart owner lost');
+  // The dedicated session is never returned to a pool or reconnected. A failed
+  // probe fences late publication after PostgreSQL has released its lock.
+  await client.query('SELECT 1');
+}
+// Persist on the lock-owning session, never the general pool. Connection loss
+// aborts this statement before recovery can acquire ownership; the active-claim
+// and unfinished-check guards also refuse writes after settlement. A separate
+// liveness probe (even after GitHub returns) cannot fence a later pooled UPDATE.
+export async function updateReviewRestartCheck(sourceId: number, id: number, data: Parameters<typeof updateCheckRun>[1]) {
+  const client = restartOwners.get(sourceId);
+  if (!client) throw new Error('Review restart owner lost');
+  const result = await client.query(`UPDATE jean_ci_check_runs c SET
+    status=COALESCE($3,c.status), conclusion=COALESCE($4,c.conclusion),
+    title=COALESCE($5,c.title), summary=COALESCE($6,c.summary),
+    completed_at=COALESCE($7,c.completed_at)
+    WHERE c.id=$2 AND c.status IN ('queued','in_progress') AND EXISTS (
+      SELECT 1 FROM jean_ci_review_restarts r WHERE r.source_check_id=$1
+      AND r.new_check_id=c.id AND r.dispatch_status='dispatching' AND r.dispatch_fenced
+    ) RETURNING c.id`, [sourceId, id, data.status, data.conclusion, data.title, data.summary, data.completed_at]);
+  if (!result.rowCount) throw new Error('Review restart owner lost or check already settled');
+}
+export async function claimReviewRestart(sourceId: number): Promise<CheckRun | null> {
+  // Do not occupy the query pool for the whole approval wait (pool starvation
+  // would otherwise prevent status/decision queries from completing).
+  const client = new pg.Client({ connectionString: DATABASE_URL, keepAlive: true, keepAliveInitialDelayMillis: 10_000 });
+  client.on('error', () => {});
+  let owned = false;
+  try {
+    await client.connect();
+    owned = (await client.query('SELECT pg_try_advisory_lock($1,$2) AS owned', [RESTART_LOCK_NAMESPACE, sourceId])).rows[0].owned;
+    if (!owned) return null;
+    const result = await client.query(`WITH claimed AS (
+      UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW(),dispatch_fenced=TRUE
+      WHERE source_check_id=$1 AND dispatch_status='queued' RETURNING new_check_id
+    ) SELECT c.* FROM jean_ci_check_runs c JOIN claimed r ON r.new_check_id=c.id`, [sourceId]);
+    if (!result.rows[0]) return null;
+    restartOwners.set(sourceId, client);
+    return result.rows[0];
+  } finally {
+    if (restartOwners.get(sourceId) !== client) {
+      try { if (owned) await client.query('SELECT pg_advisory_unlock($1,$2)', [RESTART_LOCK_NAMESPACE, sourceId]); }
+      finally { await client.end(); }
+    }
+  }
+}
+
+// Local terminalization and queue settlement are one transaction, even before a
+// GitHub ID exists. Never replay a claimed request: external writes may have
+// succeeded without an acknowledgement. Keep the source mapping for deduplication.
+export async function finishReviewRestart(sourceId: number) {
+  const client = restartOwners.get(sourceId);
+  if (!client) return;
+  try { await settleReviewRestarts(sourceId, client); }
+  finally {
+    restartOwners.delete(sourceId);
+    try { await client.query('SELECT pg_advisory_unlock($1,$2)', [RESTART_LOCK_NAMESPACE, sourceId]); }
+    finally { await client.end(); }
+  }
+}
+export async function reconcileReviewRestarts(_startedBefore?: Date) {
+  // Legacy processes never took this lock: absence cannot prove their death.
+  // Preserve those uncertain claims for operator inspection, never replay them.
+  const candidates = (await pool.query("SELECT source_check_id FROM jean_ci_review_restarts WHERE dispatch_status='dispatching' AND dispatch_fenced")).rows;
+  for (const row of candidates) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const owned = (await client.query('SELECT pg_try_advisory_xact_lock($1,$2) AS owned', [RESTART_LOCK_NAMESPACE, row.source_check_id])).rows[0].owned;
+      if (owned) await settleReviewRestarts(row.source_check_id, client);
+      await client.query('COMMIT');
+    } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+  }
+}
+async function settleReviewRestarts(sourceId: number, client: pg.Client | pg.PoolClient) {
+  await client.query(`WITH settled AS (
+    UPDATE jean_ci_review_restarts SET dispatch_status='done'
+    WHERE dispatch_status='dispatching' AND source_check_id=$1
+    RETURNING new_check_id
+  ) UPDATE jean_ci_check_runs c SET status='completed',conclusion='failure',
+    title='Review restart interrupted',
+    summary='INCOMPLETE: The explicit restart could not finish. No approval was granted and no execution was automatically retried. External effects may have occurred; their outcome is not assumed.',
+    completed_at=NOW()
+    FROM settled r WHERE c.id=r.new_check_id AND c.status IN ('queued','in_progress')`, [sourceId]);
+}
+export async function queuedReviewRestarts(): Promise<number[]> {
+  return (await pool.query(`SELECT source_check_id FROM jean_ci_review_restarts WHERE dispatch_status='queued'`)).rows.map(r => r.source_check_id);
+}
+
 export interface CheckRun {
+  check_identity?: string;
   id: number;
   github_check_id?: number;
   repo: string;
@@ -517,6 +684,7 @@ export interface PRReviewState {
 }
 
 export async function insertCheckRun(data: {
+  check_identity?: string;
   github_check_id?: number;
   repo: string;
   pr_number: number;
@@ -529,11 +697,11 @@ export async function insertCheckRun(data: {
 }): Promise<number> {
   const result = await pool.query(`
     INSERT INTO jean_ci_check_runs 
-    (github_check_id, repo, pr_number, check_name, head_sha, status, prompt, pr_title, pr_body, diff_preview)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    (github_check_id, repo, pr_number, check_name, head_sha, status, prompt, pr_title, pr_body, diff_preview, check_identity)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING id
   `, [data.github_check_id, data.repo, data.pr_number, data.check_name, data.head_sha, 
-      'queued', data.prompt, data.pr_title, data.pr_body, data.diff_preview]);
+      'queued', data.prompt, data.pr_title, data.pr_body, data.diff_preview, data.check_identity]);
   return result.rows[0].id;
 }
 
@@ -555,6 +723,12 @@ export async function updateCheckRun(id: number, data: {
   `, [id, data.status, data.conclusion, data.title, data.summary, data.completed_at]);
 }
 
+export async function setReservedCheckInput(id: number, head: string, data: { prompt: string; pr_title: string; pr_body: string; diff_preview: string }) {
+  const result = await pool.query(`UPDATE jean_ci_check_runs SET prompt=$3,pr_title=$4,pr_body=$5,diff_preview=$6
+    WHERE id=$1 AND head_sha=$2 AND status='queued' RETURNING id`, [id, head, data.prompt, data.pr_title, data.pr_body, data.diff_preview]);
+  if (!result.rowCount) throw new Error('Reserved review check changed or completed');
+}
+
 export async function setCheckRunGithubId(id: number, githubCheckId: number) {
   await pool.query('UPDATE jean_ci_check_runs SET github_check_id = $1 WHERE id = $2', [githubCheckId, id]);
 }
@@ -570,6 +744,8 @@ export async function getInterruptedCheckRuns(startedBefore: Date): Promise<Chec
      WHERE status IN ('queued', 'in_progress')
        AND github_check_id IS NOT NULL
        AND created_at < $1
+       AND NOT EXISTS (SELECT 1 FROM jean_ci_review_restarts r WHERE r.new_check_id=jean_ci_check_runs.id
+         AND r.dispatch_status IN ('queued','dispatching'))
      ORDER BY created_at ASC`,
     [startedBefore],
   );

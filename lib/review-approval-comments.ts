@@ -2,7 +2,7 @@ import { claimApprovalComment, getCheckRun, getRepo, reviewRunStore, updateAppro
 import { getInstallationOctokit } from './github.ts';
 import { APP_BASE_URL } from './config.ts';
 
-interface CommentTarget { checkId: number; identity: string; owner: string; repo: string; pr: number; sha: string; appId: number; }
+interface CommentTarget { checkId: number; identity: string; owner: string; repo: string; pr: number; sha: string; appId: number; expiresAt?: string; }
 const defaultStore = { claim: claimApprovalComment, update: updateApprovalComment };
 
 // Runtime notification, not a review or an approval. The trusted binding is
@@ -11,7 +11,8 @@ export async function deliverApprovalComment(target: CommentTarget, octokit: any
   const claim = await store.claim(target.checkId, target.identity);
   if (!claim) return;
   const marker = `<!-- jean-ci-tool-approval:${claim.marker} -->`;
-  const body = `### Reviewer tool approval required\n\nThe review is paused for an operator decision. [Open this review's authenticated check page](${APP_BASE_URL}/checks/${target.checkId}) to **Approve once** or **Deny**.\n\nReviewed SHA: \`${target.sha}\`. Native approval expiry still applies; this is not a code finding or a request for changes.\n\n${marker}`;
+  const window = target.expiresAt ? `This request expires at **${target.expiresAt}** (30-minute approval window, excluded from the execution budget).` : 'Native approval expiry still applies; no extended window was negotiated.';
+  const body = `### Reviewer tool approval required\n\nThe review is paused for an operator decision. [Open this review's authenticated check page](${APP_BASE_URL}/checks/${target.checkId}) to **Approve once** or **Deny**. Opening the link never approves a tool. Approve once resumes the same live run; an expired execution needs an explicit Restart review.\n\nReviewed SHA: \`${target.sha}\`. ${window} This is not a code finding or a request for changes.\n\n${marker}`;
   const params = { owner: target.owner, repo: target.repo, request: { timeout: 5000 } };
   const ours = (comment: any) => comment?.performed_via_github_app?.id === target.appId && comment?.body === body && Number.isSafeInteger(comment?.id) && comment.id > 0;
   try {
@@ -65,6 +66,7 @@ export async function postReviewApprovalComments(checkId: number) {
     const [owner, repo] = check.repo.split('/');
     for (const binding of await reviewRunStore.get(checkId)) for (const prompt of binding.pending) {
       await deliverApprovalComment({ checkId, owner, repo, pr: check.pr_number, sha: check.head_sha!, appId,
+        expiresAt: prompt.timeout_s === 1800 && Number.isFinite(prompt.expires_at) ? new Date(prompt.expires_at! * 1000).toISOString() : undefined,
         identity: `${binding.segment}:${binding.run_id}:${prompt.execution_generation}:${prompt.prompt_id}` }, octokit);
     }
   } catch { console.warn('PR tool approval notification unavailable'); }

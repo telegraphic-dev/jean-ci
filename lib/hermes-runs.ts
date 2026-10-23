@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 
 export interface ApprovalPrompt {
   kind: 'approval'; prompt_id: string; execution_generation: number;
-  command: string; description: string; choices: string[]; timeout_s?: number;
+  command: string; description: string; choices: string[]; timeout_s?: number; expires_at?: number;
+  first_observed_at?: number; app_deadline_at?: number; deadline_approximate?: boolean;
 }
 export interface HermesRun {
   run_id: string; status: string; execution_generation?: number;
@@ -59,7 +60,25 @@ export function approvalPrompts(run: HermesRun): ApprovalPrompt[] {
   return (run.pending_controls || []).filter(p => p.kind === 'approval' && validControlId(p.prompt_id) && p.execution_generation === run.execution_generation && typeof p.command === 'string' && typeof p.description === 'string' && Array.isArray(p.choices));
 }
 
-export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; denied: boolean; settling?: boolean; }
+// Baseline Hermes may expose neither timeout_s nor a native absolute deadline.
+// This durable observation estimate bounds app waiting; it never extends native consent.
+export function observedApproval(prompt: ApprovalPrompt, previous?: ApprovalPrompt, now = Date.now()): ApprovalPrompt {
+  const first = previous?.first_observed_at ?? now / 1000;
+  const timeout = Number.isFinite(prompt.timeout_s) && prompt.timeout_s! > 0 ? Math.min(prompt.timeout_s!, 1800) : 1800;
+  const deadline = previous?.app_deadline_at ?? Math.min(first + timeout, Number.isFinite(prompt.expires_at) ? prompt.expires_at! : Infinity);
+  return { ...prompt, first_observed_at: first, app_deadline_at: deadline, deadline_approximate: !Number.isFinite(prompt.expires_at) };
+}
+export const approvalDeadline = (prompt: ApprovalPrompt) => prompt.app_deadline_at ?? prompt.expires_at;
+
+export interface ApprovalHistory { prompt_id: string; execution_generation: number; outcome: 'pending' | 'expired' | 'denied' | 'approved' | 'unconfirmed'; expiresAt: string | null; deadlineApproximate?: boolean; firstObservedAt?: number; }
+// Whitelist only the canonical final assistant response, never messages/tools/reasoning.
+export interface RunDiagnostic { status: string; output: string | null; error: 'native_run_failed' | null; }
+export function terminalDiagnostic(run: HermesRun): RunDiagnostic | null {
+  if (!terminalRun(run.status)) return null;
+  return { status: run.status, output: typeof run.output === 'string' ? run.output : null,
+    error: run.status === 'failed' ? 'native_run_failed' : null };
+}
+export interface RunBinding { check_id: number; segment: number; run_id: string | null; request_key: string; scope: string; status: string; pending: ApprovalPrompt[]; history?: ApprovalHistory[]; denied: boolean; settling?: boolean; diagnostic?: RunDiagnostic | null; }
 export interface RunStore {
   reserve(check: number, segment: number, scope: string, fingerprint: string): Promise<RunBinding>;
   bind(check: number, segment: number, run: string): Promise<void>;
@@ -69,7 +88,7 @@ export interface RunStore {
 }
 export async function runHermesReview(input: string, instructions: string, options: {
   checkId?: number; segment?: number; store?: RunStore; onWaiting?: () => Promise<void>;
-  client?: ReturnType<typeof hermesClient>; sleep?: () => Promise<void>; deadlineMs?: number;
+  client?: ReturnType<typeof hermesClient>; sleep?: () => Promise<void>; deadlineMs?: number; now?: () => number;
 } = {}): Promise<string> {
   const client = options.client || hermesClient();
   const store = options.store;
@@ -87,9 +106,17 @@ export async function runHermesReview(input: string, instructions: string, optio
     if (!id) throw last || new Error('Hermes submission failed');
     if (binding && store) { await store.bind(binding.check_id, binding.segment, id); binding = { ...binding, run_id: id }; }
   }
-  const deadline = Date.now() + (options.deadlineMs ?? 540_000);
+  const now = options.now || Date.now;
+  let previous = now();
+  let remaining = options.deadlineMs ?? 540_000;
+  let pausedUntil = 0;
   let failures = 0;
-  while (Date.now() < deadline) {
+  const observed = new Map<string, ApprovalPrompt>();
+  while (remaining > 0) {
+    const tick = now();
+    remaining -= Math.max(0, tick - Math.max(previous, Math.min(tick, pausedUntil)));
+    previous = tick;
+    if (remaining <= 0) break;
     let run: HermesRun;
     try {
       run = binding && store ? await store.observe(binding, () => client.status(id!)) : await client.status(id);
@@ -101,9 +128,16 @@ export async function runHermesReview(input: string, instructions: string, optio
     if (run.status === 'waiting_for_approval') {
       if (!binding) throw new Error('INCOMPLETE: Tool approval requires an authenticated PR check page; local reviews never auto-approve.');
       if (approvalPrompts(run).length) {
+        pausedUntil = Math.max(0, ...approvalPrompts(run).map(p => {
+          const key = `${p.execution_generation}:${p.prompt_id}`;
+          const prior = observed.get(key);
+          const timed = p.app_deadline_at != null ? p : observedApproval(p, prior, tick);
+          observed.set(key, timed);
+          return Math.min(approvalDeadline(timed)! * 1000, (timed.first_observed_at! + 1800) * 1000);
+        }));
         try { await options.onWaiting?.(); } catch { console.warn('Optional approval wait announcement unavailable; existing run retained'); }
       }
-    }
+    } else pausedUntil = 0;
     if (terminalRun(run.status)) {
       if (binding && store) {
         const saved = (await store.get(binding.check_id)).find(r => r.segment === binding!.segment);

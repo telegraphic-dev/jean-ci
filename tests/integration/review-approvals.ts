@@ -3,6 +3,8 @@
 import test, { mock, after } from 'node:test';
 import assert from 'node:assert/strict';
 import pg from 'pg';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 
 const database = process.env.REVIEW_APPROVAL_TEST_DATABASE_URL;
 if (!database || !['localhost', '127.0.0.1'].includes(new URL(database).hostname) || !new URL(database).pathname.startsWith('/jean_approval_test')) throw new Error('Explicit disposable local jean_approval_test database required');
@@ -42,15 +44,31 @@ const githubFixture = { request: async (route: string, params: any) => {
   return { data: comments };
 } };
 let currentHead = 'a'.repeat(40);
+let currentState = 'open';
+let customFiles: Array<{ name: string; path: string; content: string }> = [];
 let nextCheck = 100;
+let githubCreateFailure: 'before' | 'ambiguous' | null = null;
+let githubCompletion: { entered: ReturnType<typeof gate>; response: ReturnType<typeof gate>; reject: boolean } | null = null;
 const moduleUrl = (name: string) => new URL(`../../lib/${name}.ts`, import.meta.url).href;
 mock.module(moduleUrl('github'), { namedExports: {
-  getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => [],
-  getPRInfo: async () => ({ title: 'CSRF context fixture', head: { sha: currentHead }, base: { sha: 'b'.repeat(40) }, state: 'open' }),
+  getInstallationOctokit: async () => githubFixture, fetchPRCheckFiles: async () => customFiles,
+  getPRInfo: async () => ({ title: 'CSRF context fixture', head: { sha: currentHead }, base: { sha: 'b'.repeat(40) }, state: currentState }),
   getPRDiff: async () => 'diff --git a/auth.ts b/auth.ts\n@@ -1 +1 @@\n-old\n+new\n',
-  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { const payload = args.at(-1);
+  createCheck: async () => {
+    if (githubCreateFailure === 'before') throw new Error('GitHub unavailable before creation');
+    const id = ++nextCheck;
+    if (githubCreateFailure === 'ambiguous') throw new Error('GitHub created check but acknowledgement lost');
+    return { id };
+  }, updateCheck: async (...args: any[]) => { const payload = args.at(-1);
     if (payload.output?.title === 'Tool approval required' && waitStatusFailures > 0) { waitStatusFailures--; throw new Error('GitHub 503'); }
-    updates.push(payload); },
+    updates.push(payload);
+    if (payload.status === 'completed' && githubCompletion) {
+      const completion = githubCompletion;
+      completion.entered.release();
+      await completion.response.promise;
+      if (completion.reject) throw new Error('GitHub completion acknowledgement lost');
+    }
+  },
   createPRReview: async (...args: any[]) => { reviews.push(args); },
 } });
 const { runPRReview } = await import('../../lib/pr-review.ts');
@@ -64,7 +82,7 @@ const keys = new Map<string, string>();
 let lost = false;
 const prompt = { kind: 'approval', prompt_id: 'approval_native_shape', execution_generation: 11, command: 'python inspect_csrf.py', description: 'Read required source context', choices: ['once', 'deny', 'session', 'always'] };
 const oldFetch = global.fetch;
-global.fetch = async (url, init = {}) => {
+const fixtureFetch: typeof fetch = async (url, init = {}) => {
   const path = String(url);
   assert.ok(path.startsWith('http://hermes-fixture.invalid/v1/'), 'no live network requests');
   if (path.endsWith('/capabilities')) return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true } });
@@ -89,6 +107,7 @@ global.fetch = async (url, init = {}) => {
   }
   return Response.json(current);
 };
+global.fetch = fixtureFetch;
 
 test('actual PR runner + PostgreSQL: once resumes, deny/expiry incomplete, no autoapproval or duplicate runs', async () => {
   try {
@@ -273,4 +292,366 @@ test('optional Discord notice is safe, read back, durably deduplicated, and abse
     await notifyReviewApproval(id); assert.equal(calls, 2);
     await notifyReviewApproval(id); assert.equal(calls, 2);
   } finally { delete process.env.REVIEW_APPROVAL_DISCORD_WEBHOOK_URL; global.fetch = oldFetch; }
+});
+
+test('expired-check restart is durable and deduplicated across concurrent clicks and dispatchers; stale head/closed/disabled/live refuse', async () => {
+  const { restartReview, dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Code Review', head_sha: currentHead });
+  let b = await db.reviewRunStore.reserve(id, 1, hermesClient().scope, 'expired-source');
+  await db.reviewRunStore.bind(id, 1, 'run_expired_restart'); b = { ...b, run_id: 'run_expired_restart' };
+  const p = { ...prompt, kind: 'approval' as const, expires_at: Date.now() / 1000 - 1, timeout_s: 1800 };
+  await db.reviewRunStore.observe(b, async () => ({ run_id: b.run_id!, status: 'waiting_for_approval', execution_generation: 11, pending_controls: [p] }));
+  await db.reviewRunStore.observe(b, async () => ({ run_id: b.run_id!, status: 'completed', output: 'INCOMPLETE', pending_controls: [] }));
+  await db.updateCheckRun(id, { status: 'completed', conclusion: 'failure' });
+  const history = await getReviewApprovals(id);
+  assert.equal(history.history[0].outcome, 'expired'); assert.equal(history.requests.length, 0); assert.equal(history.can_restart, true);
+  assert.ok(!JSON.stringify(history).includes(p.command));
+  let originalStatus = 'completed';
+  global.fetch = async (url, init = {}) => String(url).endsWith('/run_expired_restart') ? Response.json({ run_id: 'run_expired_restart', status: originalStatus, pending_controls: [] }) : fixtureFetch(url, init);
+  try {
+    currentState = 'closed'; await assert.rejects(restartReview(id, 'operator'), /PR closed/); currentState = 'open';
+    currentHead = 'c'.repeat(40); await assert.rejects(restartReview(id, 'operator'), /head changed/); currentHead = 'a'.repeat(40);
+    await db.setRepoReviewEnabled('fixture/repo', false); await assert.rejects(restartReview(id, 'operator'), /disabled/); await db.setRepoReviewEnabled('fixture/repo', true);
+    for (const status of ['running', 'unknown']) { originalStatus = status; await assert.rejects(restartReview(id, 'operator'), /still live or unknown/); } originalStatus = 'completed';
+    const before = createCount; const posts = approvalPosts; const checkBefore = nextCheck;
+    const results = await Promise.all(Array.from({ length: 12 }, () => restartReview(id, 'operator')));
+    assert.equal(new Set(results.map(r => r.check_id)).size, 1);
+    const newId = results[0].check_id;
+    assert.notEqual(newId, id); assert.equal((await db.getCheckRun(id))?.status, 'completed');
+    assert.equal(createCount, before, 'link/POST reservation never auto-approves or starts an unreserved run');
+    mode = 'once';
+    const dispatches = Array.from({ length: 8 }, () => dispatchReviewRestart(id));
+    for (let i = 0; i < 200 && !(await db.reviewRunStore.get(newId))[0]?.pending.length; i++) await new Promise(r => setTimeout(r, 10));
+    const newBinding = (await db.reviewRunStore.get(newId))[0];
+    assert.ok(newBinding?.pending.length); assert.equal(createCount, before + 1); assert.equal(nextCheck, checkBefore + 1);
+    assert.equal(approvalPosts, posts, 'explicit restart must still wait for a separate approval');
+    await decideReviewApproval(newId, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 11, choice: 'once' }, 'operator');
+    await Promise.all(dispatches);
+    assert.equal((await db.getCheckRun(newId))?.conclusion, 'success');
+    assert.ok((await db.getCheckRun(newId))?.prompt); assert.equal((await db.getCheckRun(newId))?.pr_title, 'CSRF context fixture');
+    const repeated = await restartReview(id, 'operator'); assert.equal(repeated.check_id, newId);
+    await dispatchReviewRestart(id); assert.equal(createCount, before + 1);
+    assert.equal((await pool.query('SELECT * FROM jean_ci_review_restarts WHERE source_check_id=$1', [id])).rowCount, 1);
+  } finally { currentState = 'open'; currentHead = 'a'.repeat(40); global.fetch = oldFetch; }
+});
+
+async function reservedRestart() {
+  const source = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Code Review', head_sha: currentHead });
+  await db.updateCheckRun(source, { status: 'completed', conclusion: 'failure', title: 'Review restart interrupted', summary: 'INCOMPLETE: Previous restart did not finish.' });
+  const target = await db.reserveReviewRestart(source, 'operator', async () => {});
+  return { source, target };
+}
+async function assertInterrupted(source: number, target: number) {
+  const check = await db.getCheckRun(target);
+  assert.equal(check?.status, 'completed'); assert.equal(check?.conclusion, 'failure');
+  assert.equal(check?.title, 'Review restart interrupted'); assert.match(check?.summary || '', /^INCOMPLETE:/);
+  assert.ok(check?.completed_at);
+  assert.equal((await pool.query('SELECT dispatch_status FROM jean_ci_review_restarts WHERE source_check_id=$1', [source])).rows[0].dispatch_status, 'done');
+  assert.equal(await db.claimReviewRestart(source), null);
+  assert.equal(await db.reserveReviewRestart(source, 'operator', async () => {}), target, 'source dedup mapping survives reconciliation');
+}
+
+test('committed claim crash before check read and before GitHub ID reconciles atomically without replay', async () => {
+  const { source, target } = await reservedRestart();
+  // Reproduce the old committed-claim/getCheckRun crash gap in a separate process.
+  // No check read or GitHub request is made after the committed UPDATE.
+  const crash = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import pg from 'pg';
+    const c = new pg.Client({ connectionString: process.env.REVIEW_APPROVAL_TEST_DATABASE_URL });
+    await c.connect();
+    await c.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW(),dispatch_fenced=TRUE WHERE source_check_id=$1", [${source}]);
+    process.exit(73);
+  `], { env: process.env, encoding: 'utf8' });
+  assert.equal(crash.status, 73, crash.stderr);
+  assert.equal((await db.getCheckRun(target))?.github_check_id, null);
+  const startup = (await pool.query("SELECT clock_timestamp()+INTERVAL '1 second' AS at")).rows[0].at;
+  const counts = [createCount, nextCheck, approvalPosts, reviews.length];
+  await db.reconcileReviewRestarts(startup);
+  await assertInterrupted(source, target);
+  await db.reconcileReviewRestarts(startup);
+  const { restartReview, dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  await dispatchReviewRestart(source);
+  assert.deepEqual(await restartReview(source, 'operator'), { status: 'completed', check_id: target, url: `/checks/${target}` });
+  assert.deepEqual([createCount, nextCheck, approvalPosts, reviews.length], counts);
+  assert.equal((await getReviewApprovals(target)).can_restart, true);
+  // A separate explicit restart of the terminal target is allowed, but all
+  // current-head, repository and known-terminal native-run checks still apply.
+  currentState = 'closed'; await assert.rejects(restartReview(target, 'operator'), /PR closed/); currentState = 'open';
+  currentHead = 'c'.repeat(40); await assert.rejects(restartReview(target, 'operator'), /head changed/); currentHead = 'a'.repeat(40);
+  await db.setRepoReviewEnabled('fixture/repo', false); await assert.rejects(restartReview(target, 'operator'), /disabled/); await db.setRepoReviewEnabled('fixture/repo', true);
+  const later = await restartReview(target, 'operator'); assert.notEqual(later.check_id, target);
+  assert.equal((await restartReview(target, 'operator')).check_id, later.check_id);
+  const binding = await db.reviewRunStore.reserve(later.check_id, 1, hermesClient().scope, 'uncertain-create');
+  await db.updateCheckRun(later.check_id, { status: 'completed', conclusion: 'failure', title: 'Review restart interrupted', summary: 'INCOMPLETE: fixture' });
+  await assert.rejects(restartReview(later.check_id, 'operator'), /cannot be verified/);
+  await db.reviewRunStore.bind(later.check_id, 1, 'run_uncertain_restart');
+  global.fetch = async () => Response.json({ run_id: 'run_uncertain_restart', status: 'unknown', pending_controls: [] });
+  try { await assert.rejects(restartReview(later.check_id, 'operator'), /live or unknown/); }
+  finally { global.fetch = oldFetch; }
+  assert.ok(binding);
+});
+
+test('abrupt process death with new claim before GitHub ID and after an acknowledged external creation never replays', { timeout: 15_000 }, async () => {
+  let externalCreates = 0;
+  const remote = createServer((req, res) => {
+    assert.equal(req.method, 'POST');
+    externalCreates++;
+    res.writeHead(201, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ id: externalCreates }));
+  });
+  await new Promise<void>(resolve => remote.listen(0, '127.0.0.1', resolve));
+  const address = remote.address(); assert.ok(address && typeof address !== 'string');
+  try {
+    for (const afterCreation of [false, true]) {
+      const { source, target } = await reservedRestart();
+      const before = externalCreates;
+      const child = spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', `
+        const db = await import(${JSON.stringify(moduleUrl('db'))});
+        const check = await db.claimReviewRestart(${source});
+        if (!check) process.exit(2);
+        ${afterCreation ? `const r = await fetch('http://127.0.0.1:${address.port}/checks', { method: 'POST' });
+        if (r.status !== 201) process.exit(3); await r.json();` : ''}
+        // Terminate without saving the external ID or executing finally cleanup.
+        process.exit(74);
+      `], { env: process.env, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = ''; child.stderr.on('data', data => { stderr += data; });
+      const code = await new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
+      assert.equal(code, 74, stderr);
+      assert.equal(externalCreates, before + Number(afterCreation));
+      assert.equal((await db.getCheckRun(target))?.github_check_id, null);
+      const startup = (await pool.query("SELECT clock_timestamp()+INTERVAL '1 second' AS at")).rows[0].at;
+      await db.reconcileReviewRestarts(startup); await assertInterrupted(source, target);
+      const { dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+      await dispatchReviewRestart(source); await db.reconcileReviewRestarts(startup);
+      assert.equal(externalCreates, before + Number(afterCreation), 'uncertain external creation is not repeated');
+      assert.equal((await db.reviewRunStore.get(target)).length, 0, 'no native run was submitted');
+    }
+  } finally { await new Promise<void>((resolve, reject) => remote.close(error => error ? reject(error) : resolve())); }
+});
+
+test('new claim is atomic on SQL failure; terminalization failure rolls back settlement and startup retries it', async () => {
+  const { source, target } = await reservedRestart();
+  await pool.query(`CREATE FUNCTION fixture_fail_claim() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+    IF NEW.source_check_id=${source} AND NEW.dispatch_status='dispatching' THEN RAISE EXCEPTION 'claim read failure'; END IF;
+    RETURN NEW; END $$;
+    CREATE TRIGGER fixture_fail_claim AFTER UPDATE ON jean_ci_review_restarts FOR EACH ROW EXECUTE FUNCTION fixture_fail_claim()`);
+  try { await assert.rejects(db.claimReviewRestart(source), /claim read failure/); }
+  finally { await pool.query('DROP TRIGGER fixture_fail_claim ON jean_ci_review_restarts; DROP FUNCTION fixture_fail_claim()'); }
+  const row = (await pool.query('SELECT * FROM jean_ci_review_restarts WHERE source_check_id=$1', [source])).rows[0];
+  assert.equal(row.dispatch_status, 'queued'); assert.equal(row.dispatch_started_at, null);
+  assert.equal((await db.claimReviewRestart(source))?.id, target);
+  assert.equal(await db.claimReviewRestart(source), null);
+  await pool.query(`CREATE FUNCTION fixture_fail_terminal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+    IF NEW.id=${target} AND NEW.status='completed' THEN RAISE EXCEPTION 'terminal persistence failure'; END IF;
+    RETURN NEW; END $$;
+    CREATE TRIGGER fixture_fail_terminal BEFORE UPDATE ON jean_ci_check_runs FOR EACH ROW EXECUTE FUNCTION fixture_fail_terminal()`);
+  const startup = (await pool.query("SELECT clock_timestamp()+INTERVAL '1 second' AS at")).rows[0].at;
+  try {
+    await assert.rejects(db.finishReviewRestart(source), /terminal persistence failure/);
+    await assert.rejects(db.reconcileReviewRestarts(startup), /terminal persistence failure/);
+    assert.equal((await pool.query('SELECT dispatch_status FROM jean_ci_review_restarts WHERE source_check_id=$1', [source])).rows[0].dispatch_status, 'dispatching');
+    assert.equal((await db.getCheckRun(target))?.status, 'queued');
+  } finally { await pool.query('DROP TRIGGER fixture_fail_terminal ON jean_ci_check_runs; DROP FUNCTION fixture_fail_terminal()'); }
+  await db.reconcileReviewRestarts(startup); await assertInterrupted(source, target);
+});
+
+test('pre-ID failure and ambiguous GitHub creation terminalize without duplicate check or native submission', async () => {
+  const { dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  for (const failure of ['before', 'ambiguous'] as const) {
+    const { source, target } = await reservedRestart();
+    const before = [createCount, nextCheck, approvalPosts, reviews.length];
+    githubCreateFailure = failure;
+    try { await assert.rejects(dispatchReviewRestart(source), failure === 'before' ? /before creation/ : /acknowledgement lost/); }
+    finally { githubCreateFailure = null; }
+    await assertInterrupted(source, target);
+    assert.equal((await db.getCheckRun(target))?.github_check_id, null);
+    await dispatchReviewRestart(source);
+    await db.reconcileReviewRestarts(new Date(Date.now() + 1000));
+    assert.deepEqual([createCount, nextCheck, approvalPosts, reviews.length], [before[0], before[1] + (failure === 'ambiguous' ? 1 : 0), before[2], before[3]]);
+  }
+});
+
+test('startup covers saved GitHub IDs but preserves queued and new claims and completed outcomes', async () => {
+  const queued = await reservedRestart(); const old = await reservedRestart();
+  const fresh = await reservedRestart(); const completed = await reservedRestart();
+  await pool.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW(),dispatch_fenced=TRUE WHERE source_check_id=ANY($1::int[])", [[old.source, completed.source]]);
+  await db.setCheckRunGithubId(old.target, 98765);
+  await db.updateCheckRun(completed.target, { status: 'completed', conclusion: 'success', title: 'PASS' });
+  const startup = (await pool.query("SELECT clock_timestamp()+INTERVAL '1 second' AS at")).rows[0].at;
+  await db.claimReviewRestart(fresh.source);
+  await pool.query('UPDATE jean_ci_review_restarts SET dispatch_started_at=$2 WHERE source_check_id=$1', [fresh.source, startup]);
+  await db.reconcileReviewRestarts(startup);
+  await assertInterrupted(old.source, old.target);
+  assert.equal((await db.getCheckRun(queued.target))?.status, 'queued');
+  assert.ok((await db.queuedReviewRestarts()).includes(queued.source));
+  assert.equal((await db.getCheckRun(fresh.target))?.status, 'queued');
+  assert.equal((await pool.query('SELECT dispatch_status FROM jean_ci_review_restarts WHERE source_check_id=$1', [fresh.source])).rows[0].dispatch_status, 'dispatching');
+  assert.equal((await db.getCheckRun(completed.target))?.conclusion, 'success');
+  assert.equal((await db.getCheckRun(completed.target))?.title, 'PASS');
+  await db.finishReviewRestart(fresh.source);
+});
+
+test('two actual app processes: live old ownership survives startup and periodic recovery, death settles bounded without replay', { timeout: 15_000 }, async () => {
+  const { source, target } = await reservedRestart();
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', `
+    const db = await import(${JSON.stringify(moduleUrl('db'))});
+    const check = await db.claimReviewRestart(${source});
+    if (!check) process.exit(2);
+    console.log('owned'); setInterval(() => {}, 1000);
+  `], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.once('data', () => resolve()); child.once('error', reject);
+      child.once('exit', code => reject(new Error(`owner exited ${code}`)));
+    });
+    await pool.query("UPDATE jean_ci_review_restarts SET dispatch_started_at=NOW()-INTERVAL '2 hours' WHERE source_check_id=$1", [source]);
+    await db.setCheckRunGithubId(target, 777777);
+    for (let i = 0; i < 3; i++) {
+      await db.reconcileReviewRestarts(new Date());
+      assert.equal((await db.getCheckRun(target))?.status, 'queued');
+      assert.equal(await db.claimReviewRestart(source), null);
+      assert.ok(!(await db.getInterruptedCheckRuns(new Date())).some(c => c.id === target), 'generic startup recovery must also respect ownership');
+    }
+    child.kill('SIGKILL'); await exited;
+    for (let i = 0; i < 100 && (await db.getCheckRun(target))?.status !== 'completed'; i++) {
+      await db.reconcileReviewRestarts(); await new Promise(r => setTimeout(r, 10));
+    }
+    await assertInterrupted(source, target);
+  } finally { child.kill('SIGKILL'); await exited; }
+});
+
+test('rolling upgrade preserves unfenced legacy claims; absent legacy lock does not prove death', async () => {
+  const { source, target } = await reservedRestart();
+  await pool.query("UPDATE jean_ci_review_restarts SET dispatch_status='dispatching',dispatch_started_at=NOW()-INTERVAL '2 hours' WHERE source_check_id=$1", [source]);
+  await db.setCheckRunGithubId(target, 888888);
+  await db.reconcileReviewRestarts();
+  assert.equal((await db.getCheckRun(target))?.status, 'queued');
+  assert.equal(await db.claimReviewRestart(source), null);
+  assert.ok(!(await db.getInterruptedCheckRuns(new Date())).some(c => c.id === target));
+});
+
+test('disconnected owner is fenced and safely terminalized without replay', async () => {
+  const { source, target } = await reservedRestart();
+  assert.equal((await db.claimReviewRestart(source))?.id, target);
+  await db.assertReviewRestartOwner(source);
+  const owner = (await pool.query('SELECT pid FROM pg_locks WHERE locktype=\'advisory\' AND classid=165 AND objid=$1 AND granted', [source])).rows[0];
+  assert.ok(owner);
+  await pool.query('SELECT pg_terminate_backend($1)', [owner.pid]);
+  await assert.rejects(db.assertReviewRestartOwner(source));
+  await db.reconcileReviewRestarts(); await assertInterrupted(source, target);
+  await assert.rejects(db.finishReviewRestart(source));
+  assert.equal((await db.getCheckRun(target))?.conclusion, 'failure');
+});
+
+test('actual restart runner fences terminal persistence when owner dies inside GitHub completion await', { timeout: 20_000 }, async () => {
+  const { dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  global.fetch = fixtureFetch;
+  try {
+    // Both a successful in-flight external write and an ambiguous error must
+    // leave recovery's terminal result intact, including catch/finally cleanup.
+    for (const reject of [false, true]) {
+      const { source, target } = await reservedRestart();
+      mode = 'once';
+      const before = [createCount, nextCheck, approvalPosts];
+      githubCompletion = { entered: gate(), response: gate(), reject };
+      // Capture dispatch rejection immediately: its owning PG session will die.
+      const running = dispatchReviewRestart(source).then(() => null, error => error);
+      try {
+        for (let i = 0; i < 200 && !(await db.reviewRunStore.get(target))[0]?.pending.length; i++) await new Promise(r => setTimeout(r, 10));
+        assert.ok((await db.reviewRunStore.get(target))[0]?.pending.length);
+        await decideReviewApproval(target, { segment: 1, prompt_id: prompt.prompt_id, execution_generation: 11, choice: 'once' }, 'operator');
+        await Promise.race([githubCompletion.entered.promise, new Promise((_, fail) => setTimeout(() => fail(new Error('runner never reached GitHub completion')), 5000))]);
+        assert.notEqual((await db.getCheckRun(target))?.status, 'completed');
+        const owner = (await pool.query("SELECT pid FROM pg_locks WHERE locktype='advisory' AND classid=165 AND objid=$1 AND granted", [source])).rows[0];
+        assert.ok(owner);
+        await pool.query('SELECT pg_terminate_backend($1)', [owner.pid]);
+        // This pool is distinct from the dedicated owner connection. Recovery
+        // acquires the released cross-process lock before the response resumes.
+        await db.reconcileReviewRestarts();
+        await assertInterrupted(source, target);
+        const settled = await db.getCheckRun(target);
+        const publications = [updates.length, reviews.length, comments.length, githubRequests.length];
+        githubCompletion.response.release();
+        assert.ok(await running, 'dead owner dispatch must reject rather than report successful completion');
+        assert.deepEqual(await db.getCheckRun(target), settled, 'no post-loss PASS or error cleanup may overwrite INCOMPLETE');
+        await db.reconcileReviewRestarts();
+        await dispatchReviewRestart(source);
+        assert.deepEqual([updates.length, reviews.length, comments.length, githubRequests.length], publications, 'no follow-on publication after ownership loss');
+        assert.deepEqual([createCount, nextCheck, approvalPosts], [before[0] + 1, before[1] + 1, before[2] + 1], 'no new run, check or approval on replay');
+        await assertInterrupted(source, target);
+      } finally {
+        githubCompletion.response.release();
+        await running;
+        githubCompletion = null;
+      }
+    }
+  } finally { global.fetch = oldFetch; }
+});
+
+test('lost reservation acknowledgement returns same receipt despite gateway outage, PR closure and changed head', async () => {
+  const { source, target } = await reservedRestart();
+  const { restartReview } = await import('../../lib/review-restart.ts');
+  const before = [createCount, nextCheck, approvalPosts];
+  global.fetch = async () => { throw new Error('gateway unavailable'); };
+  try {
+    for (const state of ['open', 'closed']) {
+      currentState = state; currentHead = 'd'.repeat(40);
+      assert.equal((await restartReview(source, 'operator')).check_id, target);
+      assert.equal(await db.reserveReviewRestart(source, 'operator', async () => { throw new Error('must not validate receipt'); }), target);
+    }
+    assert.deepEqual([createCount, nextCheck, approvalPosts], before);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM jean_ci_review_restarts WHERE source_check_id=$1', [source])).rows[0].n, 1);
+  } finally { global.fetch = oldFetch; currentState = 'open'; currentHead = 'a'.repeat(40); }
+});
+
+test('same display name global and custom checks restart independently by durable identity; legacy ambiguity fails honestly', async () => {
+  const { dispatchReviewRestart } = await import('../../lib/review-restart.ts');
+  const customPrompt = '# Custom collision check\n\n## Review Instructions\nInspect source for actionable defects.\n\n## Verdict Criteria\nReturn VERDICT: PASS or VERDICT: FAIL with actionable findings.';
+  customFiles = [{ name: 'Code Review', path: '.jean-ci/pr-checks/Code Review.md', content: customPrompt }];
+  global.fetch = async (url, init) => {
+    if (String(url).includes('/runs/') && !String(url).endsWith('/approval')) return Response.json({ ...current, status: 'completed', pending_controls: [], output: 'VERDICT: PASS\nNo blocking defects.\n- Review profile: diff=reviewed; repository=inspected; tests=not needed.' });
+    return fixtureFetch(url, init);
+  };
+  try {
+    await runPRReview(1, 'fixture', 'repo', 1, currentHead);
+    const originals = (await pool.query('SELECT * FROM jean_ci_check_runs ORDER BY id DESC LIMIT 2')).rows;
+    assert.deepEqual(originals.map(c => c.check_identity).sort(), ['global:code-review', 'path:.jean-ci/pr-checks/Code Review.md']);
+    for (const identity of ['global:code-review', 'path:.jean-ci/pr-checks/Code Review.md']) {
+      const source = originals.find(c => c.check_identity === identity).id;
+      await db.updateCheckRun(source, { status: 'completed', conclusion: 'failure', title: 'Review restart interrupted', summary: 'INCOMPLETE: fixture' });
+      const target = await db.reserveReviewRestart(source, 'operator', async () => {});
+      const before = createCount; const reviewsBefore = reviews.length;
+      await dispatchReviewRestart(source);
+      const result = await db.getCheckRun(target);
+      assert.equal(result?.check_identity, identity);
+      assert.equal(result?.conclusion, 'success'); assert.equal(createCount, before + 1);
+      assert.equal(result?.prompt, identity.startsWith('path:') ? customPrompt : await db.getConfig('user_prompt'));
+      assert.equal(reviews.length - reviewsBefore, identity.startsWith('global:') ? 1 : 0, 'only built-in review publishes PR approval');
+    }
+    const legacy = await reservedRestart(); const before = createCount;
+    await assert.rejects(dispatchReviewRestart(legacy.source), /legacy name is ambiguous/);
+    await assertInterrupted(legacy.source, legacy.target); assert.equal(createCount, before);
+  } finally { customFiles = []; global.fetch = oldFetch; }
+});
+
+test('baseline observation deadline survives database reload and cannot be renewed after canonical settlement', async () => {
+  const id = await db.insertCheckRun({ repo: 'fixture/repo', pr_number: 1, check_name: 'Code Review', head_sha: currentHead });
+  let binding = await db.reviewRunStore.reserve(id, 1, hermesClient().scope, 'baseline-deadline');
+  await db.reviewRunStore.bind(id, 1, 'run_baseline_deadline');
+  binding = { ...binding, run_id: 'run_baseline_deadline' };
+  const native = () => ({ run_id: binding.run_id!, status: 'waiting_for_approval', execution_generation: 11, pending_controls: [{ ...prompt, kind: 'approval' as const }] });
+  const first = await db.reviewRunStore.observe(binding, async () => native());
+  const deadline = first.pending_controls![0].app_deadline_at;
+  assert.ok(deadline); assert.equal(first.pending_controls![0].deadline_approximate, true);
+  assert.equal(first.pending_controls![0].expires_at, undefined);
+  const reloaded = (await db.reviewRunStore.get(id))[0];
+  const second = await db.reviewRunStore.observe(reloaded, async () => native());
+  assert.equal(second.pending_controls![0].app_deadline_at, deadline);
+  await db.reviewRunStore.observe(reloaded, async () => ({ run_id: binding.run_id!, status: 'running', pending_controls: [] }));
+  const third = await db.reviewRunStore.observe((await db.reviewRunStore.get(id))[0], async () => native());
+  assert.equal(third.pending_controls![0].app_deadline_at, deadline, 'old exact identity cannot mint a new pause');
+  const saved = (await db.reviewRunStore.get(id))[0];
+  assert.equal(saved.history![0].expiresAt, new Date(deadline! * 1000).toISOString());
+  assert.equal(saved.history![0].deadlineApproximate, true);
+  assert.equal(saved.denied, true, 'unconfirmed disappearance remains fail-closed');
 });

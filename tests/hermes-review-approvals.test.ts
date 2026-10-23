@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { approvalPrompts, hermesClient, runHermesReview } from '../lib/hermes-runs.ts';
+import { approvalPrompts, hermesClient, runHermesReview, observedApproval } from '../lib/hermes-runs.ts';
 import type { RunBinding, RunStore, HermesRun } from '../lib/hermes-runs.ts';
 import { decideReviewApproval, getReviewApprovals, parseApprovalDecision, requireApprovalCsrf, validCheckId } from '../lib/review-approvals.ts';
 import type { ApprovalDeps } from '../lib/review-approvals.ts';
@@ -33,7 +33,7 @@ function fixture() {
   };
   const deps = {
     getCheck: async () => ({ id: 1, repo: 'owner/repo', pr_number: 2, head_sha: 'head', status: 'in_progress' }),
-    getRepo: async () => ({ installation_id: 3 }),
+    getRepo: async () => ({ installation_id: 3, pr_review_enabled: true }),
     getInstallationOctokit: async () => ({}), getPRInfo: async () => ({ head: { sha: 'head' }, state: 'open' }),
     store, client: () => client,
     claim: async (_b: any, p: any, choice: string, actor: string) => {
@@ -195,5 +195,63 @@ test('HTTP client preserves requester/profile and sends only exact once/deny con
     for (const c of calls) { assert.equal((c.init.headers as any).Authorization, auth); assert.ok(c.url.startsWith('http://fixture.invalid/p/test-review/v1/')); }
     assert.deepEqual(JSON.parse(calls.at(-1)!.init.body as string), { request_id: 'approval_1', execution_generation: 7, choice: 'once' });
     assert.equal((calls[1].init.headers as any)['Idempotency-Key'], 'exact-key');
+    assert.deepEqual(JSON.parse(calls[1].init.body as string), { input: 'input', instructions: 'instructions' });
   } finally { global.fetch = oldFetch; if (oldUrl == null) delete process.env.OPENCLAW_GATEWAY_URL; else process.env.OPENCLAW_GATEWAY_URL = oldUrl; }
+});
+
+test('30-minute native approval window is excluded from the 9-minute execution budget, then active work times out', async () => {
+  for (const finish of [true, false]) for (const metadata of [{ timeout_s: 1800 }, {}]) {
+    const f = fixture(); let clock = 0; let steps = 0;
+    f.setCurrent({ ...waiting, pending_controls: [{ ...prompt, ...metadata }] });
+    const review = runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1, now: () => clock,
+      sleep: async () => {
+        if (++steps === 1) clock += 1_200_000; // twenty minutes of real approval waiting
+        else if (steps === 2) { clock += 100; f.setCurrent(finish ? completed : { run_id: 'run_test', status: 'running' }); }
+        else clock += 540_001;
+      },
+    });
+    if (finish) assert.match(await review, /PASS/);
+    else await assert.rejects(review, /Timed out/);
+    assert.equal(f.creates, 1); assert.equal(f.posts, 0);
+  }
+});
+
+test('completed check keeps safe expired approval history and never polls or returns tool data', async () => {
+  const f = fixture(); f.binding.denied = true;
+  f.binding.history = [{ prompt_id: 'expired1', execution_generation: 7, outcome: 'expired', expiresAt: '2026-10-22T20:15:24.000Z' }];
+  f.client.status = async () => { throw new Error('completed history must not need native access'); };
+  const data = await getReviewApprovals(1, { ...f.deps, getCheck: async () => ({ status: 'completed' }) } as any);
+  assert.equal(data.requests.length, 0); assert.equal(data.history[0].outcome, 'expired'); assert.equal(data.can_restart, true);
+  assert.ok(!JSON.stringify(data.history).includes(prompt.command));
+  f.binding.history = [];
+  assert.equal((await getReviewApprovals(1, { ...f.deps, getCheck: async () => ({ status: 'completed' }) } as any)).legacy_incomplete, true);
+});
+
+test('calculated baseline deadlines are stable, approximate and bounded, including missing metadata', () => {
+  for (const [metadata, timeout] of [[{}, 1800], [{ timeout_s: 60 }, 60], [{ timeout_s: 9000 }, 1800]] as const) {
+    const first = observedApproval({ ...prompt, ...metadata }, undefined, 1000);
+    assert.equal(first.app_deadline_at, 1 + timeout);
+    assert.equal(first.deadline_approximate, true);
+    assert.equal(first.expires_at, undefined, 'never invent a native deadline');
+    assert.equal(observedApproval({ ...prompt, ...metadata }, first, 1_200_000).app_deadline_at, first.app_deadline_at);
+  }
+});
+
+test('a stuck canonical wait without native deadline cannot pause the app forever', async () => {
+  const f = fixture(); let clock = 0;
+  await assert.rejects(runHermesReview('input', 'instructions', { client: f.client, store: f.store, checkId: 1,
+    now: () => clock, sleep: async () => { clock += 600_000; },
+  }), /Timed out/);
+  assert.equal(clock, 2_400_000);
+  assert.equal(f.creates, 1); assert.equal(f.posts, 0);
+});
+
+test('client supports baseline Runs without a timeout extension', async () => {
+  const saved = global.fetch; let creates = 0;
+  global.fetch = async url => {
+    if (String(url).endsWith('/runs')) creates++;
+    return Response.json({ features: { run_submission: true, run_status: true, run_approval_response: true, approval_events: true } });
+  };
+  try { assert.equal(await hermesClient().supported(), true); assert.equal(creates, 0); }
+  finally { global.fetch = saved; }
 });

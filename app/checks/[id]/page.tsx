@@ -57,7 +57,7 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
             </div>
           </div>
           
-          {reviewAdmin.authorized && checkRun.status !== 'completed' && <ReviewApprovalPanel checkId={checkRun.id} />}
+          {reviewAdmin.authorized && <ReviewApprovalPanel checkId={checkRun.id} />}
           {/* Review Result */}
           <div className="mb-6">
             <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
@@ -71,7 +71,7 @@ export default async function CheckPage({ params }: { params: Promise<{ id: stri
                 {checkRun.override_reason && <div className="mt-2">Reason: {checkRun.override_reason}</div>}
               </div>
             )}
-            <CheckReviewContent summary={checkRun.summary} prompt={checkRun.prompt} diff={checkRun.diff_preview} repo={checkRun.repo} headSha={checkRun.head_sha || ''} />
+            <CheckReviewContent diagnosticCheckId={reviewAdmin.authorized ? checkRun.id : undefined} summary={checkRun.summary} prompt={checkRun.prompt} diff={checkRun.diff_preview} repo={checkRun.repo} headSha={checkRun.head_sha || ''} />
           </div>
         </div>
       </div>
