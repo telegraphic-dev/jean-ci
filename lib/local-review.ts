@@ -244,6 +244,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       const contexts = buildReviewContexts({
         title: input.title, body: input.body, diff: input.diff,
         diffLimit: DIFF_LLM_LIMIT, owner, repo: repoName, userPrompt: check.prompt,
+        source: { kind: 'local-diff', promptRef: reviewRef, headSha: input.headSha?.trim() || reviewRef },
       });
       for (const [index, context] of contexts.entries()) {
         const result = await deps.callReviewer(check.prompt, context.context, buildSessionMetadata(repo, contexts.length === 1 ? (check.isGlobal ? 'review' : check.name) : `${check.isGlobal ? 'review' : check.name}-${index + 1}`, input.headSha || reviewRef));

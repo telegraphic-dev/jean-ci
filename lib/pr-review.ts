@@ -171,6 +171,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         diffLimit: DIFF_LLM_LIMIT,
         owner,
         repo,
+        source: { kind: 'github-pr', headSha: prInfo.head.sha, baseSha: prInfo.base?.sha },
       });
       const chunkedResponses = [];
       let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
