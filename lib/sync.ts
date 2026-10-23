@@ -36,15 +36,10 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
   console.log(`[Sync] Checking ${pending.length} pending deployments...`);
   
   for (const pd of pending) {
+    const createdAt = new Date(pd.created_at!).getTime();
+    const ageMinutes = (Date.now() - createdAt) / 1000 / 60;
+    let terminalStatusFound = false;
     try {
-      // Check if deployment is stale (older than threshold)
-      const createdAt = new Date(pd.created_at!).getTime();
-      const ageMinutes = (Date.now() - createdAt) / 1000 / 60;
-      
-      if (ageMinutes > STALE_DEPLOYMENT_MINUTES) {
-        // Age is not evidence of failure: retain tracking and still poll long builds.
-        errors.push(`Deployment ${pd.app_uuid} is ${Math.round(ageMinutes)}min old; awaiting authoritative completion`);
-      }
       
       // If we have deployment UUID, check Coolify for status
       if (pd.coolify_deployment_uuid && COOLIFY_TOKEN && COOLIFY_URL) {
@@ -68,6 +63,7 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
           const data = await response.json();
           const conclusion = coolifyStatusConclusion(data.status);
           if (conclusion) {
+            terminalStatusFound = true;
             await finishCoolifyDeployment(pd, conclusion, {
               getInstallationOctokit, updateDeploymentStatus, updateCheck, deletePendingDeployment, runSmokeTests,
             });
@@ -91,6 +87,10 @@ async function syncPendingDeployments(): Promise<{ cleaned: number; errors: stri
       }
     } catch (e: any) {
       errors.push(`Error syncing deployment ${pd.app_uuid}: ${e.message}`);
+    }
+    if (!terminalStatusFound && ageMinutes > STALE_DEPLOYMENT_MINUTES) {
+      // Diagnose age only after polling: terminal results are no longer awaiting completion.
+      errors.push(`Deployment ${pd.app_uuid} is ${Math.round(ageMinutes)}min old; awaiting authoritative completion`);
     }
   }
   

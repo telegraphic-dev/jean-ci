@@ -79,7 +79,10 @@ if (process.argv[2] !== 'configured') {
   for (const [status, conclusion] of [['finished', 'success'], ['failed', 'failure'], ['cancelled-by-user', 'cancelled'], ['queued', null], ['in_progress', null], ['unknown', null]]) {
     reset(); pending.created_at = new Date(Date.now() - 3600000); // old builds must still be polled
     globalThis.fetch = async url => { assert.equal(url, 'https://coolify.example/api/v1/deployments/deploy-1'); return new Response(JSON.stringify({ deployment_uuid: 'deploy-1', status })); };
-    await runSync();
+    const syncResult = await runSync();
+    assert.equal(syncResult.errors.some(error => error.includes('awaiting authoritative completion')), !conclusion,
+      'only unresolved old deployments should emit stale diagnostics');
+    assert.equal(syncResult.coolifyDeploymentsChecked, conclusion ? 1 : 0);
     if (conclusion) { assert.equal(pending, null); assert.equal(calls[1].at(-1).conclusion, conclusion); }
     else { assert.ok(pending); assert.equal(calls.length, 0); }
   }
