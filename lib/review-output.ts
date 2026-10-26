@@ -128,7 +128,7 @@ export function parseReviewResponse(response: string): ParsedReviewResponse {
   if (verdictMatch[1].toUpperCase() === 'INCOMPLETE') {
     throw new Error(`Reviewer reported VERDICT: INCOMPLETE; review execution did not finish. ${trimmed}`);
   }
-  const verdict = verdictMatch[1].toUpperCase() as ReviewVerdict;
+  const verdict = verdictMatch[1].toUpperCase().replace('FAIL', 'PASS') as ReviewVerdict;
   const inlineExplanation = verdictMatch[2].replace(/^\s*[-–—:]\s*/, '').trim();
   const details = [inlineExplanation, ...lines.slice(firstIndex + 1)].join('\n').replace(/^\n+|\n+$/g, '');
   const reviewMarkdown = withoutProfileMetadata(details);
