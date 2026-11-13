@@ -34,7 +34,7 @@ mock.module(new URL('../../lib/github.ts', import.meta.url).href, { namedExports
   getInstallationOctokit: async () => octokit, fetchPRCheckFiles: async () => [],
   getPRInfo: async () => ({ title: 'Native approval proof', state: 'open', head: { sha: head }, base: { sha: 'b'.repeat(40) } }),
   getPRDiff: async () => 'diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
-  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { publicUpdates.push(args.at(-1)); }, createPRReview: async () => {},
+  createCheck: async () => ({ id: ++nextCheck }), updateCheck: async (...args: any[]) => { publicUpdates.push(args[4]); }, createPRReview: async () => {},
 } });
 
 test('real PR runner -> native Runs -> real blocking waiter: once/deny/expiry retain exact run and never bypass', { timeout: 60_000 }, async t => {

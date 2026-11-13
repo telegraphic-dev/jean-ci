@@ -2,6 +2,38 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { recoverInterruptedChecks } from '../lib/interrupted-check-recovery.ts';
 
+for (const mode of ['delivered', 'already-completed', 'read-404', 'patch-404', 'not-visible'] as const) {
+  test(`pending terminal completion reconciliation: ${mode}`, async () => {
+    const output = { status: 'completed', conclusion: 'failure', output: { title: 'Failed', summary: 'Public finding' } };
+    const acknowledgements: any[] = [];
+    let reads = 0, patches = 0;
+    const result = await recoverInterruptedChecks({
+      listInterruptedChecks: async () => [{ id: 1, github_check_id: 42, repo: 'owner/repo', pr_number: 1,
+        check_name: 'Code Review', status: 'completed', conclusion: 'failure', summary: 'PRIVATE_DIAGNOSTICS',
+        created_at: new Date(), github_completion: output }],
+      getRepo: async () => ({ installation_id: 1 } as any),
+      getInstallationOctokit: async () => ({}),
+      getGitHubCheck: async () => {
+        reads++;
+        if (mode === 'read-404') throw Object.assign(new Error('Not Found'), { status: 404 });
+        return { status: mode === 'already-completed' || (mode === 'delivered' && reads > 1) ? 'completed' : 'queued', conclusion: 'success' };
+      },
+      completeGitHubCheck: async (_kit, owner, repo, id, updates) => {
+        patches++;
+        assert.equal(owner, 'owner'); assert.equal(repo, 'repo'); assert.equal(id, 42);
+        assert.deepEqual(updates, output);
+        if (mode === 'patch-404') throw Object.assign(new Error('Not Found'), { status: 404 });
+      },
+      markCheckCompleted: async (...args) => { acknowledgements.push(args); },
+      detailsUrl: String,
+    });
+    const delivered = mode === 'delivered' || mode === 'already-completed';
+    assert.deepEqual(result, { recovered: delivered ? 1 : 0, skipped: 0, failed: delivered ? 0 : 1 });
+    assert.deepEqual(acknowledgements, delivered ? [[1, { github_completion: null }]] : []);
+    assert.equal(patches, mode === 'read-404' || mode === 'already-completed' ? 0 : 1);
+  });
+}
+
 test('completes an interrupted GitHub check as neutral after restart', async () => {
   const githubUpdates: any[] = [];
   const dbUpdates: any[] = [];

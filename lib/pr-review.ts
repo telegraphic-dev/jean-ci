@@ -51,29 +51,56 @@ async function completeCheck(
     diagnostics?: string;
   },
   persist: typeof updateCheckRun = updateCheckRun,
+  durablePublication = true,
+  beforeAttempt?: () => Promise<void>,
 ) {
-  await updateCheck(octokit, owner, repo, checkRunId, {
+  const completedAt = new Date();
+  const updates = {
     status: 'completed',
     conclusion: payload.conclusion,
-    completed_at: new Date().toISOString(),
+    completed_at: completedAt.toISOString(),
     details_url: `${BASE_URL}/checks/${dbId}`,
     output: { title: payload.title, summary: boundReviewMarkdown(payload.summary, 65535, `${BASE_URL}/checks/${dbId}`) },
-  });
-
-  await persist(dbId, {
+  };
+  const result = {
     status: 'completed',
     conclusion: payload.conclusion,
     title: payload.title,
     summary: payload.diagnostics ?? payload.summary,
-    completed_at: new Date(),
-  });
+    completed_at: completedAt,
+  };
+  if (!durablePublication) {
+    // Explicit restarts retain their lock-session persistence fence: no local
+    // verdict can survive owner loss while GitHub publication is in flight.
+    try {
+      await updateCheck(octokit, owner, repo, checkRunId, updates, { beforeAttempt });
+    } catch (error: any) {
+      // This write still uses the dedicated owner session and unfinished-check
+      // guard. Owner loss must throw instead of retaining a late verdict.
+      await persist(dbId, { ...result, github_completion: updates });
+      console.error(`GitHub completion pending for ${owner}/${repo} check ${checkRunId} (db: ${dbId}, status: ${error?.status ?? 'unknown'})`);
+      return;
+    }
+    await persist(dbId, result);
+    return;
+  }
+  // Commit the terminal result and public outbox atomically before contacting
+  // GitHub. A PATCH failure must not strand the row or overwrite a real verdict.
+  await persist(dbId, { ...result, github_completion: updates });
+  try {
+    await updateCheck(octokit, owner, repo, checkRunId, updates, { beforeAttempt });
+  } catch (error: any) {
+    console.error(`GitHub completion pending for ${owner}/${repo} check ${checkRunId} (db: ${dbId}, status: ${error?.status ?? 'unknown'})`);
+  }
+  // The periodic reconciler verifies delivery and clears the outbox. It only
+  // PATCHes this exact check ID; it never invokes the reviewer or posts reviews.
 }
 
 export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string, restart?: { checkId: number; checkName: string; checkIdentity?: string; assertOwner: () => Promise<void>; persist: typeof updateCheckRun }) {
   const persist = restart ? restart.persist : updateCheckRun;
   const complete = async (...args: [any, string, string, number, number, Parameters<typeof completeCheck>[5]]) => {
     await restart?.assertOwner?.();
-    return completeCheck(...args, persist);
+    return completeCheck(...args, persist, !restart, restart?.assertOwner);
   };
   const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
@@ -148,7 +175,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         status: 'in_progress',
         started_at: new Date().toISOString(),
         details_url: `${BASE_URL}/checks/${dbId}`,
-      });
+      }, { beforeAttempt: restart?.assertOwner });
 
       if (!check.isGlobal) {
         const promptValidation = validateReviewPrompt(check.prompt);
@@ -196,9 +223,12 @@ export async function runPRReview(installationId: number, owner: string, repo: s
                 await updateCheck(octokit, owner, repo, checkRun.id, {
                   status: 'in_progress', details_url: `${BASE_URL}/checks/${dbId}`,
                   output: { title, summary },
-                });
+                }, { beforeAttempt: restart?.assertOwner });
                 approvalWaitReported = true;
-              } catch { console.warn('Optional GitHub approval status unavailable; will retry while polling'); }
+              } catch {
+                await restart?.assertOwner?.();
+                console.warn('Optional GitHub approval status unavailable; will retry while polling');
+              }
             }
             const { postReviewApprovalComments } = await import('./review-approval-comments.ts');
             await postReviewApprovalComments(dbId);

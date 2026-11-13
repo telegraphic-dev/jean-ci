@@ -31,7 +31,7 @@ test('PR reviews report malformed output without requesting changes and preserve
       getInstallationOctokit: async () => ({}), fetchPRCheckFiles: async () => [],
       getPRInfo: async () => ({ title: 'Example', head: { sha: currentHead }, base: { sha: 'base' } }),
       getPRDiff: async () => reviewDiff, createCheck: async () => ({ id: 1 }),
-      updateCheck: async (...args) => { updates.push(args.at(-1)); },
+      updateCheck: async (...args) => { updates.push(args[4]); },
       createPRReview: async (...args) => { reviews.push(args); },
     }});
     mock.module(moduleUrl('llm'), { namedExports: {
