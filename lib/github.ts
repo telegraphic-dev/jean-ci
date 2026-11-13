@@ -279,11 +279,23 @@ export async function createCheck(octokit: any, owner: string, repo: string, nam
   return data;
 }
 
-export async function updateCheck(octokit: any, owner: string, repo: string, checkRunId: number, updates: any) {
-  const { data } = await octokit.request('PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}', {
-    owner, repo, check_run_id: checkRunId, ...updates,
-  });
-  return data;
+export async function updateCheck(octokit: any, owner: string, repo: string, checkRunId: number, updates: any, options: { retryDelayMs?: number } = {}) {
+  // A newly created check can briefly return 404 on PATCH. Retry only this
+  // idempotent operation on the exact ID; never recreate a check or PR review.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { data } = await octokit.request('PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}', {
+        ...updates, owner, repo, check_run_id: checkRunId,
+      });
+      return data;
+    } catch (error: any) {
+      if (error?.status !== 404) throw error;
+      const requestId = String(error?.response?.headers?.['x-github-request-id'] ?? 'unavailable');
+      console.warn(`GitHub check PATCH 404 for ${owner}/${repo} check ${checkRunId} (attempt ${attempt}/4, request ${requestId}); ${attempt < 4 ? 'retrying same ID' : 'retries exhausted'}`);
+      if (attempt >= 4) throw error;
+      await wait(Math.max(0, options.retryDelayMs ?? 1000) * attempt);
+    }
+  }
 }
 
 export async function getCheck(octokit: any, owner: string, repo: string, checkRunId: number) {

@@ -164,6 +164,8 @@ export async function initDatabase() {
       ALTER TABLE jean_ci_review_restarts ADD COLUMN IF NOT EXISTS dispatch_started_at TIMESTAMPTZ;
       ALTER TABLE jean_ci_review_restarts ADD COLUMN IF NOT EXISTS dispatch_fenced BOOLEAN NOT NULL DEFAULT FALSE;
       ALTER TABLE jean_ci_check_runs ADD COLUMN IF NOT EXISTS check_identity TEXT;
+      -- Public check completion outbox, separate from authenticated diagnostics.
+      ALTER TABLE jean_ci_check_runs ADD COLUMN IF NOT EXISTS github_completion JSONB;
       CREATE TABLE IF NOT EXISTS jean_ci_review_approval_comments (
         check_id INTEGER NOT NULL REFERENCES jean_ci_check_runs(id) ON DELETE CASCADE,
         identity TEXT NOT NULL,
@@ -576,11 +578,13 @@ export async function updateReviewRestartCheck(sourceId: number, id: number, dat
   const result = await client.query(`UPDATE jean_ci_check_runs c SET
     status=COALESCE($3,c.status), conclusion=COALESCE($4,c.conclusion),
     title=COALESCE($5,c.title), summary=COALESCE($6,c.summary),
-    completed_at=COALESCE($7,c.completed_at)
+    completed_at=COALESCE($7,c.completed_at),
+    github_completion=CASE WHEN $8 THEN $9::jsonb ELSE c.github_completion END
     WHERE c.id=$2 AND c.status IN ('queued','in_progress') AND EXISTS (
       SELECT 1 FROM jean_ci_review_restarts r WHERE r.source_check_id=$1
       AND r.new_check_id=c.id AND r.dispatch_status='dispatching' AND r.dispatch_fenced
-    ) RETURNING c.id`, [sourceId, id, data.status, data.conclusion, data.title, data.summary, data.completed_at]);
+    ) RETURNING c.id`, [sourceId, id, data.status, data.conclusion, data.title, data.summary, data.completed_at,
+      data.github_completion !== undefined, data.github_completion == null ? null : JSON.stringify(data.github_completion)]);
   if (!result.rowCount) throw new Error('Review restart owner lost or check already settled');
 }
 export async function claimReviewRestart(sourceId: number): Promise<CheckRun | null> {
@@ -651,6 +655,7 @@ export async function queuedReviewRestarts(): Promise<number[]> {
 }
 
 export interface CheckRun {
+  github_completion?: Record<string, any> | null;
   check_identity?: string;
   id: number;
   github_check_id?: number;
@@ -706,6 +711,7 @@ export async function insertCheckRun(data: {
 }
 
 export async function updateCheckRun(id: number, data: {
+  github_completion?: Record<string, any> | null;
   status?: string;
   conclusion?: string;
   title?: string;
@@ -718,9 +724,11 @@ export async function updateCheckRun(id: number, data: {
       conclusion = COALESCE($3, conclusion),
       title = COALESCE($4, title),
       summary = COALESCE($5, summary),
-      completed_at = COALESCE($6, completed_at)
+      completed_at = COALESCE($6, completed_at),
+      github_completion = CASE WHEN $7 THEN $8::jsonb ELSE github_completion END
     WHERE id = $1
-  `, [id, data.status, data.conclusion, data.title, data.summary, data.completed_at]);
+  `, [id, data.status, data.conclusion, data.title, data.summary, data.completed_at,
+      data.github_completion !== undefined, data.github_completion == null ? null : JSON.stringify(data.github_completion)]);
 }
 
 export async function setReservedCheckInput(id: number, head: string, data: { prompt: string; pr_title: string; pr_body: string; diff_preview: string }) {
@@ -741,9 +749,9 @@ export async function getCheckRun(id: number): Promise<CheckRun | null> {
 export async function getInterruptedCheckRuns(startedBefore: Date): Promise<CheckRun[]> {
   const result = await pool.query(
     `SELECT * FROM jean_ci_check_runs
-     WHERE status IN ('queued', 'in_progress')
+     WHERE ((status IN ('queued', 'in_progress') AND created_at < $1)
+       OR (status = 'completed' AND github_completion IS NOT NULL))
        AND github_check_id IS NOT NULL
-       AND created_at < $1
        AND NOT EXISTS (SELECT 1 FROM jean_ci_review_restarts r WHERE r.new_check_id=jean_ci_check_runs.id
          AND r.dispatch_status IN ('queued','dispatching'))
      ORDER BY created_at ASC`,

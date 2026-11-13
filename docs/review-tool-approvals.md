@@ -55,6 +55,8 @@ The review worker has nine minutes of execution budget, polling approximately ev
 
 After a jean-ci process restart, existing interrupted-check recovery completes interrupted checks as neutral, without fabricating a verdict or restarting their runs. Bindings/audit remain available for diagnosis, but completed checks cannot approve tools. This implementation does not claim crash-resumable continuation of the whole multi-segment PR worker. Re-request a fresh check after investigating the interrupted run; do not repeatedly re-request a review merely because its current tool request needs a decision.
 
+[GitHub completion delivery](check-completion-reliability.md) is separate from reviewer execution: bounded same-ID 404 retries and a durable public-completion outbox reconcile failed check publication without replaying reviews or approvals.
+
 ## Verification
 
 ```bash

@@ -7,11 +7,12 @@ export type InterruptedCheckRecoveryDeps = {
   getGitHubCheck: (octokit: any, owner: string, repo: string, checkRunId: number) => Promise<any>;
   completeGitHubCheck: (octokit: any, owner: string, repo: string, checkRunId: number, updates: any) => Promise<unknown>;
   markCheckCompleted: (id: number, data: {
-    status: string;
-    conclusion: string;
-    title: string;
-    summary: string;
-    completed_at: Date;
+    status?: string;
+    conclusion?: string;
+    title?: string;
+    summary?: string;
+    completed_at?: Date;
+    github_completion?: Record<string, any> | null;
   }) => Promise<unknown>;
   detailsUrl: (id: number) => string;
   log?: (message: string) => void;
@@ -44,6 +45,20 @@ export async function recoverInterruptedChecks(
     try {
       const octokit = await deps.getInstallationOctokit(repoConfig.installation_id);
       const remoteCheck = await deps.getGitHubCheck(octokit, owner, repo, checkRunId);
+      if (check.status === 'completed' && check.github_completion) {
+        // Already terminal locally: deliver only the saved public check output,
+        // never diagnostics or a new reviewer/PR review. A remote terminal
+        // result (including an operator override) must not be overwritten.
+        if (remoteCheck.status !== 'completed') {
+          await deps.completeGitHubCheck(octokit, owner, repo, checkRunId, check.github_completion);
+          const delivered = await deps.getGitHubCheck(octokit, owner, repo, checkRunId);
+          if (delivered.status !== 'completed') throw new Error('GitHub completion not yet visible');
+        }
+        await deps.markCheckCompleted(check.id, { github_completion: null });
+        recovered += 1;
+        deps.log?.(`Reconciled pending GitHub completion for check ${check.id}`);
+        continue;
+      }
       if (remoteCheck.status === 'completed') {
         await deps.markCheckCompleted(check.id, {
           status: 'completed',
