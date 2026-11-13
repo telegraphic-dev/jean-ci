@@ -59,7 +59,7 @@ mock.module(moduleUrl('github'), { namedExports: {
     const id = ++nextCheck;
     if (githubCreateFailure === 'ambiguous') throw new Error('GitHub created check but acknowledgement lost');
     return { id };
-  }, updateCheck: async (...args: any[]) => { const payload = args.at(-1);
+  }, updateCheck: async (...args: any[]) => { const payload = args[4];
     if (payload.output?.title === 'Tool approval required' && waitStatusFailures > 0) { waitStatusFailures--; throw new Error('GitHub 503'); }
     updates.push(payload);
     if (payload.status === 'completed' && githubCompletion) {

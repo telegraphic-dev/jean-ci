@@ -34,7 +34,12 @@ an earlier PATCH returned 404.
   fence and remote-first successful-completion ordering. Failed publication
   saves the completion outbox only through the still-owning session. A dead
   owner cannot replace recovery's incomplete terminal result. Pending restart
-  completions are eligible after the dispatcher settles its claim.
+  completions are eligible after the dispatcher settles its claim. Every PATCH
+  attempt (including the first and retries after backoff) rechecks the restart
+  owner's dedicated session before sending. This applies to initial progress,
+  approval-wait progress, terminal verdicts and error cleanup. Ownership failure
+  aborts the retry loop; it is not treated as a retryable GitHub error. An already
+  in-flight request cannot be recalled, but no retry is sent after detected loss.
 
 ## Boundaries
 
@@ -60,6 +65,8 @@ npm run build
 # Explicit disposable loopback database, never production:
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/jean_approval_test_checks \
   node --test --experimental-strip-types --experimental-test-module-mocks tests/integration/check-publication.ts
+REVIEW_APPROVAL_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/jean_approval_test_checks \
+  node --test --experimental-strip-types --experimental-test-module-mocks tests/integration/check-patch-ownership.ts
 REVIEW_APPROVAL_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/jean_approval_test_checks \
   npm run test:approvals:integration
 ```

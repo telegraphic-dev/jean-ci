@@ -13,7 +13,7 @@ mock.module('../../lib/github.ts', { namedExports: {
   getPRInfo: async () => ({ state: 'open', title: 'Fixture', head: { sha: 'a'.repeat(40) }, base: { sha: 'b'.repeat(40) } }),
   getPRDiff: async () => 'diff', createCheck: async () => ({ id: ++checkId }),
   updateCheck: async (...args: any[]) => {
-    if (args.at(-1).status === 'in_progress' && !failStart) return;
+    if (args[4].status === 'in_progress' && !failStart) return;
     throw Object.assign(new Error('Not Found'), { status: 404 });
   },
   createPRReview: async () => { publications++; },

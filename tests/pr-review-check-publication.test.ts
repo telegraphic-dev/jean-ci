@@ -21,7 +21,7 @@ test('failed check publication terminalizes locally, queues exact public output,
       getPRInfo: async () => ({ title: 'Example', head: { sha: 'head' }, base: { sha: 'base' } }),
       getPRDiff: async () => 'diff', createCheck: async () => ({ id: 131716179355 }),
       updateCheck: async (...args) => {
-        const update = args.at(-1); calls.push(update);
+        const update = args[4]; calls.push(update);
         if (update.status === 'in_progress' && !failStart) return;
         throw Object.assign(new Error('Not Found'), { status: 404 });
       },

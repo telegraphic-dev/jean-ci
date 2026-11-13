@@ -279,10 +279,13 @@ export async function createCheck(octokit: any, owner: string, repo: string, nam
   return data;
 }
 
-export async function updateCheck(octokit: any, owner: string, repo: string, checkRunId: number, updates: any, options: { retryDelayMs?: number } = {}) {
+export async function updateCheck(octokit: any, owner: string, repo: string, checkRunId: number, updates: any, options: { retryDelayMs?: number; beforeAttempt?: () => Promise<void> } = {}) {
   // A newly created check can briefly return 404 on PATCH. Retry only this
   // idempotent operation on the exact ID; never recreate a check or PR review.
   for (let attempt = 1; ; attempt++) {
+    // Backoff is a new publication boundary: ownership may have died since the
+    // previous attempt. Guard outside catch so guard failures never get retried.
+    await options.beforeAttempt?.();
     try {
       const { data } = await octokit.request('PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}', {
         ...updates, owner, repo, check_run_id: checkRunId,
