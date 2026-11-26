@@ -19,6 +19,21 @@ PR approval-link comments contain only the check-page link, reviewed SHA, and ap
 
 The app never writes Hermes configuration, broad permissions, or approval bypass modes. The operator-approved Jean profile timeout is the native timing prerequisite. Reviewer instructions prefer native file/search tools, but this feature **does not provision a pinned repository checkout**. Required unavailable context remains incomplete. Local-diff API reviews never auto-approve: a tool approval wait without an authenticated PR check binding returns an execution failure.
 
+## Portable catalog resource data
+
+Before sending either PR or local-diff reviews, the input builder projects supported resource literals from `mcp-portable-skills-catalog.json` diffs into separate decoded-text review segments. The original diff remains lossless. Original segments review catalog structure/integration; decoded segments review the text under the same criteria. Each projection carries its literal catalog path, `skill://portable/` URI, added/removed/context side and original source provenance. Removed data is not head source, and local working-diff data is not verified by a committed source anchor.
+
+This is a single data-only base64 decode, never shell/Python execution, recursive decoding, decompression or fetching. Supported entries are individual unified-diff lines containing a JSON URI-keyed canonical base64 string. Limits are 256 resources, 256 KiB per resource and 2 MiB decoded aggregate; only valid UTF-8 text without binary controls is supported. Recognized malformed or over-limit entries fail before any reviewer request is sent. Other encodings/layouts or required surrounding resources are not supplied by this projection and remain subject to normal unavailable-evidence handling, not automatic approval. Every assembled segment includes system text, criteria, metadata and provenance within the unchanged 60,000-character request budget.
+
+Private incident qualification can be run without executing a reviewer or modifying production:
+
+```bash
+REVIEW_RESOURCE_FIXTURE_DIR=/private/incident-fixtures \
+  node --test --experimental-strip-types tests/integration/review-resource-incident.ts
+```
+
+The opt-in harness requires `incident.diff`, exact-head raw `catalog.json`, and stored-check metadata `check.json` (repository, head SHA, criteria and PR metadata). It verifies all incident catalog resources against the independently retrieved catalog, reconstructs original subsystem bytes and decoded text, and checks actual assembled-request sizes. Fixture bytes stay private and are not committed. It qualifies input construction, not a live model's verdict or execution.
+
 ## Repository-scoped “Always approve” prerequisite
 
 “Always approve this command in this repository” is displayed **disabled**, not implemented as Hermes's broad `always`/`session` choice. The installed canonical pending-control contract exposes a redacted `command`, description and choices; it does **not** attest the complete tool name, full untruncated arguments, working directory and environment needed to establish an exact invocation identity. Consequently no persistent rule is created or applied, and neither native `always` nor a client-supplied policy is accepted. There is nothing to revoke on this version.
