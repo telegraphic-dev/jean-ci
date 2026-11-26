@@ -245,6 +245,7 @@ function serializeCheckSummary(check: CheckRunSummaryRecord, baseUrl: string) {
 function computePrRollup(
   latestChecks: ReturnType<typeof serializeCheckSummary>[],
   reviewState: PRReviewState | null,
+  missingChecks: Array<{ identity: string; name: string }> = [],
 ): 'passing' | 'failing' | 'in_progress' | 'neutral' | 'stale' | 'pending' {
   if (latestChecks.length === 0) return 'pending';
   const expectedSha = reviewState?.last_reviewed_sha || null;
@@ -257,10 +258,63 @@ function computePrRollup(
   if (latestChecks.some((c) => c.conclusion === 'failure' && !c.manuallyOverridden)) {
     return 'failing';
   }
+  if (missingChecks.length > 0) {
+    return 'pending';
+  }
   if (latestChecks.every((c) => c.conclusion === 'success' || c.manuallyOverridden)) {
     return 'passing';
   }
   return 'neutral';
+}
+
+function sanitizeDeploymentEvent(row: Record<string, unknown>) {
+  const rawPayload =
+    row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? (row.payload as Record<string, unknown>)
+      : null;
+  const eventType = typeof row.event_type === 'string' ? row.event_type : null;
+  const isTaskEvent = Boolean(eventType && eventType.startsWith('coolify_task_'));
+
+  return {
+    id: row.id ?? null,
+    eventType,
+    deliveryId: typeof row.delivery_id === 'string' ? row.delivery_id : null,
+    repo: typeof row.repo === 'string' ? row.repo : null,
+    action: typeof row.action === 'string' ? row.action : null,
+    source: typeof row.source === 'string' ? row.source : null,
+    processed: Boolean(row.processed),
+    createdAt: iso(row.created_at as Date | string | null | undefined),
+    applicationUuid:
+      typeof rawPayload?.application_uuid === 'string'
+        ? rawPayload.application_uuid
+        : typeof rawPayload?.app_uuid === 'string'
+          ? rawPayload.app_uuid
+          : null,
+    applicationName:
+      typeof rawPayload?.application_name === 'string'
+        ? rawPayload.application_name
+        : typeof rawPayload?.app_name === 'string'
+          ? rawPayload.app_name
+          : null,
+    deploymentUuid: typeof rawPayload?.deployment_uuid === 'string' ? rawPayload.deployment_uuid : null,
+    taskName: isTaskEvent && typeof rawPayload?.task_name === 'string' ? rawPayload.task_name : null,
+    status: typeof rawPayload?.status === 'string' ? rawPayload.status : null,
+    url: typeof rawPayload?.url === 'string' ? rawPayload.url : null,
+    payloadRedacted: true,
+  };
+}
+
+function sanitizeWebhookEvent(row: WebhookEvent & { source?: string | null }) {
+  return {
+    id: row.id,
+    eventType: row.event_type,
+    deliveryId: row.delivery_id ?? null,
+    repo: row.repo ?? null,
+    action: row.action ?? null,
+    processed: Boolean(row.processed),
+    source: row.source ?? null,
+    createdAt: iso(row.created_at),
+  };
 }
 
 function toolError(message: string): CallToolResult {
@@ -411,24 +465,30 @@ export async function createJeanCiMcpServer(
       // from the active reviewed head so removed/renamed historical checks from
       // earlier commits do not pin the PR to "stale" indefinitely.
       let checksForRollup = allChecks;
+      let targetSha: string | null = headSha ?? null;
       if (!headSha && allChecks.length > 0) {
         const reviewedSha = reviewState?.last_reviewed_sha || null;
         if (reviewedSha) {
           const atReviewedHead = allChecks.filter((c) => c.headSha === reviewedSha);
           if (atReviewedHead.length > 0) {
             checksForRollup = atReviewedHead;
+            targetSha = reviewedSha;
           } else {
             const newestSha = allChecks.find((c) => c.headSha)?.headSha ?? null;
             if (newestSha) {
               checksForRollup = allChecks.filter((c) => c.headSha === newestSha);
+              targetSha = newestSha;
             }
           }
         } else {
           const newestSha = allChecks.find((c) => c.headSha)?.headSha ?? null;
           if (newestSha) {
             checksForRollup = allChecks.filter((c) => c.headSha === newestSha);
+            targetSha = newestSha;
           }
         }
+      } else if (!targetSha) {
+        targetSha = reviewState?.last_reviewed_sha ?? null;
       }
 
       // Group by stable check_identity (falling back to checkName for legacy rows)
@@ -441,7 +501,39 @@ export async function createJeanCiMcpServer(
         }
       }
       const latestChecks = [...latestByIdentity.values()];
-      const overallStatus = computePrRollup(latestChecks, reviewState);
+
+      // Verify coverage against checks defined at the active reviewed head so a
+      // passing subset retrigger (e.g. only "security") cannot mask a missing
+      // always-on global Code Review or missing custom check.
+      const expectedChecks: Array<{ identity: string; name: string }> = [
+        { identity: 'global:code-review', name: 'Code Review' },
+      ];
+      let expectedChecksVerified = false;
+      if (repoConfig?.pr_review_enabled && targetSha) {
+        try {
+          const [owner, repoName] = splitSlug(repo);
+          const checkFiles = await deps.fetchPRCheckFiles(repoConfig.installation_id, owner, repoName, targetSha);
+          for (const file of checkFiles.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+            expectedChecks.push({
+              identity: `path:${file.path ?? `.jean-ci/pr-checks/${file.name}.md`}`,
+              name: file.name,
+            });
+          }
+          expectedChecksVerified = true;
+        } catch {
+          // Keep at minimum the always-on global Code Review requirement if GitHub is unavailable.
+        }
+      }
+
+      const missingChecks = repoConfig?.pr_review_enabled
+        ? expectedChecks.filter((expected) => {
+            if (latestByIdentity.has(expected.identity)) return false;
+            // Match legacy check rows that predate check_identity only when no row has checkIdentity set.
+            return !latestChecks.some((c) => !c.checkIdentity && c.checkName === expected.name);
+          })
+        : [];
+
+      const overallStatus = computePrRollup(latestChecks, reviewState, missingChecks);
 
       const data = {
         repo,
@@ -450,6 +542,9 @@ export async function createJeanCiMcpServer(
         repoTracked: Boolean(repoConfig),
         prReviewEnabled: Boolean(repoConfig?.pr_review_enabled),
         overallStatus,
+        reviewedHeadSha: targetSha,
+        expectedChecksVerified,
+        missingChecks,
         reviewState: reviewState
           ? {
               lastReviewedSha: reviewState.last_reviewed_sha ?? null,
@@ -468,6 +563,9 @@ export async function createJeanCiMcpServer(
         `- PR Review Enabled: ${data.prReviewEnabled ? 'yes' : 'no'}${data.repoTracked ? '' : ' (repository not tracked)'}`,
         ...(data.reviewState?.lastReviewedSha
           ? [`- Last Reviewed SHA: \`${data.reviewState.lastReviewedSha}\`${data.reviewState.isDraft ? ' (draft)' : ''}`]
+          : []),
+        ...(missingChecks.length > 0
+          ? [`- Missing required checks at reviewed head: ${missingChecks.map((m) => `**${m.name}**`).join(', ')}`]
           : []),
         `- Latest checks (${latestChecks.length}):`,
         ...(latestChecks.length > 0 ? latestChecks.map(formatCheckLine) : ['- None recorded yet.']),
@@ -630,7 +728,7 @@ export async function createJeanCiMcpServer(
     'list_deployments',
     {
       title: 'List Repository Deployments',
-      description: 'List Coolify deployment events for a tracked repository.',
+      description: 'List Coolify deployment events for a tracked repository (raw webhook payloads and scheduled task outputs are redacted).',
       inputSchema: z.object({
         repo: RepoSlugSchema.describe('Repository slug in owner/repo format'),
         page: z.number().int().min(1).default(1).describe('Page number (1-indexed)'),
@@ -640,9 +738,16 @@ export async function createJeanCiMcpServer(
     },
     async ({ repo, page, limit }) => {
       const result = await deps.getDeploymentsByRepoPaginated(repo, page, limit);
+      const items = result.items.map((row) => sanitizeDeploymentEvent(row));
       return jsonToolResult(
-        `Found ${result.total} deployment(s) for ${repo} (showing ${result.items.length} on page ${result.page}/${Math.max(1, result.totalPages)}).`,
-        result as unknown as Record<string, unknown>,
+        `Found ${result.total} deployment(s) for ${repo} (showing ${items.length} on page ${result.page}/${Math.max(1, result.totalPages)}).`,
+        {
+          items,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages,
+        },
       );
     },
   );
@@ -663,9 +768,16 @@ export async function createJeanCiMcpServer(
     },
     async ({ repo, eventType, page, limit }) => {
       const result = await deps.getRecentEventsPaginated(page, limit, eventType, repo);
+      const items = result.items.map((row) => sanitizeWebhookEvent(row));
       return jsonToolResult(
-        `Found ${result.total} webhook event(s) (showing ${result.items.length} on page ${result.page}/${Math.max(1, result.totalPages)}).`,
-        result as unknown as Record<string, unknown>,
+        `Found ${result.total} webhook event(s) (showing ${items.length} on page ${result.page}/${Math.max(1, result.totalPages)}).`,
+        {
+          items,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          totalPages: result.totalPages,
+        },
       );
     },
   );

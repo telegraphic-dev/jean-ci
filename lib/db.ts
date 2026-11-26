@@ -2420,3 +2420,23 @@ export async function cleanupExpiredMcpTasks(): Promise<number> {
   return result.rowCount || 0;
 }
 
+export async function reconcileInterruptedMcpTasks(startedBefore: Date): Promise<number> {
+  const errorPayload = {
+    code: -32603,
+    message: 'Server restarted while task was in progress; re-run the tool if needed.',
+  };
+  const result = await pool.query(
+    `UPDATE jean_ci_mcp_tasks
+     SET status = 'failed',
+         status_message = 'Interrupted by server restart',
+         input_requests = NULL,
+         error = $2::jsonb,
+         last_updated_at = CURRENT_TIMESTAMP
+     WHERE status IN ('working', 'input_required')
+       AND created_at < $1`,
+    [startedBefore, JSON.stringify(errorPayload)]
+  );
+  return result.rowCount || 0;
+}
+
+

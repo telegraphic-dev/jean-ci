@@ -12,11 +12,15 @@ export async function register() {
     console.log(`${'='.repeat(50)}\n`);
     
     try {
-      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
+      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, reconcileInterruptedMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
       const startupStartedAt = new Date();
       // Initialize database
       await initDatabase();
+      const interruptedMcpTasks = await reconcileInterruptedMcpTasks(startupStartedAt);
+      if (interruptedMcpTasks > 0) {
+        console.log(`Reconciled ${interruptedMcpTasks} interrupted MCP task(s) from prior process`);
+      }
       const { queuedReviewRestarts, reconcileReviewRestarts } = await import('./lib/db');
       // Reconcile old claimed requests before draining the durable queued set.
       // This includes claims that crashed before saving a GitHub check ID.

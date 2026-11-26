@@ -38,7 +38,10 @@ async function handleMcpRequest(req: NextRequest): Promise<Response> {
     return unauthorizedMcpResponse(typeof body?.error === 'string' ? body.error : 'Unauthorized');
   }
 
-  const clientId = auth.source === 'db' ? `api-token:db:${auth.tokenId}` : 'api-token:env';
+  const clientId =
+    auth.source === 'db'
+      ? `api-token:db:${auth.tokenId}`
+      : `api-token:env:${auth.tokenFingerprint}`;
   const authInfo: AuthInfo = {
     // Never pass the raw bearer secret into tool handlers or logs.
     token: 'redacted',

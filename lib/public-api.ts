@@ -83,7 +83,7 @@ export function unauthorizedPublicApiResponse(message = 'Unauthorized') {
 }
 
 export async function requirePublicApiToken(req: NextRequest): Promise<
-  | { authorized: true; source: 'env' | 'db'; tokenId: number | null }
+  | { authorized: true; source: 'env' | 'db'; tokenId: number | null; tokenFingerprint: string }
   | { authorized: false; response: NextResponse }
 > {
   const token = parseBearerToken(req);
@@ -91,18 +91,20 @@ export async function requirePublicApiToken(req: NextRequest): Promise<
     return { authorized: false, response: unauthorizedPublicApiResponse('Missing Bearer token') };
   }
 
+  const tokenHash = hashApiToken(token);
+  const tokenFingerprint = tokenHash.slice(0, 16);
+
   if (isValidEnvToken(token)) {
-    return { authorized: true, source: 'env', tokenId: null };
+    return { authorized: true, source: 'env', tokenId: null, tokenFingerprint };
   }
 
-  const tokenHash = hashApiToken(token);
   const tokenRecord = await getActiveApiTokenByHash(tokenHash);
   if (!tokenRecord) {
     return { authorized: false, response: unauthorizedPublicApiResponse('Invalid API token') };
   }
 
   await touchApiTokenLastUsed(tokenRecord.id);
-  return { authorized: true, source: 'db', tokenId: tokenRecord.id };
+  return { authorized: true, source: 'db', tokenId: tokenRecord.id, tokenFingerprint };
 }
 
 export const PUBLIC_API_VERSION = 'v1';

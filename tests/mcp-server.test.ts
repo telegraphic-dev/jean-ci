@@ -1005,9 +1005,10 @@ test('get_pr_reviews groups by stable checkIdentity and excludes removed histori
   );
   assert.equal(data.overallStatus, 'failing', 'failing global Code Review is not hidden by passing custom Code Review and not falsely marked stale');
 
-  // Now verify that when all checks at currentSha pass, the removed historical check does NOT cause "stale"
+  // Now verify that when all checks defined at currentSha pass (removed-check is gone), overallStatus is "passing"
   const passingDeps: JeanCiMcpDeps = {
     ...customDeps,
+    fetchPRCheckFiles: async () => [],
     getCheckRunsForPR: async () => [
       {
         id: 202,
@@ -1045,8 +1046,160 @@ test('get_pr_reviews groups by stable checkIdentity and excludes removed histori
     { mcpName: 'get_pr_reviews' },
   );
   assert.equal(passRes.json.result.structuredContent.overallStatus, 'passing');
+  assert.equal(passRes.json.result.structuredContent.missingChecks.length, 0);
   assert.equal(passRes.json.result.structuredContent.latestChecks.length, 1);
   assert.equal(passRes.json.result.structuredContent.allChecks.length, 2);
+
+  // Verify partial subset retrigger (only "security" ran at currentSha; global Code Review missing) NEVER reports "passing"
+  const subsetDeps: JeanCiMcpDeps = {
+    ...customDeps,
+    fetchPRCheckFiles: async () => [
+      {
+        name: 'security',
+        path: '.jean-ci/pr-checks/security.md',
+        content: '# Security\n## Purpose\nSec\n## Review Instructions\nCheck.\n## Verdict Criteria\nPASS/FAIL',
+      },
+    ],
+    getCheckRunsForPR: async () => [
+      {
+        id: 205,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'security',
+        check_identity: 'path:.jean-ci/pr-checks/security.md',
+        head_sha: currentSha,
+        status: 'completed',
+        conclusion: 'success',
+        title: '✅ Security passed',
+        created_at: new Date('2026-11-26T00:04:00.000Z'),
+        completed_at: new Date('2026-11-26T00:04:10.000Z'),
+      },
+      {
+        id: 198,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'Code Review',
+        check_identity: 'global:code-review',
+        head_sha: olderSha,
+        status: 'completed',
+        conclusion: 'failure',
+        title: '❌ Failed on older head',
+        created_at: new Date('2026-11-25T23:00:00.000Z'),
+        completed_at: new Date('2026-11-25T23:01:00.000Z'),
+      },
+    ],
+  };
+  const subsetHandler = createJeanCiMcpHandler(subsetDeps);
+  const subsetRes = await callModernMcp(
+    subsetHandler,
+    'tools/call',
+    { name: 'get_pr_reviews', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 200 } },
+    { mcpName: 'get_pr_reviews' },
+  );
+  assert.equal(subsetRes.json.result.structuredContent.overallStatus, 'pending');
+  assert.deepEqual(
+    subsetRes.json.result.structuredContent.missingChecks.map((m: { identity: string }) => m.identity),
+    ['global:code-review'],
+  );
+});
+
+test('list_deployments redacts raw webhook payloads and scheduled task outputs', async () => {
+  const { deps } = createFixtureDeps();
+  const handler = createJeanCiMcpHandler({
+    ...deps,
+    getDeploymentsByRepoPaginated: async () => ({
+      items: [
+        {
+          id: 901,
+          event_type: 'coolify_task_failed',
+          delivery_id: 'deliv-1',
+          repo: 'telegraphic-dev/jean-ci',
+          action: 'failed',
+          source: 'coolify',
+          processed: true,
+          created_at: new Date('2026-11-26T00:05:00.000Z'),
+          payload: {
+            task_name: 'nightly-backup',
+            application_uuid: 'app-uuid-1',
+            application_name: 'jean-ci',
+            output: 'SUPER_SECRET_TASK_LOG_TOKEN_XYZ',
+            url: 'https://coolify.example.com/task/901',
+          },
+        },
+        {
+          id: 902,
+          event_type: 'coolify_deployment_success',
+          delivery_id: 'deliv-2',
+          repo: 'telegraphic-dev/jean-ci',
+          action: 'success',
+          source: 'coolify',
+          processed: true,
+          created_at: new Date('2026-11-26T00:06:00.000Z'),
+          payload: {
+            application_uuid: 'app-uuid-1',
+            application_name: 'jean-ci',
+            deployment_uuid: 'dep-uuid-902',
+            status: 'finished',
+            secret_env: 'SHOULD_NOT_APPEAR',
+            url: 'https://coolify.example.com/deploy/902',
+          },
+        },
+      ],
+      total: 2,
+      page: 1,
+      limit: 25,
+      totalPages: 1,
+    }),
+  });
+
+  const res = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'list_deployments', arguments: { repo: 'telegraphic-dev/jean-ci' } },
+    { mcpName: 'list_deployments' },
+  );
+  assert.equal(res.status, 200);
+  const rawSerialized = JSON.stringify(res.json.result);
+  assert.ok(!rawSerialized.includes('SUPER_SECRET_TASK_LOG_TOKEN_XYZ'), 'scheduled task output must never leak through list_deployments');
+  assert.ok(!rawSerialized.includes('SHOULD_NOT_APPEAR'), 'raw deployment payload must never leak through list_deployments');
+  assert.equal(res.json.result.structuredContent.items[0].payload, undefined);
+  assert.equal(res.json.result.structuredContent.items[0].payloadRedacted, true);
+  assert.equal(res.json.result.structuredContent.items[0].taskName, 'nightly-backup');
+  assert.equal(res.json.result.structuredContent.items[1].deploymentUuid, 'dep-uuid-902');
+});
+
+test('distinct PUBLIC_API_TOKENS produce distinct non-secret token fingerprints for MCP task isolation', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        getActiveApiTokenByHash: async () => null,
+        touchApiTokenLastUsed: async () => {},
+      },
+    });
+
+    process.env.PUBLIC_API_TOKENS = 'jci_env_token_alpha_12345,jci_env_token_beta_67890';
+    const { requirePublicApiToken } = await import('./lib/public-api.ts');
+    const authA = await requirePublicApiToken({ headers: new Headers({ authorization: 'Bearer jci_env_token_alpha_12345' }) });
+    const authB = await requirePublicApiToken({ headers: new Headers({ authorization: 'Bearer jci_env_token_beta_67890' }) });
+    assert.equal(authA.authorized, true);
+    assert.equal(authB.authorized, true);
+    assert.equal(authA.source, 'env');
+    assert.equal(authB.source, 'env');
+    assert.notEqual(authA.tokenFingerprint, authB.tokenFingerprint);
+    assert.equal(authA.tokenFingerprint.length, 16);
+    assert.ok(!authA.tokenFingerprint.includes('jci_env_token_alpha'));
+    assert.ok(!authB.tokenFingerprint.includes('jci_env_token_beta'));
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-test-module-mocks', '--loader', './tests/support/tsx-loader.mjs', '--input-type=module', '-e', script],
+    { cwd: process.cwd(), stdio: 'pipe' },
+  );
 });
 
 test('MCP task persistence failures never escape as unhandled rejections', async () => {
