@@ -191,7 +191,7 @@ export function createDefaultMcpDeps(): JeanCiMcpDeps {
     fetchPRCheckFiles: async (installationId, owner, repo, ref) => {
       const gh = await import('../github.ts');
       const octokit = await gh.getInstallationOctokit(installationId);
-      return gh.fetchPRCheckFiles(octokit, owner, repo, ref);
+      return gh.fetchPRCheckFiles(octokit, owner, repo, ref, { strict: true });
     },
     runPRReview: async (installationId, owner, repo, prNumber, headSha, options) => {
       const { runPRReview } = await import('../pr-review.ts');
@@ -246,6 +246,7 @@ function computePrRollup(
   latestChecks: ReturnType<typeof serializeCheckSummary>[],
   reviewState: PRReviewState | null,
   missingChecks: Array<{ identity: string; name: string }> = [],
+  coverageUnverified = false,
 ): 'passing' | 'failing' | 'in_progress' | 'neutral' | 'stale' | 'pending' {
   if (latestChecks.length === 0) return 'pending';
   const expectedSha = reviewState?.last_reviewed_sha || null;
@@ -260,6 +261,9 @@ function computePrRollup(
   }
   if (missingChecks.length > 0) {
     return 'pending';
+  }
+  if (coverageUnverified) {
+    return 'neutral';
   }
   if (latestChecks.every((c) => c.conclusion === 'success' || c.manuallyOverridden)) {
     return 'passing';
@@ -533,7 +537,8 @@ export async function createJeanCiMcpServer(
           })
         : [];
 
-      const overallStatus = computePrRollup(latestChecks, reviewState, missingChecks);
+      const coverageUnverified = Boolean(repoConfig?.pr_review_enabled) && !expectedChecksVerified;
+      const overallStatus = computePrRollup(latestChecks, reviewState, missingChecks, coverageUnverified);
 
       const data = {
         repo,
@@ -566,6 +571,9 @@ export async function createJeanCiMcpServer(
           : []),
         ...(missingChecks.length > 0
           ? [`- Missing required checks at reviewed head: ${missingChecks.map((m) => `**${m.name}**`).join(', ')}`]
+          : []),
+        ...(coverageUnverified
+          ? ['- Coverage: **UNVERIFIED** (could not retrieve `.jean-ci/pr-checks` definitions from GitHub for this head).']
           : []),
         `- Latest checks (${latestChecks.length}):`,
         ...(latestChecks.length > 0 ? latestChecks.map(formatCheckLine) : ['- None recorded yet.']),
@@ -1256,7 +1264,15 @@ export async function createJeanCiMcpServer(
       }
 
       if (targetCheckNames && targetCheckNames.length > 0) {
-        const checkFiles = await deps.fetchPRCheckFiles(repoConfig.installation_id, owner, repoName, headSha);
+        let checkFiles: RepoCheckFile[];
+        try {
+          checkFiles = await deps.fetchPRCheckFiles(repoConfig.installation_id, owner, repoName, headSha);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          return toolError(
+            `Could not verify check definitions at ${headSha.slice(0, 7)} before retriggering: ${message}`,
+          );
+        }
         const availableNames = [
           'Code Review',
           ...checkFiles

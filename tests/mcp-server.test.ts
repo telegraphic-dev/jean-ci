@@ -16,6 +16,7 @@ import {
   buildMcpServerCard,
 } from '../lib/mcp/server-card.ts';
 import { summarizeCheckApprovalRuns, type CheckRun, type CheckRunSummaryRecord, type OpenPR, type Repo } from '../lib/db.ts';
+import { fetchPRCheckFiles } from '../lib/github.ts';
 
 function createFixtureDeps() {
   const taskStore = new InMemoryMcpTaskStore();
@@ -1533,6 +1534,129 @@ test('retrigger_pr_review validates requested check names before advancing PR re
   assert.equal(upsertCalls, 0, 'removed check retrigger must not mark draft head as reviewed');
   assert.equal(fixture.triggeredRuns.length, 0);
 });
+
+test('strict fetchPRCheckFiles and get_pr_reviews preserve definition-fetch errors and never falsely report passing', async () => {
+  // 1) Normal 404 (absent .jean-ci/pr-checks) succeeds with empty array in strict mode
+  const absentOctokit = {
+    request: async () => {
+      const err = Object.assign(new Error('Not Found'), { status: 404 });
+      throw err;
+    },
+  };
+  assert.deepEqual(await fetchPRCheckFiles(absentOctokit, 'acme', 'app', 'aaaa', { strict: true }), []);
+
+  // 2) 403 rate-limit error throws in strict mode (never silently returns [])
+  const rateLimitOctokit = {
+    request: async () => {
+      const err = Object.assign(new Error('API rate limit exceeded'), { status: 403 });
+      throw err;
+    },
+  };
+  await assert.rejects(
+    () => fetchPRCheckFiles(rateLimitOctokit, 'acme', 'app', 'aaaa', { strict: true }),
+    /rate limit/i,
+  );
+
+  // 3) 404 "No commit found" throws in strict mode
+  const badRefOctokit = {
+    request: async () => {
+      const err = Object.assign(new Error('No commit found for the SHA deadbeef'), { status: 404 });
+      throw err;
+    },
+  };
+  await assert.rejects(
+    () => fetchPRCheckFiles(badRefOctokit, 'acme', 'app', 'deadbeef', { strict: true }),
+    /No commit found/i,
+  );
+
+  // 4) Per-file retrieval error throws in strict mode (never returns partial list)
+  const partialOctokit = {
+    request: async (_route: string, params: { path: string }) => {
+      if (params.path === '.jean-ci/pr-checks') {
+        return {
+          data: [
+            { name: 'a.md', path: '.jean-ci/pr-checks/a.md' },
+            { name: 'b.md', path: '.jean-ci/pr-checks/b.md' },
+          ],
+        };
+      }
+      if (params.path.endsWith('a.md')) {
+        return { data: { content: Buffer.from('# A').toString('base64') } };
+      }
+      throw Object.assign(new Error('Internal Server Error'), { status: 500 });
+    },
+  };
+  await assert.rejects(
+    () => fetchPRCheckFiles(partialOctokit, 'acme', 'app', 'aaaa', { strict: true }),
+    /Internal Server Error/i,
+  );
+
+  // 5) get_pr_reviews must NOT report passing when check definitions fail to load (e.g. GitHub 403)
+  const fixture = createFixtureDeps();
+  const headSha = 'cccccccccccccccccccccccccccccccccccccccc';
+  let upsertCalls = 0;
+  const handler = createJeanCiMcpHandler({
+    ...fixture.deps,
+    getPRReviewState: async () => ({
+      repo: 'telegraphic-dev/jean-ci',
+      pr_number: 171,
+      last_reviewed_sha: headSha,
+      is_draft: false,
+      draft_reviewed: false,
+      updated_at: new Date('2026-11-26T08:00:00Z'),
+    }),
+    getCheckRunsForPR: async () => [
+      {
+        id: 201,
+        github_check_id: 2001,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 171,
+        check_name: 'Code Review',
+        check_identity: 'global:code-review',
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: 'success',
+        title: 'All checks passed',
+        created_at: new Date('2026-11-26T08:00:00Z'),
+        completed_at: new Date('2026-11-26T08:01:00Z'),
+      },
+    ],
+    fetchPRCheckFiles: async () => {
+      throw Object.assign(new Error('API rate limit exceeded'), { status: 403 });
+    },
+    upsertPRReviewState: async (state) => {
+      upsertCalls += 1;
+      await fixture.deps.upsertPRReviewState(state);
+    },
+  });
+
+  const prRes = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'get_pr_reviews', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 171 } },
+    { mcpName: 'get_pr_reviews' },
+  );
+  assert.equal(prRes.status, 200);
+  assert.equal(prRes.json.result.structuredContent.expectedChecksVerified, false);
+  assert.equal(
+    prRes.json.result.structuredContent.overallStatus,
+    'neutral',
+    'unverified check coverage must not report passing',
+  );
+  assert.match(prRes.json.result.content[0].text, /UNVERIFIED/i);
+
+  // 6) retrigger_pr_review returns toolError without advancing review state if definition fetch fails
+  const retriggerRes = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'retrigger_pr_review', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 171, checkNames: ['security'] } },
+    { mcpName: 'retrigger_pr_review' },
+  );
+  assert.equal(retriggerRes.json.result.isError, true);
+  assert.match(retriggerRes.json.result.content[0].text, /Could not verify check definitions/i);
+  assert.equal(upsertCalls, 0);
+});
+
 
 
 
