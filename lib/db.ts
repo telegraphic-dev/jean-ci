@@ -2772,24 +2772,267 @@ export async function revokeMcpOAuthToken(tokenHash: string): Promise<boolean> {
   return (result.rowCount || 0) > 0;
 }
 
+const MCP_OAUTH_FAMILY_LOCK_NS = 918273;
+
 export async function revokeMcpOAuthTokensByFamily(familyId: string): Promise<number> {
-  const result = await pool.query(
-    `UPDATE jean_ci_mcp_oauth_tokens
-     SET revoked_at = CURRENT_TIMESTAMP
-     WHERE family_id = $1 AND revoked_at IS NULL`,
-    [familyId],
-  );
-  return result.rowCount || 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [MCP_OAUTH_FAMILY_LOCK_NS, familyId]);
+    const result = await client.query(
+      `UPDATE jean_ci_mcp_oauth_tokens
+       SET revoked_at = CURRENT_TIMESTAMP
+       WHERE family_id = $1 AND revoked_at IS NULL`,
+      [familyId],
+    );
+    await client.query('COMMIT');
+    return result.rowCount || 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function revokeMcpOAuthTokensByCode(sourceCodeHash: string): Promise<number> {
-  const result = await pool.query(
-    `UPDATE jean_ci_mcp_oauth_tokens
-     SET revoked_at = CURRENT_TIMESTAMP
-     WHERE source_code_hash = $1 AND revoked_at IS NULL`,
-    [sourceCodeHash],
-  );
-  return result.rowCount || 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT code_hash FROM jean_ci_mcp_oauth_codes WHERE code_hash = $1 FOR UPDATE`, [sourceCodeHash]);
+    const families = await client.query<{ family_id: string }>(
+      `SELECT DISTINCT family_id FROM jean_ci_mcp_oauth_tokens WHERE source_code_hash = $1 ORDER BY family_id`,
+      [sourceCodeHash],
+    );
+    for (const fam of families.rows) {
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [MCP_OAUTH_FAMILY_LOCK_NS, fam.family_id]);
+    }
+    const result = await client.query(
+      `UPDATE jean_ci_mcp_oauth_tokens
+       SET revoked_at = CURRENT_TIMESTAMP
+       WHERE source_code_hash = $1 AND revoked_at IS NULL`,
+      [sourceCodeHash],
+    );
+    await client.query('COMMIT');
+    return result.rowCount || 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export type AtomicOAuthCodeExchangeResult =
+  | { status: 'issued' }
+  | { status: 'not_found' }
+  | { status: 'expired' }
+  | { status: 'replayed' };
+
+export async function exchangeMcpOAuthCodeAtomic(params: {
+  codeHash: string;
+  accessToken: {
+    tokenHash: string;
+    familyId: string;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+  refreshToken: {
+    tokenHash: string;
+    familyId: string;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+}): Promise<AtomicOAuthCodeExchangeResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const codeRes = await client.query<McpOAuthCodeDbRecord>(
+      `SELECT * FROM jean_ci_mcp_oauth_codes WHERE code_hash = $1 FOR UPDATE`,
+      [params.codeHash],
+    );
+    const row = codeRes.rows[0];
+    if (!row) {
+      await client.query('COMMIT');
+      return { status: 'not_found' };
+    }
+    if (row.used_at) {
+      const families = await client.query<{ family_id: string }>(
+        `SELECT DISTINCT family_id FROM jean_ci_mcp_oauth_tokens WHERE source_code_hash = $1 ORDER BY family_id`,
+        [params.codeHash],
+      );
+      for (const fam of families.rows) {
+        await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [MCP_OAUTH_FAMILY_LOCK_NS, fam.family_id]);
+      }
+      await client.query(
+        `UPDATE jean_ci_mcp_oauth_tokens
+         SET revoked_at = CURRENT_TIMESTAMP
+         WHERE source_code_hash = $1 AND revoked_at IS NULL`,
+        [params.codeHash],
+      );
+      await client.query('COMMIT');
+      return { status: 'replayed' };
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      await client.query('COMMIT');
+      return { status: 'expired' };
+    }
+
+    await client.query(
+      `UPDATE jean_ci_mcp_oauth_codes SET used_at = CURRENT_TIMESTAMP WHERE code_hash = $1`,
+      [params.codeHash],
+    );
+
+    const insertSql = `INSERT INTO jean_ci_mcp_oauth_tokens
+       (token_hash, token_type, family_id, source_code_hash, client_id, resource, scope, user_id, user_login, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
+
+    await client.query(insertSql, [
+      params.accessToken.tokenHash,
+      'access',
+      params.accessToken.familyId,
+      params.codeHash,
+      params.accessToken.clientId,
+      params.accessToken.resource,
+      params.accessToken.scope,
+      params.accessToken.userId,
+      params.accessToken.userLogin,
+      params.accessToken.expiresAt,
+    ]);
+    await client.query(insertSql, [
+      params.refreshToken.tokenHash,
+      'refresh',
+      params.refreshToken.familyId,
+      params.codeHash,
+      params.refreshToken.clientId,
+      params.refreshToken.resource,
+      params.refreshToken.scope,
+      params.refreshToken.userId,
+      params.refreshToken.userLogin,
+      params.refreshToken.expiresAt,
+    ]);
+
+    await client.query('COMMIT');
+    return { status: 'issued' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export type AtomicOAuthRefreshRotateResult =
+  | { status: 'rotated' }
+  | { status: 'not_found' }
+  | { status: 'expired' }
+  | { status: 'replayed' };
+
+export async function rotateMcpOAuthRefreshTokenAtomic(params: {
+  refreshTokenHash: string;
+  familyId: string;
+  accessToken: {
+    tokenHash: string;
+    sourceCodeHash: string | null;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+  nextRefreshToken: {
+    tokenHash: string;
+    sourceCodeHash: string | null;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+}): Promise<AtomicOAuthRefreshRotateResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [
+      MCP_OAUTH_FAMILY_LOCK_NS,
+      params.familyId,
+    ]);
+    const tokenRes = await client.query<McpOAuthTokenDbRecord>(
+      `SELECT * FROM jean_ci_mcp_oauth_tokens WHERE token_hash = $1 FOR UPDATE`,
+      [params.refreshTokenHash],
+    );
+    const row = tokenRes.rows[0];
+    if (!row || row.token_type !== 'refresh' || row.family_id !== params.familyId) {
+      await client.query('COMMIT');
+      return { status: 'not_found' };
+    }
+    if (row.revoked_at) {
+      await client.query(
+        `UPDATE jean_ci_mcp_oauth_tokens
+         SET revoked_at = CURRENT_TIMESTAMP
+         WHERE family_id = $1 AND revoked_at IS NULL`,
+        [params.familyId],
+      );
+      await client.query('COMMIT');
+      return { status: 'replayed' };
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      await client.query('COMMIT');
+      return { status: 'expired' };
+    }
+
+    await client.query(
+      `UPDATE jean_ci_mcp_oauth_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = $1`,
+      [params.refreshTokenHash],
+    );
+
+    const insertSql = `INSERT INTO jean_ci_mcp_oauth_tokens
+       (token_hash, token_type, family_id, source_code_hash, client_id, resource, scope, user_id, user_login, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
+
+    await client.query(insertSql, [
+      params.accessToken.tokenHash,
+      'access',
+      params.familyId,
+      params.accessToken.sourceCodeHash,
+      params.accessToken.clientId,
+      params.accessToken.resource,
+      params.accessToken.scope,
+      params.accessToken.userId,
+      params.accessToken.userLogin,
+      params.accessToken.expiresAt,
+    ]);
+    await client.query(insertSql, [
+      params.nextRefreshToken.tokenHash,
+      'refresh',
+      params.familyId,
+      params.nextRefreshToken.sourceCodeHash,
+      params.nextRefreshToken.clientId,
+      params.nextRefreshToken.resource,
+      params.nextRefreshToken.scope,
+      params.nextRefreshToken.userId,
+      params.nextRefreshToken.userLogin,
+      params.nextRefreshToken.expiresAt,
+    ]);
+
+    await client.query('COMMIT');
+    return { status: 'rotated' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function cleanupExpiredMcpOAuth(): Promise<number> {

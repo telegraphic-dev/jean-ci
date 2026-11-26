@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dns from 'node:dns/promises';
+import https from 'node:https';
 import net from 'node:net';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { APP_BASE_URL } from '../config.ts';
@@ -9,6 +10,7 @@ import {
   createMcpOAuthPending,
   createMcpOAuthToken,
   consumeMcpOAuthPending,
+  exchangeMcpOAuthCodeAtomic,
   getMcpOAuthClient,
   getMcpOAuthCode,
   getMcpOAuthPending,
@@ -17,6 +19,9 @@ import {
   revokeMcpOAuthToken,
   revokeMcpOAuthTokensByCode,
   revokeMcpOAuthTokensByFamily,
+  rotateMcpOAuthRefreshTokenAtomic,
+  type AtomicOAuthCodeExchangeResult,
+  type AtomicOAuthRefreshRotateResult,
   type McpOAuthClientDbRecord,
   type McpOAuthCodeDbRecord,
   type McpOAuthPendingDbRecord,
@@ -104,6 +109,17 @@ export interface McpOAuthStore {
   revokeToken(tokenHash: string): Promise<boolean>;
   revokeTokensByFamily(familyId: string): Promise<number>;
   revokeTokensByCode(sourceCodeHash: string): Promise<number>;
+  exchangeCodeAtomic(params: {
+    codeHash: string;
+    accessToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'sourceCodeHash' | 'revokedAt'>;
+    refreshToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'sourceCodeHash' | 'revokedAt'>;
+  }): Promise<AtomicOAuthCodeExchangeResult>;
+  rotateRefreshTokenAtomic(params: {
+    refreshTokenHash: string;
+    familyId: string;
+    accessToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'familyId' | 'revokedAt'>;
+    nextRefreshToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'familyId' | 'revokedAt'>;
+  }): Promise<AtomicOAuthRefreshRotateResult>;
 }
 
 function mapClientRow(row: McpOAuthClientDbRecord): McpOAuthClient {
@@ -206,6 +222,8 @@ export function createDbMcpOAuthStore(): McpOAuthStore {
     revokeToken: async (tokenHash) => revokeMcpOAuthToken(tokenHash),
     revokeTokensByFamily: async (familyId) => revokeMcpOAuthTokensByFamily(familyId),
     revokeTokensByCode: async (sourceCodeHash) => revokeMcpOAuthTokensByCode(sourceCodeHash),
+    exchangeCodeAtomic: async (params) => exchangeMcpOAuthCodeAtomic(params),
+    rotateRefreshTokenAtomic: async (params) => rotateMcpOAuthRefreshTokenAtomic(params),
   };
   return sharedDbOAuthStore;
 }
@@ -304,6 +322,73 @@ export class InMemoryMcpOAuthStore implements McpOAuthStore {
       }
     }
     return count;
+  }
+
+  async exchangeCodeAtomic(params: {
+    codeHash: string;
+    accessToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'sourceCodeHash' | 'revokedAt'>;
+    refreshToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'sourceCodeHash' | 'revokedAt'>;
+  }): Promise<AtomicOAuthCodeExchangeResult> {
+    const row = this.codes.get(params.codeHash);
+    if (!row) return { status: 'not_found' };
+    if (row.usedAt) {
+      const now = new Date();
+      for (const tok of this.tokens.values()) {
+        if (tok.sourceCodeHash === params.codeHash && !tok.revokedAt) tok.revokedAt = now;
+      }
+      return { status: 'replayed' };
+    }
+    if (row.expiresAt.getTime() <= Date.now()) return { status: 'expired' };
+
+    row.usedAt = new Date();
+    this.tokens.set(params.accessToken.tokenHash, {
+      ...params.accessToken,
+      tokenType: 'access',
+      sourceCodeHash: params.codeHash,
+      revokedAt: null,
+    });
+    this.tokens.set(params.refreshToken.tokenHash, {
+      ...params.refreshToken,
+      tokenType: 'refresh',
+      sourceCodeHash: params.codeHash,
+      revokedAt: null,
+    });
+    return { status: 'issued' };
+  }
+
+  async rotateRefreshTokenAtomic(params: {
+    refreshTokenHash: string;
+    familyId: string;
+    accessToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'familyId' | 'revokedAt'>;
+    nextRefreshToken: Omit<McpOAuthTokenRecord, 'tokenType' | 'familyId' | 'revokedAt'>;
+  }): Promise<AtomicOAuthRefreshRotateResult> {
+    const row = this.tokens.get(params.refreshTokenHash);
+    if (!row || row.tokenType !== 'refresh' || row.familyId !== params.familyId) {
+      return { status: 'not_found' };
+    }
+    if (row.revokedAt) {
+      const now = new Date();
+      for (const tok of this.tokens.values()) {
+        if (tok.familyId === params.familyId && !tok.revokedAt) tok.revokedAt = now;
+      }
+      return { status: 'replayed' };
+    }
+    if (row.expiresAt.getTime() <= Date.now()) return { status: 'expired' };
+
+    row.revokedAt = new Date();
+    this.tokens.set(params.accessToken.tokenHash, {
+      ...params.accessToken,
+      tokenType: 'access',
+      familyId: params.familyId,
+      revokedAt: null,
+    });
+    this.tokens.set(params.nextRefreshToken.tokenHash, {
+      ...params.nextRefreshToken,
+      tokenType: 'refresh',
+      familyId: params.familyId,
+      revokedAt: null,
+    });
+    return { status: 'rotated' };
   }
 }
 
@@ -516,19 +601,97 @@ function isPrivateIpv4(ip: string): boolean {
   return false;
 }
 
-function isPrivateIpAddress(ip: string): boolean {
+function parseIpv6Groups(ip: string): number[] | null {
+  let addr = ip.toLowerCase();
+  const zoneIdx = addr.indexOf('%');
+  if (zoneIdx !== -1) addr = addr.slice(0, zoneIdx);
+
+  // Convert trailing dotted-quad IPv4 (e.g. ::ffff:127.0.0.1) into two 16-bit hex groups
+  const lastColon = addr.lastIndexOf(':');
+  if (lastColon !== -1 && addr.slice(lastColon + 1).includes('.')) {
+    const v4Part = addr.slice(lastColon + 1);
+    const octets = v4Part.split('.').map(Number);
+    if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+      return null;
+    }
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    addr = `${addr.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+
+  const halves = addr.split('::');
+  if (halves.length > 2) return null;
+
+  const parsePart = (part: string): number[] | null => {
+    if (!part) return [];
+    const tokens = part.split(':');
+    const out: number[] = [];
+    for (const token of tokens) {
+      if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
+      out.push(parseInt(token, 16));
+    }
+    return out;
+  };
+
+  if (halves.length === 1) {
+    const groups = parsePart(halves[0]);
+    return groups && groups.length === 8 ? groups : null;
+  }
+
+  const left = parsePart(halves[0]);
+  const right = parsePart(halves[1]);
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 1) return null;
+  return [...left, ...new Array<number>(missing).fill(0), ...right];
+}
+
+function groupsToIpv4(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+export function isPrivateIpAddress(ip: string): boolean {
   const clean = ip.replace(/^\[|\]$/g, '').toLowerCase();
   const kind = net.isIP(clean);
   if (kind === 4) return isPrivateIpv4(clean);
   if (kind === 6) {
-    if (clean === '::' || clean === '::1') return true;
-    if (clean.startsWith('fc') || clean.startsWith('fd')) return true;
-    if (clean.startsWith('fe8') || clean.startsWith('fe9') || clean.startsWith('fea') || clean.startsWith('feb')) {
-      return true;
+    const g = parseIpv6Groups(clean);
+    if (!g) return true;
+    const isAllZeroPrefix5 = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0;
+    // :: (unspecified) and ::1 (loopback)
+    if (isAllZeroPrefix5 && g[5] === 0 && g[6] === 0 && (g[7] === 0 || g[7] === 1)) return true;
+    // ::ffff:0:0/96 (IPv4-mapped IPv6 in dotted or hex form)
+    if (isAllZeroPrefix5 && g[5] === 0xffff) {
+      return isPrivateIpv4(groupsToIpv4(g[6], g[7]));
     }
-    if (clean.startsWith('ff')) return true;
-    const v4Mapped = clean.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (v4Mapped) return isPrivateIpv4(v4Mapped[1]);
+    // ::ffff:0:0:0/96 (IPv4-translated)
+    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0xffff && g[5] === 0) {
+      return isPrivateIpv4(groupsToIpv4(g[6], g[7]));
+    }
+    // ::/96 (deprecated IPv4-compatible IPv6)
+    if (isAllZeroPrefix5 && g[5] === 0) {
+      return isPrivateIpv4(groupsToIpv4(g[6], g[7]));
+    }
+    // 64:ff9b::/96 & 64:ff9b:1::/48 (NAT64)
+    if (g[0] === 0x0064 && g[1] === 0xff9b) {
+      if (g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+        return isPrivateIpv4(groupsToIpv4(g[6], g[7]));
+      }
+      if (g[2] === 1) return true;
+    }
+    // 2002::/16 (6to4 embeds IPv4 in groups 1..2)
+    if (g[0] === 0x2002) {
+      return isPrivateIpv4(groupsToIpv4(g[1], g[2]));
+    }
+    // 2001::/32 (Teredo), 2001:db8::/32 (documentation), 100::/64 (discard)
+    if (g[0] === 0x2001 && (g[1] === 0x0000 || g[1] === 0x0db8)) return true;
+    if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true;
+    // fc00::/7 (ULA)
+    if ((g[0] & 0xfe00) === 0xfc00) return true;
+    // fe80::/10 (link-local) and fec0::/10 (deprecated site-local)
+    if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return true;
+    // ff00::/8 (multicast)
+    if ((g[0] & 0xff00) === 0xff00) return true;
     return false;
   }
   return true;
@@ -558,42 +721,198 @@ export function isCimdClientId(clientId: string): boolean {
 
 export type CimdFetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
+async function readResponseBytesBounded(res: Response, maxBytes: number): Promise<Uint8Array | null> {
+  const contentLengthHeader = res.headers.get('content-length');
+  if (contentLengthHeader) {
+    const declared = Number(contentLengthHeader);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await res.body?.cancel().catch(() => {});
+      return null;
+    }
+  }
+  if (!res.body) {
+    return new Uint8Array(0);
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
+}
+
+async function fetchCimdPinnedHttps(
+  parsed: URL,
+  lookupFn: (hostname: string) => Promise<Array<{ address: string; family?: number }>>,
+  signal: AbortSignal,
+): Promise<{ status: number; contentType: string; bytes: Uint8Array } | null> {
+  const rawHost = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(rawHost) && isPrivateIpAddress(rawHost)) {
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val: { status: number; contentType: string; bytes: Uint8Array } | null) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+
+    const pinnedLookup = (
+      hostname: string,
+      options: unknown,
+      callback: (err: NodeJS.ErrnoException | null, address: unknown, family?: number) => void,
+    ) => {
+      const cb = typeof options === 'function' ? (options as typeof callback) : callback;
+      const opts = typeof options === 'object' && options !== null ? (options as { all?: boolean }) : {};
+      void lookupFn(hostname)
+        .then((entries) => {
+          if (!entries.length || entries.some((entry) => isPrivateIpAddress(entry.address))) {
+            cb(Object.assign(new Error('Blocked private or invalid CIMD IP address'), { code: 'ERR_SSRF_BLOCKED' }), '');
+            return;
+          }
+          const normalized = entries.map((entry) => {
+            const family = entry.family === 4 || entry.family === 6 ? entry.family : net.isIP(entry.address);
+            return { address: entry.address, family: family === 6 ? 6 : 4 };
+          });
+          if (opts.all) {
+            cb(null, normalized);
+          } else {
+            cb(null, normalized[0].address, normalized[0].family);
+          }
+        })
+        .catch((err) => cb(err as NodeJS.ErrnoException, ''));
+    };
+
+    const req = https.request(
+      {
+        protocol: 'https:',
+        hostname: rawHost,
+        port: parsed.port ? Number(parsed.port) : 443,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          Host: parsed.host,
+        },
+        servername: net.isIP(rawHost) ? undefined : rawHost,
+        lookup: pinnedLookup as unknown as typeof import('node:dns').lookup,
+        signal,
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        const contentType = String(res.headers['content-type'] || '').toLowerCase();
+        const contentLength = Number(res.headers['content-length']);
+        if (
+          status < 200 ||
+          status >= 300 ||
+          (!contentType.includes('application/json') && !contentType.includes('+json')) ||
+          (Number.isFinite(contentLength) && contentLength > MAX_CIMD_BYTES)
+        ) {
+          res.resume();
+          req.destroy();
+          finish(null);
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        res.on('data', (chunk: Buffer) => {
+          if (settled) return;
+          total += chunk.length;
+          if (total > MAX_CIMD_BYTES) {
+            res.destroy();
+            req.destroy();
+            finish(null);
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          if (!res.complete) {
+            finish(null);
+            return;
+          }
+          finish({ status, contentType, bytes: new Uint8Array(Buffer.concat(chunks, total)) });
+        });
+        res.on('close', () => {
+          if (!settled) finish(null);
+        });
+        res.on('error', () => finish(null));
+      },
+    );
+
+    req.on('error', () => finish(null));
+    req.end();
+  });
+}
+
 export async function fetchCimdClient(
   clientId: string,
-  fetchFn: CimdFetchFn = fetch,
-  lookupFn: (hostname: string) => Promise<Array<{ address: string }>> = (h) => dns.lookup(h, { all: true }),
+  fetchFn?: CimdFetchFn,
+  lookupFn: (hostname: string) => Promise<Array<{ address: string; family?: number }>> = (h) =>
+    dns.lookup(h, { all: true }),
 ): Promise<McpOAuthClient | null> {
   if (!isCimdClientId(clientId)) return null;
   const parsed = new URL(clientId);
   const host = parsed.hostname.replace(/^\[|\]$/g, '');
-  if (!net.isIP(host)) {
-    try {
-      const addresses = await lookupFn(host);
-      if (!addresses.length || addresses.some((entry) => isPrivateIpAddress(entry.address))) {
-        return null;
-      }
-    } catch {
-      return null;
-    }
-  } else if (isPrivateIpAddress(host)) {
+  if (net.isIP(host) && isPrivateIpAddress(host)) {
     return null;
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CIMD_TIMEOUT_MS);
   try {
-    const res = await fetchFn(clientId, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      redirect: 'error',
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    if (!contentType.includes('application/json') && !contentType.includes('+json')) return null;
+    let contentType: string;
+    let rawBytes: Uint8Array | null;
 
-    const rawBytes = new Uint8Array(await res.arrayBuffer());
-    if (rawBytes.byteLength > MAX_CIMD_BYTES) return null;
+    if (fetchFn) {
+      // Custom fetch injection (used in unit tests): validate DNS first and enforce streaming byte cap
+      if (!net.isIP(host)) {
+        const addresses = await lookupFn(host);
+        if (!addresses.length || addresses.some((entry) => isPrivateIpAddress(entry.address))) {
+          return null;
+        }
+      }
+      const res = await fetchFn(clientId, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        redirect: 'error',
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('application/json') && !contentType.includes('+json')) return null;
+      rawBytes = await readResponseBytesBounded(res, MAX_CIMD_BYTES);
+    } else {
+      // Production path: pin the TCP connection directly to the DNS-validated IP while preserving TLS SNI
+      const pinned = await fetchCimdPinnedHttps(parsed, lookupFn, controller.signal);
+      if (!pinned) return null;
+      contentType = pinned.contentType;
+      if (!contentType.includes('application/json') && !contentType.includes('+json')) return null;
+      rawBytes = pinned.bytes;
+    }
+
+    if (!rawBytes) return null;
 
     const doc = JSON.parse(new TextDecoder().decode(rawBytes)) as Record<string, unknown>;
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
@@ -1051,46 +1370,45 @@ export async function exchangeOAuthToken(
       finalResource = requestedResource;
     }
 
-    const consumed = await store.markCodeUsed(codeHash);
-    if (!consumed) {
-      await store.revokeTokensByCode(codeHash);
-      return {
-        status: 400,
-        body: { error: 'invalid_grant', error_description: 'Authorization code was already used.' },
-      };
-    }
-
     const familyId = randomUUID();
     const accessToken = `${MCP_OAUTH_ACCESS_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
     const refreshToken = `${MCP_OAUTH_REFRESH_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
 
-    await store.createToken({
-      tokenHash: hashOAuthSecret(accessToken),
-      tokenType: 'access',
-      familyId,
-      sourceCodeHash: codeHash,
-      clientId: client.clientId,
-      resource: finalResource,
-      scope: existing.scope,
-      userId: existing.userId,
-      userLogin: existing.userLogin,
-      revokedAt: null,
-      expiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000),
+    const exchangeResult = await store.exchangeCodeAtomic({
+      codeHash,
+      accessToken: {
+        tokenHash: hashOAuthSecret(accessToken),
+        familyId,
+        clientId: client.clientId,
+        resource: finalResource,
+        scope: existing.scope,
+        userId: existing.userId,
+        userLogin: existing.userLogin,
+        expiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000),
+      },
+      refreshToken: {
+        tokenHash: hashOAuthSecret(refreshToken),
+        familyId,
+        clientId: client.clientId,
+        resource: finalResource,
+        scope: existing.scope,
+        userId: existing.userId,
+        userLogin: existing.userLogin,
+        expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000),
+      },
     });
-
-    await store.createToken({
-      tokenHash: hashOAuthSecret(refreshToken),
-      tokenType: 'refresh',
-      familyId,
-      sourceCodeHash: codeHash,
-      clientId: client.clientId,
-      resource: finalResource,
-      scope: existing.scope,
-      userId: existing.userId,
-      userLogin: existing.userLogin,
-      revokedAt: null,
-      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000),
-    });
+    if (exchangeResult.status !== 'issued') {
+      return {
+        status: 400,
+        body: {
+          error: 'invalid_grant',
+          error_description:
+            exchangeResult.status === 'expired'
+              ? 'Authorization code expired.'
+              : 'Authorization code was already used.',
+        },
+      };
+    }
 
     return {
       status: 200,
@@ -1114,14 +1432,6 @@ export async function exchangeOAuthToken(
   if (!tokenRow || tokenRow.tokenType !== 'refresh') {
     return { status: 400, body: { error: 'invalid_grant', error_description: 'Invalid refresh token.' } };
   }
-  if (tokenRow.revokedAt) {
-    // Refresh token replay detected — revoke entire token family
-    await store.revokeTokensByFamily(tokenRow.familyId);
-    return { status: 400, body: { error: 'invalid_grant', error_description: 'Refresh token was revoked.' } };
-  }
-  if (tokenRow.expiresAt.getTime() <= Date.now()) {
-    return { status: 400, body: { error: 'invalid_grant', error_description: 'Refresh token expired.' } };
-  }
   if (tokenRow.clientId !== client.clientId) {
     return { status: 400, body: { error: 'invalid_grant', error_description: 'Refresh token belongs to another client.' } };
   }
@@ -1142,42 +1452,45 @@ export async function exchangeOAuthToken(
     return { status: 400, body: { error: 'invalid_scope', error_description: 'Cannot expand scope on refresh.' } };
   }
 
-  const rotated = await store.revokeToken(refreshHash);
-  if (!rotated) {
-    await store.revokeTokensByFamily(tokenRow.familyId);
-    return { status: 400, body: { error: 'invalid_grant', error_description: 'Refresh token was already used.' } };
-  }
-
   const nextAccess = `${MCP_OAUTH_ACCESS_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
   const nextRefresh = `${MCP_OAUTH_REFRESH_TOKEN_PREFIX}${randomBytes(32).toString('base64url')}`;
 
-  await store.createToken({
-    tokenHash: hashOAuthSecret(nextAccess),
-    tokenType: 'access',
+  const rotationResult = await store.rotateRefreshTokenAtomic({
+    refreshTokenHash: refreshHash,
     familyId: tokenRow.familyId,
-    sourceCodeHash: tokenRow.sourceCodeHash,
-    clientId: client.clientId,
-    resource: tokenRow.resource,
-    scope: requestedScope,
-    userId: tokenRow.userId,
-    userLogin: tokenRow.userLogin,
-    revokedAt: null,
-    expiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000),
+    accessToken: {
+      tokenHash: hashOAuthSecret(nextAccess),
+      sourceCodeHash: tokenRow.sourceCodeHash,
+      clientId: client.clientId,
+      resource: tokenRow.resource,
+      scope: requestedScope,
+      userId: tokenRow.userId,
+      userLogin: tokenRow.userLogin,
+      expiresAt: new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000),
+    },
+    nextRefreshToken: {
+      tokenHash: hashOAuthSecret(nextRefresh),
+      sourceCodeHash: tokenRow.sourceCodeHash,
+      clientId: client.clientId,
+      resource: tokenRow.resource,
+      scope: requestedScope,
+      userId: tokenRow.userId,
+      userLogin: tokenRow.userLogin,
+      expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000),
+    },
   });
-
-  await store.createToken({
-    tokenHash: hashOAuthSecret(nextRefresh),
-    tokenType: 'refresh',
-    familyId: tokenRow.familyId,
-    sourceCodeHash: tokenRow.sourceCodeHash,
-    clientId: client.clientId,
-    resource: tokenRow.resource,
-    scope: requestedScope,
-    userId: tokenRow.userId,
-    userLogin: tokenRow.userLogin,
-    revokedAt: null,
-    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000),
-  });
+  if (rotationResult.status !== 'rotated') {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_grant',
+        error_description:
+          rotationResult.status === 'expired'
+            ? 'Refresh token expired.'
+            : 'Refresh token was revoked or already used.',
+      },
+    };
+  }
 
   return {
     status: 200,

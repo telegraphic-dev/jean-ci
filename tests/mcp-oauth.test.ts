@@ -15,6 +15,7 @@ import {
   exchangeOAuthToken,
   fetchCimdClient,
   isCimdClientId,
+  isPrivateIpAddress,
   isValidRedirectUri,
   redirectUriMatches,
   registerOAuthClient,
@@ -402,3 +403,224 @@ test('MCP server enforces mcp:write scope for read-only OAuth tokens', async () 
   assert.equal(writeJson.result.isError, true);
   assert.match(writeJson.result.content[0].text, /mcp:write/i);
 });
+
+test('isPrivateIpAddress and isCimdClientId block hex IPv4-mapped IPv6 and special private IPv6 ranges', () => {
+  const privateAddresses = [
+    '127.0.0.1',
+    '10.0.0.1',
+    '169.254.169.254',
+    '172.16.0.5',
+    '192.168.1.10',
+    '100.64.0.1',
+    '::',
+    '::1',
+    '::ffff:127.0.0.1',
+    '::ffff:7f00:1',
+    '::ffff:a00:1',
+    '::ffff:a9fe:a9fe',
+    '::ffff:c0a8:101',
+    '0:0:0:0:0:ffff:7f00:1',
+    '::ffff:0:127.0.0.1',
+    '::127.0.0.1',
+    '64:ff9b::127.0.0.1',
+    '64:ff9b::7f00:1',
+    '64:ff9b:1::1',
+    '2002:7f00:1::1',
+    '2001:db8::1',
+    'fc00::1',
+    'fd12:3456::1',
+    'fe80::1',
+    'ff02::1',
+  ];
+  for (const addr of privateAddresses) {
+    assert.equal(isPrivateIpAddress(addr), true, `expected ${addr} to be blocked as private`);
+  }
+
+  // Public IPv4/IPv6 addresses remain allowed
+  assert.equal(isPrivateIpAddress('93.184.216.34'), false);
+  assert.equal(isPrivateIpAddress('2606:2800:220:1:248:1893:25c8:1946'), false);
+  assert.equal(isPrivateIpAddress('::ffff:93.184.216.34'), false);
+  assert.equal(isPrivateIpAddress('::ffff:5db8:d822'), false);
+
+  // URL normalization converts [::ffff:127.0.0.1] to [::ffff:7f00:1] — must still be rejected
+  assert.equal(isCimdClientId('https://[::ffff:127.0.0.1]/client.json'), false);
+  assert.equal(isCimdClientId('https://[::ffff:7f00:1]/client.json'), false);
+  assert.equal(isCimdClientId('https://[::ffff:169.254.169.254]/latest/meta-data'), false);
+  assert.equal(isCimdClientId('https://[fd00::1]/client.json'), false);
+  assert.equal(isCimdClientId('https://[2606:2800:220:1:248:1893:25c8:1946]/client.json'), true);
+});
+
+test('fetchCimdClient enforces streaming byte limit and pins DNS lookup on production HTTPS path', async () => {
+  const clientId = 'https://stream-test.example.com/oauth/client.json';
+
+  // Streaming body larger than 64 KiB without Content-Length must abort early without consuming remaining chunks
+  let pulledChunks = 0;
+  let canceled = false;
+  const oversizedStream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulledChunks += 1;
+      if (pulledChunks <= 20) {
+        controller.enqueue(new Uint8Array(16 * 1024).fill(0x20));
+      } else {
+        controller.close();
+      }
+    },
+    cancel() {
+      canceled = true;
+    },
+  });
+
+  const oversizedResult = await fetchCimdClient(
+    clientId,
+    async () =>
+      new Response(oversizedStream, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    async () => [{ address: '93.184.216.34' }],
+  );
+  assert.equal(oversizedResult, null);
+  assert.equal(canceled, true);
+  assert.ok(pulledChunks <= 6, `expected stream to stop immediately after 64 KiB cap, pulled ${pulledChunks} chunks`);
+
+  // Production HTTPS path (fetchFn omitted): pinned lookup callback resolves once and blocks private IPv6/IPv4
+  let lookupCalls = 0;
+  const pinnedBlocked = await fetchCimdClient(clientId, undefined, async () => {
+    lookupCalls += 1;
+    return [{ address: '::ffff:7f00:1', family: 6 }];
+  });
+  assert.equal(pinnedBlocked, null);
+  assert.equal(lookupCalls, 1, 'expected single pinned DNS lookup without separate pre-check/fetch TOCTOU');
+});
+
+test('concurrent authorization code replay and refresh rotation atomically revoke issued tokens', async () => {
+  const baseUrl = 'https://jean-ci.example.com';
+  const store = new InMemoryMcpOAuthStore();
+
+  const reg = await registerOAuthClient(store, {
+    client_name: 'Concurrency Test Client',
+    redirect_uris: ['http://127.0.0.1:42000/cb'],
+    token_endpoint_auth_method: 'none',
+  });
+  const clientId = String(reg.body.client_id);
+
+  // 1) Concurrent authorization code exchange race
+  const { verifier: v1, challenge: c1 } = makePkcePair();
+  const pending1 = await createPendingAuthorization(
+    store,
+    new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'http://127.0.0.1:42000/cb',
+      code_challenge: c1,
+      code_challenge_method: 'S256',
+      resource: `${baseUrl}/mcp`,
+    }),
+    baseUrl,
+  );
+  assert.equal(pending1.ok, true);
+  const { code: code1 } = await approvePendingAuthorization(store, pending1.pending, { id: '42', login: 'musketyr' });
+
+  const makeCodeExchange = () =>
+    exchangeOAuthToken(
+      store,
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code: code1,
+        redirect_uri: 'http://127.0.0.1:42000/cb',
+        code_verifier: v1,
+        resource: `${baseUrl}/mcp`,
+      }),
+      null,
+      baseUrl,
+    );
+
+  const [codeResA, codeResB] = await Promise.all([makeCodeExchange(), makeCodeExchange()]);
+  const codeWinner = codeResA.status === 200 ? codeResA : codeResB;
+  const codeLoser = codeResA.status === 200 ? codeResB : codeResA;
+  assert.equal(codeWinner.status, 200);
+  assert.equal(codeLoser.status, 400);
+  assert.equal(codeLoser.body.error, 'invalid_grant');
+
+  // Winning access token must have been revoked by the concurrent replay!
+  const winnerAccessCheck = await authenticateMcpOAuthToken(
+    store,
+    String(codeWinner.body.access_token),
+    '/mcp',
+    baseUrl,
+  );
+  assert.equal(winnerAccessCheck.authorized, false);
+
+  // 2) Concurrent refresh token rotation race
+  const { verifier: v2, challenge: c2 } = makePkcePair();
+  const pending2 = await createPendingAuthorization(
+    store,
+    new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'http://127.0.0.1:42000/cb',
+      code_challenge: c2,
+      code_challenge_method: 'S256',
+      resource: `${baseUrl}/mcp`,
+    }),
+    baseUrl,
+  );
+  assert.equal(pending2.ok, true);
+  const { code: code2 } = await approvePendingAuthorization(store, pending2.pending, { id: '42', login: 'musketyr' });
+  const initialTokenRes = await exchangeOAuthToken(
+    store,
+    new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      code: code2,
+      redirect_uri: 'http://127.0.0.1:42000/cb',
+      code_verifier: v2,
+      resource: `${baseUrl}/mcp`,
+    }),
+    null,
+    baseUrl,
+  );
+  assert.equal(initialTokenRes.status, 200);
+  const initialRefresh = String(initialTokenRes.body.refresh_token);
+
+  const makeRefresh = () =>
+    exchangeOAuthToken(
+      store,
+      new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        refresh_token: initialRefresh,
+      }),
+      null,
+      baseUrl,
+    );
+
+  const [refResA, refResB] = await Promise.all([makeRefresh(), makeRefresh()]);
+  const refWinner = refResA.status === 200 ? refResA : refResB;
+  const refLoser = refResA.status === 200 ? refResB : refResA;
+  assert.equal(refWinner.status, 200);
+  assert.equal(refLoser.status, 400);
+  assert.equal(refLoser.body.error, 'invalid_grant');
+
+  // Winning successor access & refresh tokens must both be revoked by the concurrent replay!
+  const rotatedAccessCheck = await authenticateMcpOAuthToken(
+    store,
+    String(refWinner.body.access_token),
+    '/mcp',
+    baseUrl,
+  );
+  assert.equal(rotatedAccessCheck.authorized, false);
+  const followUpRefresh = await exchangeOAuthToken(
+    store,
+    new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      refresh_token: String(refWinner.body.refresh_token),
+    }),
+    null,
+    baseUrl,
+  );
+  assert.equal(followUpRefresh.status, 400);
+});
+
