@@ -1,13 +1,15 @@
+import { randomBytes } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, requireReviewAdmin } from '@/lib/auth';
 import { APP_BASE_URL } from '@/lib/config';
 import {
-  OAUTH_CSRF_COOKIE_NAME,
   approvePendingAuthorization,
   buildConsentHtmlHeaders,
   buildOAuthErrorRedirect,
+  computeConsentCsrfToken,
   createDbMcpOAuthStore,
   createPendingAuthorization,
+  isSameOriginConsentSubmission,
   renderConsentPageHtml,
   timingSafeEqualStrings,
 } from '@/lib/mcp/oauth';
@@ -26,9 +28,13 @@ function isAdminOAuthConfigured(): boolean {
   );
 }
 
-function clearCsrfCookieHeader(): string {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  return `${OAUTH_CSRF_COOKIE_NAME}=; Path=/oauth/authorize; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+async function ensureSessionCsrfSecret(): Promise<string> {
+  const session = await getSession();
+  if (!session.mcpOAuthCsrfSecret || !/^[a-f0-9]{64}$/.test(session.mcpOAuthCsrfSecret)) {
+    session.mcpOAuthCsrfSecret = randomBytes(32).toString('hex');
+    await session.save();
+  }
+  return session.mcpOAuthCsrfSecret;
 }
 
 export async function GET(req: NextRequest) {
@@ -67,14 +73,27 @@ export async function GET(req: NextRequest) {
     return new NextResponse(admin.error, { status: 403, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  const html = renderConsentPageHtml(result.pending, admin.user);
+  const sessionCsrfSecret = await ensureSessionCsrfSecret();
+  const formCsrfToken = computeConsentCsrfToken(
+    sessionCsrfSecret,
+    result.pending.requestId,
+    result.pending.csrfToken,
+  );
+  const html = renderConsentPageHtml(result.pending, admin.user, formCsrfToken);
   return new NextResponse(html, {
     status: 200,
-    headers: buildConsentHtmlHeaders(result.pending.csrfToken),
+    headers: buildConsentHtmlHeaders(),
   });
 }
 
 export async function POST(req: NextRequest) {
+  if (!isSameOriginConsentSubmission(req, APP_BASE_URL)) {
+    return new NextResponse('Cross-origin authorization consent submission rejected', {
+      status: 403,
+      headers: { 'Cache-Control': 'no-store' },
+    });
+  }
+
   const admin = await requireReviewAdmin();
   if (!admin.authorized) {
     return new NextResponse(admin.error, { status: 403, headers: { 'Cache-Control': 'no-store' } });
@@ -88,17 +107,17 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  const session = await getSession();
+  const sessionCsrfSecret = session.mcpOAuthCsrfSecret || '';
   const form = new URLSearchParams(await req.text());
   const requestId = (form.get('request_id') || '').trim();
   const csrfToken = (form.get('csrf_token') || '').trim();
   const decision = (form.get('decision') || '').trim();
-  const csrfCookie = req.cookies.get(OAUTH_CSRF_COOKIE_NAME)?.value || '';
 
   if (
     !/^[a-f0-9]{32}$/.test(requestId) ||
-    !csrfToken ||
-    !csrfCookie ||
-    !timingSafeEqualStrings(csrfToken, csrfCookie)
+    !/^[a-f0-9]{64}$/.test(sessionCsrfSecret) ||
+    !/^[a-f0-9]{64}$/.test(csrfToken)
   ) {
     return new NextResponse('Invalid or missing CSRF token', {
       status: 403,
@@ -114,7 +133,9 @@ export async function POST(req: NextRequest) {
       headers: { 'Cache-Control': 'no-store' },
     });
   }
-  if (!timingSafeEqualStrings(existing.csrfToken, csrfToken)) {
+
+  const expectedCsrf = computeConsentCsrfToken(sessionCsrfSecret, existing.requestId, existing.csrfToken);
+  if (!timingSafeEqualStrings(expectedCsrf, csrfToken)) {
     return new NextResponse('CSRF token mismatch', {
       status: 403,
       headers: { 'Cache-Control': 'no-store' },
@@ -131,7 +152,6 @@ export async function POST(req: NextRequest) {
 
   const headers = new Headers({
     'Cache-Control': 'no-store',
-    'Set-Cookie': clearCsrfCookieHeader(),
   });
 
   if (decision !== 'approve') {
