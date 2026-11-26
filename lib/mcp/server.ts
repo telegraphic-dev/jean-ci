@@ -35,6 +35,13 @@ import type { RunPRReviewOptions } from '../pr-review.ts';
 import { validateReviewPrompt } from '../review-output.ts';
 import { REVIEW_INSPECTOR_URI, registerJeanCiAppResources } from './apps.ts';
 import {
+  createDbMcpEventsStore,
+  registerMcpEventsExtension,
+  validateMcpEventsRoutingHeaders,
+  type McpEventsStore,
+  type WebhookDeliverFn,
+} from './events.ts';
+import {
   MCP_SERVER_DESCRIPTION,
   MCP_SERVER_NAME,
   MCP_SERVER_TITLE,
@@ -82,6 +89,9 @@ export interface JeanCiMcpDeps {
   baseUrl: string;
   taskStore: McpTaskStore;
   taskAbortRegistry: McpTaskAbortRegistry;
+  eventsStore: McpEventsStore;
+  deliverEventWebhook?: WebhookDeliverFn;
+  eventRetryDelaysMs?: number[];
   getRepo: (fullName: string) => Promise<Repo | null>;
   getReposWithActivity: () => Promise<RepoWithActivity[]>;
   getOpenPRsFromEvents: () => Promise<OpenPR[]>;
@@ -141,11 +151,13 @@ let defaultDepsCache: JeanCiMcpDeps | null = null;
 export function createDefaultMcpDeps(): JeanCiMcpDeps {
   if (defaultDepsCache) return defaultDepsCache;
   const taskStore = createDbMcpTaskStore();
+  const eventsStore = createDbMcpEventsStore();
 
   defaultDepsCache = {
     baseUrl: APP_BASE_URL,
     taskStore,
     taskAbortRegistry: defaultMcpTaskAbortRegistry,
+    eventsStore,
     getRepo: async (fullName) => (await import('../db.ts')).getRepo(fullName),
     getReposWithActivity: async () => (await import('../db.ts')).getReposWithActivity(),
     getOpenPRsFromEvents: async () => (await import('../db.ts')).getOpenPRsFromEvents(),
@@ -424,6 +436,20 @@ export async function createJeanCiMcpServer(
   // 3. Official Extension: Skills over MCP (io.modelcontextprotocol/skills)
   const skillCatalog = await getJeanCiSkillCatalog();
   skillCatalog.attach(server);
+
+  // 4. Official Extension: MCP Events (io.modelcontextprotocol/events — SEP-3415)
+  const oauthTokenFamilyId =
+    typeof requestCtx?.authInfo?.extra?.oauthFamilyId === 'string'
+      ? requestCtx.authInfo.extra.oauthFamilyId
+      : null;
+  registerMcpEventsExtension(server, {
+    store: deps.eventsStore,
+    principal: ownerSubject,
+    oauthTokenFamilyId,
+    canRead: hasReadScope,
+    deliverWebhook: deps.deliverEventWebhook,
+    retryDelaysMs: deps.eventRetryDelaysMs,
+  });
 
   // =========================================================================
   // TOOLS (registered in deterministic alphabetical order for prompt caching)
@@ -2065,6 +2091,9 @@ export function createJeanCiMcpHandler(partialDeps?: Partial<JeanCiMcpDeps>): Mc
 
       const taskSubError = await checkTaskSubscriptionCapability(request);
       if (taskSubError) return taskSubError;
+
+      const eventsHeaderError = await validateMcpEventsRoutingHeaders(request);
+      if (eventsHeaderError) return eventsHeaderError;
 
       return inner.fetch(request, options);
     },

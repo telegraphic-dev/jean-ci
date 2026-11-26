@@ -109,6 +109,10 @@ export interface RunPRReviewOptions {
   isCancelled?: () => boolean | Promise<boolean>;
   onCheckCreated?: (info: { dbId: number; checkName: string; githubCheckId: number }) => void | Promise<void>;
   onCheckCompleted?: (info: { dbId: number; checkName: string; conclusion: 'success' | 'failure' | 'neutral'; title: string }) => void | Promise<void>;
+  /** Optional MCP Events store override (primarily for testing). */
+  mcpEventsStore?: import('./mcp/events.ts').McpEventsStore;
+  /** Optional observer for emitted MCP Events (primarily for testing). */
+  onMcpEvent?: (event: { eventId: string; name: string; data: Record<string, unknown> }) => void | Promise<void>;
 }
 
 export async function runPRReview(
@@ -127,6 +131,43 @@ export async function runPRReview(
       return Boolean(await options.isCancelled());
     } catch {
       return false;
+    }
+  };
+
+  const repoFullName = `${owner}/${repo}`;
+  const checkIdentityByDbId = new Map<number, string>();
+  const completedChecksForEvents: Array<{
+    checkId: number;
+    checkName: string;
+    checkIdentity: string | null;
+    conclusion: 'success' | 'failure' | 'neutral';
+  }> = [];
+
+  const emitMcpEvent = async (
+    eventInput: {
+      eventId: string;
+      name: 'pr_review.completed' | 'pr_review.check_completed' | 'pr_review.approval_required';
+      repo?: string | null;
+      prNumber?: number | null;
+      conclusion?: string | null;
+      checkName?: string | null;
+      data: Record<string, unknown>;
+    },
+  ) => {
+    try {
+      if (options?.onMcpEvent) {
+        await options.onMcpEvent({
+          eventId: eventInput.eventId,
+          name: eventInput.name,
+          data: eventInput.data,
+        });
+      }
+      if (options?.mcpEventsStore || process.env.DATABASE_URL) {
+        const { emitPrReviewMcpEventSafely } = await import('./mcp/events.ts');
+        await emitPrReviewMcpEventSafely(eventInput, options?.mcpEventsStore);
+      }
+    } catch (eventErr: any) {
+      console.warn(`Ignoring MCP event emission error (${eventInput.name}):`, eventErr?.message || eventErr);
     }
   };
 
@@ -156,8 +197,33 @@ export async function runPRReview(
         console.warn(`Ignoring onCheckCompleted callback failure for check "${checkName}" (db: ${dbIdArg}):`, callbackError?.message || callbackError);
       }
     }
+    if (checkName) {
+      const checkIdentity = checkIdentityByDbId.get(dbIdArg) ?? null;
+      completedChecksForEvents.push({
+        checkId: dbIdArg,
+        checkName,
+        checkIdentity,
+        conclusion: payload.conclusion,
+      });
+      try {
+        const { buildPrReviewCheckCompletedPayload } = await import('./mcp/events.ts');
+        await emitMcpEvent(
+          buildPrReviewCheckCompletedPayload({
+            checkId: dbIdArg,
+            repo: repoFullName,
+            prNumber,
+            headSha,
+            checkName,
+            checkIdentity,
+            conclusion: payload.conclusion,
+            baseUrl: BASE_URL,
+          }),
+        );
+      } catch (eventErr: any) {
+        console.warn(`Ignoring pr_review.check_completed event error for check "${checkName}" (db: ${dbIdArg}):`, eventErr?.message || eventErr);
+      }
+    }
   };
-  const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
 
   if (!repoConfig || !repoConfig.pr_review_enabled) {
@@ -246,6 +312,7 @@ export async function runPRReview(
       const checkRun = await createCheck(octokit, owner, repo, `jean-ci / ${check.name}`, headSha, 'queued');
       await setCheckRunGithubId(dbId, checkRun.id);
 
+      checkIdentityByDbId.set(dbId, check.identity);
       checkRuns.push({ check, checkRun, dbId });
       if (options?.onCheckCreated) {
         try {
@@ -317,6 +384,7 @@ export async function runPRReview(
         }
         await restart?.assertOwner?.();
         let approvalWaitReported = false;
+        let approvalEventEmitted = false;
         const result = await callOpenClaw(check.prompt, reviewContext.context, {
           owner,
           repo,
@@ -347,6 +415,24 @@ export async function runPRReview(
             // Only a link and server-owned repo/SHA are sent, never tool text.
             const { notifyReviewApproval } = await import('./review-approvals.ts');
             await notifyReviewApproval(dbId);
+            if (!approvalEventEmitted) {
+              approvalEventEmitted = true;
+              try {
+                const { buildPrReviewApprovalRequiredPayload } = await import('./mcp/events.ts');
+                await emitMcpEvent(
+                  buildPrReviewApprovalRequiredPayload({
+                    checkId: dbId,
+                    repo: repoFullName,
+                    prNumber,
+                    headSha,
+                    checkName: check.name,
+                    baseUrl: BASE_URL,
+                  }),
+                );
+              } catch (eventErr: any) {
+                console.warn(`Ignoring pr_review.approval_required event error (db: ${dbId}):`, eventErr?.message || eventErr);
+              }
+            }
           },
         });
         if (!result.success) {
@@ -454,6 +540,23 @@ export async function runPRReview(
       } catch (updateError: any) {
         console.error('Failed to update check status:', updateError.message);
       }
+    }
+  }
+
+  if (completedChecksForEvents.length > 0) {
+    try {
+      const { buildPrReviewCompletedPayload } = await import('./mcp/events.ts');
+      await emitMcpEvent(
+        buildPrReviewCompletedPayload({
+          repo: repoFullName,
+          prNumber,
+          headSha,
+          checks: completedChecksForEvents,
+          baseUrl: BASE_URL,
+        }),
+      );
+    } catch (eventErr: any) {
+      console.warn(`Ignoring pr_review.completed event error for ${repoFullName}#${prNumber}:`, eventErr?.message || eventErr);
     }
   }
 }

@@ -332,6 +332,53 @@ export async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_tokens_family ON jean_ci_mcp_oauth_tokens(family_id);
       CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_tokens_code ON jean_ci_mcp_oauth_tokens(source_code_hash);
       CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_tokens_expires ON jean_ci_mcp_oauth_tokens(expires_at);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_events (
+        id BIGSERIAL PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        repo TEXT,
+        pr_number INTEGER,
+        conclusion TEXT,
+        check_name TEXT,
+        data JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_events_name_id ON jean_ci_mcp_events(name, id);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_events_created_at ON jean_ci_mcp_events(created_at);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_event_subscriptions (
+        subscription_key_hash TEXT PRIMARY KEY,
+        subscription_id TEXT NOT NULL UNIQUE,
+        principal TEXT NOT NULL,
+        oauth_token_family_id TEXT,
+        event_name TEXT NOT NULL,
+        arguments_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+        callback_url TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        previous_secret TEXT,
+        previous_secret_expires_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ NOT NULL,
+        last_cursor_id BIGINT NOT NULL DEFAULT 0,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        last_delivery_at TIMESTAMPTZ,
+        last_error TEXT,
+        failed_since TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_event_subs_event_active ON jean_ci_mcp_event_subscriptions(event_name, active, expires_at);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_event_subs_principal ON jean_ci_mcp_event_subscriptions(principal);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_event_verified_endpoints (
+        principal TEXT NOT NULL,
+        callback_url TEXT NOT NULL,
+        verified_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (principal, callback_url)
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_event_verified_expires ON jean_ci_mcp_event_verified_endpoints(expires_at);
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -3043,5 +3090,329 @@ export async function cleanupExpiredMcpOAuth(): Promise<number> {
   ]);
   return (p.rowCount || 0) + (c.rowCount || 0) + (t.rowCount || 0);
 }
+
+// =============================================================================
+// MCP Events (io.modelcontextprotocol/events — SEP-3415)
+// =============================================================================
+
+export interface McpEventDbRecord {
+  id: string | number;
+  event_id: string;
+  name: string;
+  repo: string | null;
+  pr_number: number | null;
+  conclusion: string | null;
+  check_name: string | null;
+  data: Record<string, unknown>;
+  created_at: Date;
+}
+
+export interface McpEventSubscriptionDbRecord {
+  subscription_key_hash: string;
+  subscription_id: string;
+  principal: string;
+  oauth_token_family_id: string | null;
+  event_name: string;
+  arguments_json: Record<string, unknown>;
+  callback_url: string;
+  secret: string;
+  previous_secret: string | null;
+  previous_secret_expires_at: Date | null;
+  expires_at: Date;
+  last_cursor_id: string | number;
+  active: boolean;
+  consecutive_failures: number;
+  last_delivery_at: Date | null;
+  last_error: string | null;
+  failed_since: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export async function insertMcpEvent(data: {
+  eventId: string;
+  name: string;
+  repo?: string | null;
+  prNumber?: number | null;
+  conclusion?: string | null;
+  checkName?: string | null;
+  payload: Record<string, unknown>;
+}): Promise<McpEventDbRecord> {
+  const result = await pool.query<McpEventDbRecord>(
+    `INSERT INTO jean_ci_mcp_events (event_id, name, repo, pr_number, conclusion, check_name, data)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+     ON CONFLICT (event_id) DO UPDATE SET event_id = EXCLUDED.event_id
+     RETURNING *`,
+    [
+      data.eventId,
+      data.name,
+      data.repo ?? null,
+      data.prNumber ?? null,
+      data.conclusion ?? null,
+      data.checkName ?? null,
+      JSON.stringify(data.payload),
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function getMcpEventStreamBounds(): Promise<{ latestId: number; oldestId: number | null }> {
+  const result = await pool.query<{ latest_id: string | null; oldest_id: string | null }>(
+    `SELECT
+       COALESCE((SELECT MAX(id) FROM jean_ci_mcp_events), 0) AS latest_id,
+       (SELECT MIN(id) FROM jean_ci_mcp_events) AS oldest_id`,
+  );
+  const row = result.rows[0];
+  return {
+    latestId: Number(row?.latest_id || 0),
+    oldestId: row?.oldest_id !== null && row?.oldest_id !== undefined ? Number(row.oldest_id) : null,
+  };
+}
+
+export async function queryMcpEvents(params: {
+  name: string;
+  afterId: number;
+  minCreatedAt?: Date | null;
+  repo?: string;
+  prNumber?: number;
+  conclusion?: string;
+  checkName?: string;
+  limit: number;
+}): Promise<McpEventDbRecord[]> {
+  const where: string[] = ['name = $1', 'id > $2'];
+  const values: unknown[] = [params.name, params.afterId];
+  let idx = 3;
+
+  if (params.minCreatedAt) {
+    where.push(`created_at >= $${idx++}`);
+    values.push(params.minCreatedAt);
+  }
+  if (params.repo) {
+    where.push(`repo = $${idx++}`);
+    values.push(params.repo);
+  }
+  if (params.prNumber !== undefined) {
+    where.push(`pr_number = $${idx++}`);
+    values.push(params.prNumber);
+  }
+  if (params.conclusion) {
+    where.push(`conclusion = $${idx++}`);
+    values.push(params.conclusion);
+  }
+  if (params.checkName) {
+    where.push(`LOWER(check_name) = LOWER($${idx++})`);
+    values.push(params.checkName);
+  }
+
+  values.push(params.limit);
+  const result = await pool.query<McpEventDbRecord>(
+    `SELECT * FROM jean_ci_mcp_events
+     WHERE ${where.join(' AND ')}
+     ORDER BY id ASC
+     LIMIT $${idx}`,
+    values,
+  );
+  return result.rows;
+}
+
+export async function hasSkippedMcpEventsBeforeFloor(params: {
+  name: string;
+  afterId: number;
+  minCreatedAt: Date;
+}): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM jean_ci_mcp_events
+       WHERE name = $1 AND id > $2 AND created_at < $3
+     ) AS exists`,
+    [params.name, params.afterId, params.minCreatedAt],
+  );
+  return Boolean(result.rows[0]?.exists);
+}
+
+export async function getMcpEventSubscriptionByKeyHash(
+  keyHash: string,
+): Promise<McpEventSubscriptionDbRecord | null> {
+  const result = await pool.query<McpEventSubscriptionDbRecord>(
+    `SELECT * FROM jean_ci_mcp_event_subscriptions WHERE subscription_key_hash = $1`,
+    [keyHash],
+  );
+  return result.rows[0] || null;
+}
+
+export async function countActiveMcpEventSubscriptionsForPrincipal(principal: string): Promise<number> {
+  const result = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count
+     FROM jean_ci_mcp_event_subscriptions
+     WHERE principal = $1 AND expires_at > NOW()`,
+    [principal],
+  );
+  return Number(result.rows[0]?.count || 0);
+}
+
+export async function upsertMcpEventSubscription(data: {
+  subscriptionKeyHash: string;
+  subscriptionId: string;
+  principal: string;
+  oauthTokenFamilyId: string | null;
+  eventName: string;
+  argumentsJson: Record<string, unknown>;
+  callbackUrl: string;
+  secret: string;
+  previousSecret: string | null;
+  previousSecretExpiresAt: Date | null;
+  expiresAt: Date;
+  lastCursorId: number;
+}): Promise<McpEventSubscriptionDbRecord> {
+  const result = await pool.query<McpEventSubscriptionDbRecord>(
+    `INSERT INTO jean_ci_mcp_event_subscriptions (
+       subscription_key_hash, subscription_id, principal, oauth_token_family_id,
+       event_name, arguments_json, callback_url, secret,
+       previous_secret, previous_secret_expires_at, expires_at,
+       last_cursor_id, active, consecutive_failures, updated_at
+     )
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, TRUE, 0, CURRENT_TIMESTAMP)
+     ON CONFLICT (subscription_key_hash) DO UPDATE SET
+       oauth_token_family_id = EXCLUDED.oauth_token_family_id,
+       secret = EXCLUDED.secret,
+       previous_secret = EXCLUDED.previous_secret,
+       previous_secret_expires_at = EXCLUDED.previous_secret_expires_at,
+       expires_at = EXCLUDED.expires_at,
+       last_cursor_id = GREATEST(jean_ci_mcp_event_subscriptions.last_cursor_id, EXCLUDED.last_cursor_id),
+       active = TRUE,
+       consecutive_failures = 0,
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING *`,
+    [
+      data.subscriptionKeyHash,
+      data.subscriptionId,
+      data.principal,
+      data.oauthTokenFamilyId,
+      data.eventName,
+      JSON.stringify(data.argumentsJson),
+      data.callbackUrl,
+      data.secret,
+      data.previousSecret,
+      data.previousSecretExpiresAt,
+      data.expiresAt,
+      data.lastCursorId,
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function deleteMcpEventSubscriptionByKeyHash(keyHash: string): Promise<boolean> {
+  const result = await pool.query(
+    `DELETE FROM jean_ci_mcp_event_subscriptions WHERE subscription_key_hash = $1`,
+    [keyHash],
+  );
+  return (result.rowCount || 0) > 0;
+}
+
+export async function listActiveMcpEventSubscriptionsByEventName(
+  eventName: string,
+): Promise<McpEventSubscriptionDbRecord[]> {
+  const result = await pool.query<McpEventSubscriptionDbRecord>(
+    `SELECT * FROM jean_ci_mcp_event_subscriptions
+     WHERE event_name = $1 AND active = TRUE AND expires_at > NOW()
+     ORDER BY created_at ASC`,
+    [eventName],
+  );
+  return result.rows;
+}
+
+export async function updateMcpEventSubscriptionDeliveryStatus(params: {
+  subscriptionKeyHash: string;
+  active: boolean;
+  consecutiveFailures: number;
+  lastDeliveryAt?: Date | null;
+  lastError: string | null;
+  failedSince?: Date | null;
+  lastCursorId?: number;
+}): Promise<void> {
+  await pool.query(
+    `UPDATE jean_ci_mcp_event_subscriptions
+     SET active = $2,
+         consecutive_failures = $3,
+         last_delivery_at = COALESCE($4, last_delivery_at),
+         last_error = $5,
+         failed_since = $6,
+         last_cursor_id = GREATEST(last_cursor_id, COALESCE($7, last_cursor_id)),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE subscription_key_hash = $1`,
+    [
+      params.subscriptionKeyHash,
+      params.active,
+      params.consecutiveFailures,
+      params.lastDeliveryAt ?? null,
+      params.lastError,
+      params.failedSince ?? null,
+      params.lastCursorId ?? null,
+    ],
+  );
+}
+
+export async function isMcpEventEndpointVerified(
+  principal: string,
+  callbackUrl: string,
+): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM jean_ci_mcp_event_verified_endpoints
+       WHERE principal = $1 AND callback_url = $2 AND expires_at > NOW()
+     ) AS exists`,
+    [principal, callbackUrl],
+  );
+  return Boolean(result.rows[0]?.exists);
+}
+
+export async function markMcpEventEndpointVerified(
+  principal: string,
+  callbackUrl: string,
+  expiresAt: Date,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO jean_ci_mcp_event_verified_endpoints (principal, callback_url, verified_at, expires_at)
+     VALUES ($1, $2, CURRENT_TIMESTAMP, $3)
+     ON CONFLICT (principal, callback_url) DO UPDATE SET
+       verified_at = CURRENT_TIMESTAMP,
+       expires_at = EXCLUDED.expires_at`,
+    [principal, callbackUrl, expiresAt],
+  );
+}
+
+export async function hasActiveMcpOAuthFamily(familyId: string): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM jean_ci_mcp_oauth_tokens
+       WHERE family_id = $1 AND revoked_at IS NULL AND expires_at > NOW()
+     ) AS exists`,
+    [familyId],
+  );
+  return Boolean(result.rows[0]?.exists);
+}
+
+export async function isApiTokenActive(tokenId: number): Promise<boolean> {
+  const result = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM jean_ci_api_tokens
+       WHERE id = $1 AND revoked_at IS NULL
+     ) AS exists`,
+    [tokenId],
+  );
+  return Boolean(result.rows[0]?.exists);
+}
+
+export async function cleanupExpiredMcpEvents(retentionDays = 14): Promise<number> {
+  const [e, s, v] = await Promise.all([
+    pool.query(`DELETE FROM jean_ci_mcp_events WHERE created_at < NOW() - ($1 || ' days')::INTERVAL`, [
+      Math.max(1, Math.floor(retentionDays)),
+    ]),
+    pool.query(`DELETE FROM jean_ci_mcp_event_subscriptions WHERE expires_at <= NOW()`),
+    pool.query(`DELETE FROM jean_ci_mcp_event_verified_endpoints WHERE expires_at <= NOW()`),
+  ]);
+  return (e.rowCount || 0) + (s.rowCount || 0) + (v.rowCount || 0);
+}
+
 
 

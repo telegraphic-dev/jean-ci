@@ -12,7 +12,7 @@ export async function register() {
     console.log(`${'='.repeat(50)}\n`);
     
     try {
-      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, cleanupExpiredMcpOAuth, reconcileInterruptedMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
+      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, cleanupExpiredMcpOAuth, cleanupExpiredMcpEvents, reconcileInterruptedMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
       const startupStartedAt = new Date();
       // Initialize database
@@ -50,16 +50,18 @@ export async function register() {
         console.log(`Recovered interrupted checks: ${JSON.stringify(recovery)}`);
       }
       
-      // Cleanup old events, expired MCP tasks, and expired MCP OAuth records
+      // Cleanup old events, expired MCP tasks, MCP OAuth records, and MCP Events records
       await cleanupOldEvents();
       await cleanupExpiredMcpTasks();
       await cleanupExpiredMcpOAuth();
+      await cleanupExpiredMcpEvents();
       
       // Schedule periodic cleanup (every hour)
       setInterval(() => {
         cleanupOldEvents().catch(console.error);
         cleanupExpiredMcpTasks().catch(console.error);
         cleanupExpiredMcpOAuth().catch(console.error);
+        cleanupExpiredMcpEvents().catch(console.error);
       }, 60 * 60 * 1000);
 
       // Retry recovery if GitHub or installation authentication was temporarily unavailable at startup.

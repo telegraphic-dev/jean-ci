@@ -1595,6 +1595,7 @@ export async function authenticateMcpOAuthToken(
         actor: `github:${record.userLogin}`,
         userId: record.userId,
         oauthClientId: record.clientId,
+        oauthFamilyId: record.familyId,
         resource: record.resource,
       },
     },
