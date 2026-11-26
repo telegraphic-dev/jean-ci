@@ -1737,57 +1737,63 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
     let replayEvents: McpEventRecord[] = [];
     let watermarkId = saved.lastCursorId;
 
-    if (replayFromSeq !== null) {
-      const bounds = await store.getStreamBounds();
-      let effectiveAfterId = saved.lastCursorId;
-      if (bounds.oldestId !== null && effectiveAfterId > 0 && effectiveAfterId < bounds.oldestId - 1) {
+    // Always run post-install catch-up from saved.lastCursorId — even for fresh cursorless
+    // subscriptions — so an event published between the pre-upsert bounds read and subscription
+    // installation cannot be missed or stall subsequent watermark advancement.
+    const bounds = await store.getStreamBounds();
+    let effectiveAfterId = saved.lastCursorId;
+    if (
+      replayFromSeq !== null &&
+      bounds.oldestId !== null &&
+      effectiveAfterId > 0 &&
+      effectiveAfterId < bounds.oldestId - 1
+    ) {
+      truncated = true;
+      effectiveAfterId = bounds.oldestId - 1;
+    }
+    let minCreatedAt: Date | null = null;
+    if (replayFromSeq !== null && params.maxAgeMs !== undefined) {
+      minCreatedAt = new Date(Date.now() - params.maxAgeMs);
+      if (
+        !truncated &&
+        (await store.hasSkippedEventsBeforeFloor({
+          name: params.name,
+          afterId: effectiveAfterId,
+          minCreatedAt,
+        }))
+      ) {
         truncated = true;
-        effectiveAfterId = bounds.oldestId - 1;
       }
-      let minCreatedAt: Date | null = null;
-      if (params.maxAgeMs !== undefined) {
-        minCreatedAt = new Date(Date.now() - params.maxAgeMs);
-        if (
-          !truncated &&
-          (await store.hasSkippedEventsBeforeFloor({
-            name: params.name,
-            afterId: effectiveAfterId,
-            minCreatedAt,
-          }))
-        ) {
-          truncated = true;
-        }
-      }
-      // Query the NEWEST permitted window (DESC) AFTER the subscription is installed so no event
-      // can fall between historical replay and live delivery.
-      const newestDesc = await store.queryEvents({
-        name: params.name,
-        afterId: effectiveAfterId,
-        minCreatedAt,
-        repo: typeof validatedArgs.repo === 'string' ? validatedArgs.repo : undefined,
-        prNumber: typeof validatedArgs.prNumber === 'number' ? validatedArgs.prNumber : undefined,
-        conclusion: typeof validatedArgs.conclusion === 'string' ? validatedArgs.conclusion : undefined,
-        checkName: typeof validatedArgs.checkName === 'string' ? validatedArgs.checkName : undefined,
-        limit: DEFAULT_MAX_EVENTS + 1,
-        order: 'desc',
-      });
-      if (newestDesc.length > DEFAULT_MAX_EVENTS) {
-        truncated = true;
-        replayEvents = newestDesc.slice(0, DEFAULT_MAX_EVENTS).reverse();
-      } else {
-        replayEvents = newestDesc.reverse();
-      }
-      // Preserve safe-to-persist watermark:
-      // - If matching events are pending delivery, do not advance past the first unacknowledged event.
-      // - If no matching events exist in (effectiveAfterId, bounds.latestId], safely advance during quiet periods.
-      if (replayEvents.length > 0) {
-        watermarkId = truncated ? Math.max(effectiveAfterId, replayEvents[0].id - 1) : effectiveAfterId;
-      } else {
-        watermarkId = Math.max(effectiveAfterId, bounds.latestId);
-      }
-      if (watermarkId > saved.lastCursorId) {
-        await store.advanceSubscriptionCursor(saved.subscriptionKeyHash, watermarkId);
-      }
+    }
+    // Query the NEWEST permitted window (DESC) AFTER the subscription is installed so no event
+    // can fall between catch-up replay and live delivery.
+    const newestDesc = await store.queryEvents({
+      name: params.name,
+      afterId: effectiveAfterId,
+      minCreatedAt,
+      repo: typeof validatedArgs.repo === 'string' ? validatedArgs.repo : undefined,
+      prNumber: typeof validatedArgs.prNumber === 'number' ? validatedArgs.prNumber : undefined,
+      conclusion: typeof validatedArgs.conclusion === 'string' ? validatedArgs.conclusion : undefined,
+      checkName: typeof validatedArgs.checkName === 'string' ? validatedArgs.checkName : undefined,
+      limit: DEFAULT_MAX_EVENTS + 1,
+      order: 'desc',
+    });
+    if (newestDesc.length > DEFAULT_MAX_EVENTS) {
+      truncated = true;
+      replayEvents = newestDesc.slice(0, DEFAULT_MAX_EVENTS).reverse();
+    } else {
+      replayEvents = newestDesc.reverse();
+    }
+    // Preserve safe-to-persist watermark:
+    // - If matching events are pending delivery, do not advance past the first unacknowledged event.
+    // - If no matching events exist in (effectiveAfterId, bounds.latestId], safely advance during quiet periods.
+    if (replayEvents.length > 0) {
+      watermarkId = truncated ? Math.max(effectiveAfterId, replayEvents[0].id - 1) : effectiveAfterId;
+    } else {
+      watermarkId = Math.max(effectiveAfterId, bounds.latestId);
+    }
+    if (watermarkId > saved.lastCursorId) {
+      await store.advanceSubscriptionCursor(saved.subscriptionKeyHash, watermarkId);
     }
 
     if (replayEvents.length > 0) {

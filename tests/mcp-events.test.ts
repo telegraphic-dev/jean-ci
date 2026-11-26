@@ -1728,6 +1728,63 @@ test('concurrent subscribe requests cannot bypass per-principal quota and concur
   ).subscriptionKeyHash;
   const finalGapSub = await gapStore.getSubscriptionByKeyHash(gapKeyHash);
   assert.equal(finalGapSub?.lastCursorId, 2);
+
+  // 3) Fresh cursorless subscription also catches an event published between pre-upsert bounds read and upsert
+  const cursorlessStore = new InMemoryMcpEventsStore();
+  const cursorlessDelivered: number[] = [];
+  const cursorlessDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber !== undefined) cursorlessDelivered.push(parsed.data.prNumber);
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  let injectedBeforeUpsert = false;
+  const origUpsertCursorless = cursorlessStore.upsertSubscription.bind(cursorlessStore);
+  cursorlessStore.upsertSubscription = async (input) => {
+    if (!injectedBeforeUpsert) {
+      injectedBeforeUpsert = true;
+      // Publish PR #50 right after initial bounds (0) were read and right BEFORE subscription is installed
+      await publishMcpEvent(
+        cursorlessStore,
+        buildPrReviewCompletedPayload({
+          repo: 'telegraphic-dev/jean-ci',
+          prNumber: 50,
+          headSha: '5'.repeat(40),
+          checks: [{ checkId: 50, checkName: 'Code Review', conclusion: 'success' }],
+          baseUrl: 'https://jean-ci.example.com',
+        }),
+        { deliverWebhook: cursorlessDeliverFn, retryDelaysMs: [0], awaitDeliveries: true },
+      );
+    }
+    return origUpsertCursorless(input);
+  };
+  const cursorlessHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: cursorlessStore,
+    deliverEventWebhook: cursorlessDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+  const cursorlessUrl = 'https://hooks.cursorless-gap.example/mcp';
+  const cursorlessRes = await callEventsRpc(cursorlessHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url: cursorlessUrl, secret },
+  });
+  assert.equal(cursorlessRes.json.error, undefined);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(injectedBeforeUpsert, true);
+  assert.deepEqual(cursorlessDelivered, [50]);
+  const cursorlessKeyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    cursorlessUrl,
+    'pr_review.completed',
+    {},
+  ).subscriptionKeyHash;
+  const finalCursorlessSub = await cursorlessStore.getSubscriptionByKeyHash(cursorlessKeyHash);
+  assert.equal(finalCursorlessSub?.lastCursorId, 1);
 });
 
 
