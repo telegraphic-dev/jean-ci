@@ -418,7 +418,7 @@ export function buildReviewInspectorHtml(): string {
       });
       var btnRetrigger = document.getElementById('btn-retrigger');
       if (btnRetrigger) btnRetrigger.addEventListener('click', function () {
-        callTool('retrigger_pr_review', { repo: c.repo, prNumber: c.prNumber, checkNames: [c.checkName] });
+        callTool('retrigger_pr_review', { checkId: c.id, onlyThisCheck: true });
       });
     } else if (state.mode === 'pr') {
       var pr = state.data;

@@ -443,6 +443,7 @@ test('tools/list returns deterministic tool order and MCP Apps UI metadata', asy
   assert.match(uiContent.text, /ui\/initialize/);
   assert.match(uiContent.text, /ui\/notifications\/tool-result/);
   assert.match(uiContent.text, /retrigger_pr_review/);
+  assert.match(uiContent.text, /checkId:\s*c\.id,\s*onlyThisCheck:\s*true/);
 });
 
 test('inspecting open PRs, PR reviews, check details, and check definitions works accurately', async () => {
