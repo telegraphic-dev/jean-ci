@@ -12,7 +12,7 @@ export async function register() {
     console.log(`${'='.repeat(50)}\n`);
     
     try {
-      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, reconcileInterruptedMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
+      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, cleanupExpiredMcpOAuth, reconcileInterruptedMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
       const startupStartedAt = new Date();
       // Initialize database
@@ -50,14 +50,16 @@ export async function register() {
         console.log(`Recovered interrupted checks: ${JSON.stringify(recovery)}`);
       }
       
-      // Cleanup old events and expired MCP tasks
+      // Cleanup old events, expired MCP tasks, and expired MCP OAuth records
       await cleanupOldEvents();
       await cleanupExpiredMcpTasks();
+      await cleanupExpiredMcpOAuth();
       
       // Schedule periodic cleanup (every hour)
       setInterval(() => {
         cleanupOldEvents().catch(console.error);
         cleanupExpiredMcpTasks().catch(console.error);
+        cleanupExpiredMcpOAuth().catch(console.error);
       }, 60 * 60 * 1000);
 
       // Retry recovery if GitHub or installation authentication was temporarily unavailable at startup.
@@ -69,7 +71,7 @@ export async function register() {
       
       console.log('');
       console.log(`📡 Webhook: ${APP_BASE_URL}/api/github/webhook`);
-      console.log(`🧩 MCP: ${APP_BASE_URL}/api/mcp (Server Card: ${APP_BASE_URL}/api/mcp/server-card)`);
+      console.log(`🧩 MCP: ${APP_BASE_URL}/mcp (OAuth: ${APP_BASE_URL}/.well-known/oauth-protected-resource/mcp, Server Card: ${APP_BASE_URL}/api/mcp/server-card)`);
       console.log(`🔑 App ID: ${process.env.GITHUB_APP_ID}`);
       console.log(`👤 Admin: ${process.env.ADMIN_GITHUB_ID || '(anyone)'}`);
       console.log(`🗄️  Database: PostgreSQL ✅`);

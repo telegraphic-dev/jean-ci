@@ -18,7 +18,7 @@ function normalizeBaseUrl(baseUrl?: string): string {
 
 export function buildMcpServerCard(baseUrl?: string) {
   const origin = normalizeBaseUrl(baseUrl);
-  const endpointUrl = `${origin}/api/mcp`;
+  const endpointUrl = `${origin}/mcp`;
   return {
     name: MCP_SERVER_NAME,
     title: MCP_SERVER_TITLE,
@@ -30,8 +30,11 @@ export function buildMcpServerCard(baseUrl?: string) {
         type: 'streamable-http',
         url: endpointUrl,
         authentication: {
-          type: 'bearer',
-          description: 'Jean CI Public API Bearer token (PUBLIC_API_TOKEN or Admin UI API token).',
+          type: 'oauth2',
+          protectedResourceMetadata: `${origin}/.well-known/oauth-protected-resource/mcp`,
+          authorizationServerMetadata: `${origin}/.well-known/oauth-authorization-server`,
+          description:
+            'Automatic MCP OAuth 2.1 (PKCE S256, DCR + CIMD, GitHub admin sign-in) or static Jean CI Public API Bearer token.',
         },
       },
     ],

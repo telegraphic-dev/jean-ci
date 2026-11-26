@@ -20,7 +20,7 @@ export function parsePaginationParams(
   return { page, limit, offset };
 }
 
-function parseBearerToken(req: NextRequest): string | null {
+export function parseBearerToken(req: NextRequest): string | null {
   const header = req.headers.get('authorization');
   if (!header) return null;
 

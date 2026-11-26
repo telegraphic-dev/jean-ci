@@ -361,6 +361,13 @@ export async function createJeanCiMcpServer(
   const actorLabel =
     (typeof requestCtx?.authInfo?.extra?.actor === 'string' && requestCtx.authInfo.extra.actor) ||
     ownerSubject;
+  const isOAuthCaller = requestCtx?.authInfo?.extra?.source === 'oauth';
+  const hasWriteScope =
+    !isOAuthCaller || Boolean(requestCtx?.authInfo?.scopes?.includes('mcp:write'));
+  const insufficientWriteScopeError = () =>
+    toolError(
+      'Insufficient OAuth scope: this action requires the "mcp:write" scope. Re-authorize your MCP client with "mcp:write".',
+    );
 
   const server = new McpServer(
     {
@@ -1106,6 +1113,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ checkId, reason }, ctx) => {
+      if (!hasWriteScope) return insufficientWriteScopeError();
       const checkRun = await deps.getCheckRun(checkId);
       if (!checkRun) {
         return toolError(`Check run #${checkId} not found.`);
@@ -1220,6 +1228,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ repo: inputRepo, prNumber: inputPrNumber, checkId, onlyThisCheck, checkNames, expectedHeadSha }) => {
+      if (!hasWriteScope) return insufficientWriteScopeError();
       let targetRepo = inputRepo;
       let targetPrNumber = inputPrNumber;
       let targetCheckNames = checkNames && checkNames.length > 0 ? [...checkNames] : undefined;
@@ -1500,6 +1509,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ repo, diff, headSha, ref, title, body, selectedChecks }) => {
+      if (!hasWriteScope) return insufficientWriteScopeError();
       const request: LocalReviewRequest = {
         repo,
         diff,

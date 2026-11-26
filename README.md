@@ -12,7 +12,7 @@ GitHub webhook handler for automated PR reviews with LLM assistance.
 - **GitHub Checks Integration**: Results appear as nested checks on PRs
 - **Admin Dashboard**: GitHub OAuth protected management interface
 - **Approval-aware Hermes Reviews**: When a reviewer tool needs permission, a deduplicated PR comment links directly to the authenticated review detail page for **Approve once** / **Deny**. The same run resumes; no approval bypass is enabled. See [tool approval setup and API](docs/review-tool-approvals.md).
-- **MCP Server (2026-07-28)**: Streamable HTTP MCP server at `/api/mcp` for inspecting, retriggering, overriding, and running local PR reviews, with MCP Apps UI, MCP Tasks, Skills over MCP, and Server Card discovery. See [MCP Server guide](docs/mcp-server.md).
+- **MCP Server (2026-07-28)**: Streamable HTTP MCP server at `/mcp` (with `/api/mcp` alias) featuring automatic OAuth 2.1 (PKCE, DCR + CIMD, GitHub admin sign-in), MCP Apps UI, MCP Tasks, Skills over MCP, and Server Card discovery. See [MCP Server guide](docs/mcp-server.md).
 
 ## Architecture
 

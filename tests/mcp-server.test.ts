@@ -828,7 +828,12 @@ test('MCP Server Card and AI Catalog conform to SEP-2127 with CORS, ETag, and 30
   assert.equal(card.version, MCP_SERVER_VERSION);
   assert.deepEqual(card.supportedVersions, [...MCP_SUPPORTED_VERSIONS]);
   assert.equal(card.remotes[0].type, 'streamable-http');
-  assert.equal(card.remotes[0].url, `${baseUrl}/api/mcp`);
+  assert.equal(card.remotes[0].url, `${baseUrl}/mcp`);
+  assert.equal(card.remotes[0].authentication.type, 'oauth2');
+  assert.equal(
+    card.remotes[0].authentication.protectedResourceMetadata,
+    `${baseUrl}/.well-known/oauth-protected-resource/mcp`,
+  );
 
   const catalog = buildAiCatalog(baseUrl);
   assert.equal(catalog.specVersion, '1.0');
