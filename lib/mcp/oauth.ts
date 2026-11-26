@@ -40,6 +40,7 @@ export const PENDING_AUTH_TTL_SEC = 600; // 10 minutes
 export const OAUTH_CSRF_COOKIE_NAME = 'jean-ci-mcp-oauth-csrf';
 
 const MAX_CIMD_BYTES = 64 * 1024;
+const MAX_OAUTH_STATE_LEN = 2048;
 const CIMD_TIMEOUT_MS = 5000;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
@@ -1144,6 +1145,14 @@ export async function createPendingAuthorization(
       errorDescription: 'redirect_uri is missing or does not match any registered redirect URI for this client.',
     };
   }
+  if (state !== null && state.length > MAX_OAUTH_STATE_LEN) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'invalid_request',
+      errorDescription: `state parameter exceeds maximum length of ${MAX_OAUTH_STATE_LEN} characters.`,
+    };
+  }
 
   // From here on, client_id and redirect_uri are verified — protocol errors redirect back to client.
   const fail = (error: string, errorDescription: string): PendingAuthResult => ({
@@ -1180,7 +1189,7 @@ export async function createPendingAuthorization(
     clientName: client.clientName,
     redirectUri,
     scope,
-    state: state ? state.slice(0, 1024) : null,
+    state: state || null,
     codeChallenge,
     codeChallengeMethod: 'S256',
     resource,

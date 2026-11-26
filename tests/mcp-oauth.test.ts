@@ -24,7 +24,7 @@ import {
   validateResourceIndicator,
 } from '../lib/mcp/oauth.ts';
 import { createJeanCiMcpHandler } from '../lib/mcp/server.ts';
-import { InMemoryMcpTaskStore, McpTaskAbortRegistry } from '../lib/mcp/tasks.ts';
+import { InMemoryMcpTaskStore, McpTaskAbortRegistry, createWorkingMcpTask } from '../lib/mcp/tasks.ts';
 
 function makePkcePair() {
   const verifier = randomBytes(32).toString('base64url');
@@ -623,4 +623,189 @@ test('concurrent authorization code replay and refresh rotation atomically revok
   );
   assert.equal(followUpRefresh.status, 400);
 });
+
+test('MCP server enforces mcp:read for write-only OAuth tokens and mcp:write for tasks/cancel', async () => {
+  const taskStore = new InMemoryMcpTaskStore();
+  const taskAbortRegistry = new McpTaskAbortRegistry();
+  let getCheckRunCalled = false;
+  let getReposCalled = false;
+
+  const handler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore,
+    taskAbortRegistry,
+    getCheckRun: async () => {
+      getCheckRunCalled = true;
+      return null;
+    },
+    getReposWithActivity: async () => {
+      getReposCalled = true;
+      return [{ full_name: 'telegraphic-dev/jean-ci', pr_review_enabled: true }] as never;
+    },
+    getOpenPRsFromEvents: async () => [],
+  });
+
+  const ownerSubject = 'oauth:42:client-1';
+  const writeOnlyOAuth: AuthInfo = {
+    token: 'redacted',
+    clientId: ownerSubject,
+    scopes: ['mcp:write'],
+    extra: { source: 'oauth', actor: 'github:musketyr' },
+  };
+  const readOnlyOAuth: AuthInfo = {
+    token: 'redacted',
+    clientId: ownerSubject,
+    scopes: ['mcp:read'],
+    extra: { source: 'oauth', actor: 'github:musketyr' },
+  };
+  const fullOAuth: AuthInfo = {
+    token: 'redacted',
+    clientId: ownerSubject,
+    scopes: ['mcp:read', 'mcp:write'],
+    extra: { source: 'oauth', actor: 'github:musketyr' },
+  };
+
+  // Seed an active working task owned by the same user/client
+  const activeTask = await createWorkingMcpTask(taskStore, {
+    ownerSubject,
+    toolName: 'retrigger_pr_review',
+    statusMessage: 'Running review',
+  });
+  taskAbortRegistry.register(activeTask.taskId);
+
+  const callRpc = async (method: string, params: Record<string, unknown>, authInfo: AuthInfo) => {
+    const reqHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      'MCP-Protocol-Version': '2026-07-28',
+      'Mcp-Method': method,
+    };
+    if (method === 'tools/call' && typeof params.name === 'string') {
+      reqHeaders['Mcp-Name'] = params.name;
+    } else if (method === 'resources/read' && typeof params.uri === 'string') {
+      reqHeaders['Mcp-Name'] = params.uri;
+    } else if (method.startsWith('tasks/') && typeof params.taskId === 'string') {
+      reqHeaders['Mcp-Name'] = params.taskId;
+    }
+    const res = await handler.fetch(
+      new Request('https://jean-ci.example.com/mcp', {
+        method: 'POST',
+        headers: reqHeaders,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method,
+          params: {
+            ...params,
+            _meta: {
+              'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+              'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1.0' },
+              'io.modelcontextprotocol/clientCapabilities': {
+                extensions: { 'io.modelcontextprotocol/tasks': {} },
+              },
+            },
+          },
+        }),
+      }),
+      { authInfo },
+    );
+    assert.equal(res.status, 200);
+    return (await res.json()) as {
+      result?: { isError?: boolean; content?: Array<{ text: string }>; completion?: { values: string[] } };
+      error?: { code: number; message: string };
+    };
+  };
+
+  // 1) Write-only OAuth token is blocked from read tools, private resources, private completions, and tasks/get
+  const readToolDenied = await callRpc('tools/call', { name: 'get_review_check', arguments: { checkId: 1 } }, writeOnlyOAuth);
+  assert.equal(readToolDenied.result?.isError, true);
+  assert.match(readToolDenied.result?.content?.[0]?.text || '', /mcp:read/i);
+
+  const resourceDenied = await callRpc('resources/read', { uri: 'jean-ci://checks/1' }, writeOnlyOAuth);
+  assert.ok(resourceDenied.error);
+  assert.match(resourceDenied.error.message, /mcp:read/i);
+
+  const reposResourceDenied = await callRpc('resources/read', { uri: 'jean-ci://repos' }, writeOnlyOAuth);
+  assert.ok(reposResourceDenied.error);
+  assert.match(reposResourceDenied.error.message, /mcp:read/i);
+
+  const completionDenied = await callRpc(
+    'completion/complete',
+    { ref: { type: 'ref/prompt', name: 'triage-pr-reviews' }, argument: { name: 'repo', value: 'tele' } },
+    writeOnlyOAuth,
+  );
+  assert.deepEqual(completionDenied.result?.completion?.values, []);
+
+  const taskGetDenied = await callRpc('tasks/get', { taskId: activeTask.taskId }, writeOnlyOAuth);
+  assert.ok(taskGetDenied.error);
+  assert.match(taskGetDenied.error.message, /mcp:read/i);
+
+  assert.equal(getCheckRunCalled, false);
+  assert.equal(getReposCalled, false);
+
+  // 2) Read-only OAuth token for the SAME user/client cannot cancel a running write task
+  const cancelDenied = await callRpc('tasks/cancel', { taskId: activeTask.taskId }, readOnlyOAuth);
+  assert.ok(cancelDenied.error);
+  assert.match(cancelDenied.error.message, /mcp:write/i);
+  assert.equal((await taskStore.get(activeTask.taskId))?.status, 'working');
+  assert.equal(taskAbortRegistry.isAborted(activeTask.taskId), false);
+
+  // 3) Write-capable OAuth token for the same user/client CAN cancel and abort the task
+  const cancelAllowed = await callRpc('tasks/cancel', { taskId: activeTask.taskId }, fullOAuth);
+  assert.equal(cancelAllowed.error, undefined);
+  assert.equal((await taskStore.get(activeTask.taskId))?.status, 'cancelled');
+  assert.equal(taskAbortRegistry.isAborted(activeTask.taskId), true);
+});
+
+test('OAuth authorization preserves state > 1024 chars verbatim and explicitly rejects oversized state', async () => {
+  const baseUrl = 'https://jean-ci.example.com';
+  const store = new InMemoryMcpOAuthStore();
+  const reg = await registerOAuthClient(store, {
+    client_name: 'Long State Client',
+    redirect_uris: ['http://127.0.0.1:43000/cb'],
+    token_endpoint_auth_method: 'none',
+  });
+  const clientId = String(reg.body.client_id);
+  const { challenge } = makePkcePair();
+
+  // 1025-char state must be preserved verbatim (not silently truncated to 1024)
+  const longState = 's'.repeat(1025);
+  const okPending = await createPendingAuthorization(
+    store,
+    new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'http://127.0.0.1:43000/cb',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      resource: `${baseUrl}/mcp`,
+      state: longState,
+    }),
+    baseUrl,
+  );
+  assert.equal(okPending.ok, true);
+  assert.equal(okPending.pending.state, longState);
+  const { redirectUrl } = await approvePendingAuthorization(store, okPending.pending, { id: '42', login: 'musketyr' });
+  assert.equal(new URL(redirectUrl).searchParams.get('state'), longState);
+
+  // > 2048-char state must be explicitly rejected rather than truncated
+  const oversizedState = 'x'.repeat(2049);
+  const tooLong = await createPendingAuthorization(
+    store,
+    new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'http://127.0.0.1:43000/cb',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      resource: `${baseUrl}/mcp`,
+      state: oversizedState,
+    }),
+    baseUrl,
+  );
+  assert.equal(tooLong.ok, false);
+  assert.equal(tooLong.status, 400);
+  assert.equal(tooLong.error, 'invalid_request');
+});
+
 
