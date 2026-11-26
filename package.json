@@ -15,6 +15,8 @@
     "test:approvals:native": "node --test --experimental-strip-types --experimental-test-module-mocks tests/integration/review-approval-native.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@octokit/app": "^15.0.0",
     "@telegraphic-dev/openclaw-gateway-client": "^0.1.2",
     "bufferutil": "^4.1.0",
@@ -28,9 +30,11 @@
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
     "ws": "^8.20.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
     "@types/node": "^22.19.13",
     "@types/pg": "^8.18.0",
     "@types/react": "^19.2.14",

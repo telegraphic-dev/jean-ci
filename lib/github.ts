@@ -68,16 +68,37 @@ export async function syncReposFromInstallations() {
   }
 }
 
-export async function fetchPRCheckFiles(octokit: any, owner: string, repo: string, ref: string) {
-  const files = [];
+export async function fetchPRCheckFiles(
+  octokit: any,
+  owner: string,
+  repo: string,
+  ref: string,
+  options?: { strict?: boolean },
+) {
+  const strict = Boolean(options?.strict);
+  const files: Array<{ name: string; path: string; content: string }> = [];
+  let dirEntries: any;
   try {
     const { data } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
       owner, repo, path: '.jean-ci/pr-checks', ref,
     });
-    
-    if (Array.isArray(data)) {
-      for (const file of data) {
-        if (file.name.endsWith('.md')) {
+    dirEntries = data;
+  } catch (e: any) {
+    const isMissingCommit = e?.status === 404 && /no commit found/i.test(String(e?.message || ''));
+    if (e?.status === 404 && !isMissingCommit) {
+      return files;
+    }
+    if (e?.status !== 404 || isMissingCommit) {
+      console.error('Error fetching PR check files:', e?.message || e);
+    }
+    if (strict) throw e;
+    return files;
+  }
+
+  if (Array.isArray(dirEntries)) {
+    for (const file of dirEntries) {
+      if (file.name.endsWith('.md')) {
+        try {
           const { data: content } = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
             owner, repo, path: file.path, ref,
           });
@@ -86,11 +107,13 @@ export async function fetchPRCheckFiles(octokit: any, owner: string, repo: strin
             path: file.path,
             content: Buffer.from(content.content, 'base64').toString('utf8'),
           });
+        } catch (e: any) {
+          console.error('Error fetching PR check file:', file.path, e?.message || e);
+          if (strict) throw e;
+          return files;
         }
       }
     }
-  } catch (e: any) {
-    if (e.status !== 404) console.error('Error fetching PR check files:', e.message);
   }
   return files;
 }

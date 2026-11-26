@@ -12,11 +12,15 @@ export async function register() {
     console.log(`${'='.repeat(50)}\n`);
     
     try {
-      const { initDatabase, cleanupOldEvents, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
+      const { initDatabase, cleanupOldEvents, cleanupExpiredMcpTasks, reconcileInterruptedMcpTasks, getInterruptedCheckRuns, getRepo, updateCheckRun } = await import('./lib/db');
       
       const startupStartedAt = new Date();
       // Initialize database
       await initDatabase();
+      const interruptedMcpTasks = await reconcileInterruptedMcpTasks(startupStartedAt);
+      if (interruptedMcpTasks > 0) {
+        console.log(`Reconciled ${interruptedMcpTasks} interrupted MCP task(s) from prior process`);
+      }
       const { queuedReviewRestarts, reconcileReviewRestarts } = await import('./lib/db');
       // Reconcile old claimed requests before draining the durable queued set.
       // This includes claims that crashed before saving a GitHub check ID.
@@ -46,11 +50,15 @@ export async function register() {
         console.log(`Recovered interrupted checks: ${JSON.stringify(recovery)}`);
       }
       
-      // Cleanup old events
+      // Cleanup old events and expired MCP tasks
       await cleanupOldEvents();
+      await cleanupExpiredMcpTasks();
       
       // Schedule periodic cleanup (every hour)
-      setInterval(() => cleanupOldEvents().catch(console.error), 60 * 60 * 1000);
+      setInterval(() => {
+        cleanupOldEvents().catch(console.error);
+        cleanupExpiredMcpTasks().catch(console.error);
+      }, 60 * 60 * 1000);
 
       // Retry recovery if GitHub or installation authentication was temporarily unavailable at startup.
       setInterval(() => recover().catch(console.error), 5 * 60 * 1000);
@@ -61,6 +69,7 @@ export async function register() {
       
       console.log('');
       console.log(`📡 Webhook: ${APP_BASE_URL}/api/github/webhook`);
+      console.log(`🧩 MCP: ${APP_BASE_URL}/api/mcp (Server Card: ${APP_BASE_URL}/api/mcp/server-card)`);
       console.log(`🔑 App ID: ${process.env.GITHUB_APP_ID}`);
       console.log(`👤 Admin: ${process.env.ADMIN_GITHUB_ID || '(anyone)'}`);
       console.log(`🗄️  Database: PostgreSQL ✅`);
