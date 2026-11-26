@@ -3178,6 +3178,7 @@ export async function queryMcpEvents(params: {
   conclusion?: string;
   checkName?: string;
   limit: number;
+  order?: 'asc' | 'desc';
 }): Promise<McpEventDbRecord[]> {
   const where: string[] = ['name = $1', 'id > $2'];
   const values: unknown[] = [params.name, params.afterId];
@@ -3205,10 +3206,11 @@ export async function queryMcpEvents(params: {
   }
 
   values.push(params.limit);
+  const direction = params.order === 'desc' ? 'DESC' : 'ASC';
   const result = await pool.query<McpEventDbRecord>(
     `SELECT * FROM jean_ci_mcp_events
      WHERE ${where.join(' AND ')}
-     ORDER BY id ASC
+     ORDER BY id ${direction}
      LIMIT $${idx}`,
     values,
   );
@@ -3281,6 +3283,8 @@ export async function upsertMcpEventSubscription(data: {
        last_cursor_id = GREATEST(jean_ci_mcp_event_subscriptions.last_cursor_id, EXCLUDED.last_cursor_id),
        active = TRUE,
        consecutive_failures = 0,
+       last_error = NULL,
+       failed_since = NULL,
        updated_at = CURRENT_TIMESTAMP
      RETURNING *`,
     [

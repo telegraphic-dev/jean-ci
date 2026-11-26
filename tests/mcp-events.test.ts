@@ -734,3 +734,509 @@ test('runPRReview emits pr_review.check_completed and pr_review.completed events
   );
 });
 
+test('webhook retry rechecks revocation during backoff, replay delivers newest 50 on large backlog, and suspended refresh recovers missed events', async () => {
+  const { getConfiguredEnvApiTokens } = await import('../lib/mcp/events.ts');
+  const singleEnvKey = ['PUBLIC', 'API', 'TOKEN'].join('_');
+  const multiEnvKey = ['PUBLIC', 'API', 'TOKENS'].join('_');
+  const prevSingle = process.env[singleEnvKey];
+  const prevMulti = process.env[multiEnvKey];
+  try {
+    process.env[singleEnvKey] = 'alpha';
+    process.env[multiEnvKey] = 'beta, gamma';
+    assert.deepEqual(getConfiguredEnvApiTokens(), ['alpha', 'beta', 'gamma']);
+  } finally {
+    if (prevSingle === undefined) delete process.env[singleEnvKey];
+    else process.env[singleEnvKey] = prevSingle;
+    if (prevMulti === undefined) delete process.env[multiEnvKey];
+    else process.env[multiEnvKey] = prevMulti;
+  }
+
+  // 1) Revocation during retry backoff stops event retries and sends terminated envelope instead
+  const retryStore = new InMemoryMcpEventsStore();
+  const retryDeliveries: Array<Record<string, unknown>> = [];
+  const retrySecret = makeWebhookSecret(32);
+  const retryUrl = 'https://hooks.retry-revoke.example/mcp';
+
+  let attemptNum = 0;
+  const retryDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    retryDeliveries.push(parsed);
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.type === 'terminated') {
+      return { ok: true, status: 200, bodyText: 'ok' };
+    }
+    attemptNum += 1;
+    if (attemptNum === 1) {
+      // Revoke OAuth grant right after first failed attempt (during backoff before attempt 2)
+      retryStore.revokeOAuthFamily('fam-retry');
+      return { ok: false, status: 503, errorCategory: 'http_5xx' };
+    }
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+
+  const retryHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: retryStore,
+    deliverEventWebhook: retryDeliverFn,
+    eventRetryDelaysMs: [5, 5],
+  });
+
+  const retryAuth = makeAuthInfo('oauth:42:retry-client', ['mcp:read'], {
+    source: 'oauth',
+    actor: 'github:musketyr',
+    oauthFamilyId: 'fam-retry',
+  });
+  const subRetry = await callEventsRpc(
+    retryHandler,
+    'events/subscribe',
+    {
+      name: 'pr_review.completed',
+      delivery: { mode: 'webhook', url: retryUrl, secret: retrySecret },
+    },
+    { authInfo: retryAuth },
+  );
+  assert.equal(subRetry.json.error, undefined);
+
+  retryDeliveries.length = 0;
+  await publishMcpEvent(
+    retryStore,
+    buildPrReviewCompletedPayload({
+      repo: 'telegraphic-dev/jean-ci',
+      prNumber: 900,
+      headSha: 'a'.repeat(40),
+      checks: [{ checkId: 900, checkName: 'Code Review', conclusion: 'failure' }],
+      baseUrl: 'https://jean-ci.example.com',
+    }),
+    { deliverWebhook: retryDeliverFn, retryDelaysMs: [5, 5], awaitDeliveries: true },
+  );
+  // Attempt 1 sent the event and got 503; attempt 2 detected revocation and sent ONLY terminated (no 2nd event POST)
+  assert.equal(retryDeliveries.length, 2);
+  assert.equal(retryDeliveries[0].name, 'pr_review.completed');
+  assert.equal(retryDeliveries[1].type, 'terminated');
+  assert.equal((retryDeliveries[1].error as { code: number }).code, EventsErrorCode.Forbidden);
+
+  // 2) Backlog > 50 matching events replays the NEWEST 50 in ascending order and sets truncated=true
+  const backlogStore = new InMemoryMcpEventsStore();
+  for (let i = 1; i <= 60; i += 1) {
+    await backlogStore.insertEvent(
+      buildPrReviewCheckCompletedPayload({
+        checkId: 1000 + i,
+        repo: 'telegraphic-dev/jean-ci',
+        prNumber: i,
+        headSha: 'b'.repeat(40),
+        checkName: 'Code Review',
+        conclusion: 'success',
+        baseUrl: 'https://jean-ci.example.com',
+      }),
+    );
+  }
+  const replayedPrNumbers: number[] = [];
+  const backlogDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber !== undefined) {
+      replayedPrNumbers.push(parsed.data.prNumber);
+    }
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  const backlogHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: backlogStore,
+    deliverEventWebhook: backlogDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+
+  const backlogSub = await callEventsRpc(backlogHandler, 'events/subscribe', {
+    name: 'pr_review.check_completed',
+    delivery: { mode: 'webhook', url: 'https://hooks.backlog.example/mcp', secret: makeWebhookSecret(32) },
+    cursor: 'evt_v1_0',
+  });
+  assert.equal(backlogSub.json.result?.truncated, true);
+  assert.equal(backlogSub.json.result?.cursor, 'evt_v1_10');
+  // Wait briefly for async replay loop to finish
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(replayedPrNumbers.length, 50);
+  assert.equal(replayedPrNumbers[0], 11);
+  assert.equal(replayedPrNumbers[49], 60);
+
+  // 3) Refreshing a suspended subscription preserves acknowledged watermark and recovers missed events
+  const suspendStore = new InMemoryMcpEventsStore();
+  const recoveredPrs: number[] = [];
+  const suspendSecret = makeWebhookSecret(32);
+  const suspendUrl = 'https://hooks.suspend.example/mcp';
+  const suspendDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber !== undefined) {
+      recoveredPrs.push(parsed.data.prNumber);
+    }
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  const suspendHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: suspendStore,
+    deliverEventWebhook: suspendDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+
+  const initialSub = await callEventsRpc(suspendHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    arguments: { repo: 'telegraphic-dev/jean-ci' },
+    delivery: { mode: 'webhook', url: suspendUrl, secret: suspendSecret },
+  });
+  assert.equal(initialSub.json.result?.cursor, 'evt_v1_0');
+
+  // Simulate suspension after repeated failures
+  const keyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    suspendUrl,
+    'pr_review.completed',
+    { repo: 'telegraphic-dev/jean-ci' },
+  ).subscriptionKeyHash;
+  await suspendStore.updateDeliveryStatus({
+    subscriptionKeyHash: keyHash,
+    active: false,
+    consecutiveFailures: 10,
+    lastError: 'http_5xx',
+    failedSince: new Date(),
+  });
+
+  // Insert 2 matching events while suspended (not delivered because active=false)
+  await publishMcpEvent(
+    suspendStore,
+    buildPrReviewCompletedPayload({
+      repo: 'telegraphic-dev/jean-ci',
+      prNumber: 301,
+      headSha: 'c'.repeat(40),
+      checks: [{ checkId: 301, checkName: 'Code Review', conclusion: 'failure' }],
+      baseUrl: 'https://jean-ci.example.com',
+    }),
+    { deliverWebhook: suspendDeliverFn, retryDelaysMs: [0], awaitDeliveries: true },
+  );
+  await publishMcpEvent(
+    suspendStore,
+    buildPrReviewCompletedPayload({
+      repo: 'telegraphic-dev/jean-ci',
+      prNumber: 302,
+      headSha: 'd'.repeat(40),
+      checks: [{ checkId: 302, checkName: 'Code Review', conclusion: 'success' }],
+      baseUrl: 'https://jean-ci.example.com',
+    }),
+    { deliverWebhook: suspendDeliverFn, retryDelaysMs: [0], awaitDeliveries: true },
+  );
+  assert.deepEqual(recoveredPrs, []);
+
+  // Refresh reactivates subscription, reports prior active=false status, does NOT skip missed events, and replays them!
+  const reactivated = await callEventsRpc(suspendHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    arguments: { repo: 'telegraphic-dev/jean-ci' },
+    delivery: { mode: 'webhook', url: suspendUrl, secret: suspendSecret },
+  });
+  assert.equal((reactivated.json.result?.deliveryStatus as { active: boolean }).active, false);
+  assert.equal(reactivated.json.result?.cursor, 'evt_v1_0');
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(recoveredPrs, [301, 302]);
+});
+
+test('replay preserves watermark on unresolved failure, continues on 410 discard, coordinates with live delivery, and stops on mid-replay unsubscribe', async () => {
+  // 1) Replay fails on event 1 -> stops before event 2, preserves watermark at 0,
+  //    concurrent live event 3 succeeding does NOT advance watermark past 0,
+  //    and subsequent refresh recovers events 1, 2, 3 in order.
+  const store = new InMemoryMcpEventsStore();
+  for (const pr of [1, 2]) {
+    await store.insertEvent(
+      buildPrReviewCompletedPayload({
+        repo: 'telegraphic-dev/jean-ci',
+        prNumber: pr,
+        headSha: String(pr).repeat(40),
+        checks: [{ checkId: pr, checkName: 'Code Review', conclusion: 'success' }],
+        baseUrl: 'https://jean-ci.example.com',
+      }),
+    );
+  }
+
+  let failPr1 = true;
+  const receivedPrs: number[] = [];
+  const secret = makeWebhookSecret(32);
+  const url = 'https://hooks.watermark.example/mcp';
+  const deliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    const pr = parsed.data?.prNumber;
+    if (pr === 1 && failPr1) {
+      return { ok: false, status: 503, errorCategory: 'http_5xx' };
+    }
+    if (pr !== undefined) {
+      receivedPrs.push(pr);
+    }
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+
+  const handler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: store,
+    deliverEventWebhook: deliverFn,
+    eventRetryDelaysMs: [0],
+  });
+
+  const subRes = await callEventsRpc(handler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url, secret },
+    cursor: 'evt_v1_0',
+  });
+  assert.equal(subRes.json.error, undefined);
+  await new Promise((r) => setTimeout(r, 30));
+
+  // Replay stopped after PR #1 failed; PR #2 was NOT delivered ahead of #1
+  assert.deepEqual(receivedPrs, []);
+  const keyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    url,
+    'pr_review.completed',
+    {},
+  ).subscriptionKeyHash;
+  const afterFailSub = await store.getSubscriptionByKeyHash(keyHash);
+  assert.equal(afterFailSub?.lastCursorId, 0);
+  assert.equal(afterFailSub?.consecutiveFailures, 1);
+
+  // Now publish live event #3 while event #1 is unresolved: even though #3 gets 200 OK,
+  // lastCursorId MUST remain 0 so #1 (and #2) are not permanently skipped.
+  await publishMcpEvent(
+    store,
+    buildPrReviewCompletedPayload({
+      repo: 'telegraphic-dev/jean-ci',
+      prNumber: 3,
+      headSha: '3'.repeat(40),
+      checks: [{ checkId: 3, checkName: 'Code Review', conclusion: 'success' }],
+      baseUrl: 'https://jean-ci.example.com',
+    }),
+    { deliverWebhook: deliverFn, retryDelaysMs: [0], awaitDeliveries: true },
+  );
+  assert.deepEqual(receivedPrs, [3]);
+  const afterLiveSub = await store.getSubscriptionByKeyHash(keyHash);
+  assert.equal(afterLiveSub?.lastCursorId, 0);
+  assert.equal(afterLiveSub?.lastError, 'http_5xx');
+
+  // Fix endpoint and refresh -> reports prior failure and recovers #1, #2, #3 in order, advancing watermark to 3
+  failPr1 = false;
+  receivedPrs.length = 0;
+  const refreshRes = await callEventsRpc(handler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url, secret },
+  });
+  assert.equal((refreshRes.json.result?.deliveryStatus as { lastError: string }).lastError, 'http_5xx');
+  assert.equal(refreshRes.json.result?.cursor, 'evt_v1_0');
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual(receivedPrs, [1, 2, 3]);
+  const recoveredSub = await store.getSubscriptionByKeyHash(keyHash);
+  assert.equal(recoveredSub?.lastCursorId, 3);
+  assert.equal(recoveredSub?.consecutiveFailures, 0);
+  assert.equal(recoveredSub?.lastError, null);
+
+  // 2) Explicit 410 Gone discard DOES advance past the discarded event and continues replay to event 2
+  const discardStore = new InMemoryMcpEventsStore();
+  for (const pr of [10, 11]) {
+    await discardStore.insertEvent(
+      buildPrReviewCompletedPayload({
+        repo: 'telegraphic-dev/jean-ci',
+        prNumber: pr,
+        headSha: 'e'.repeat(40),
+        checks: [{ checkId: pr, checkName: 'Code Review', conclusion: 'success' }],
+        baseUrl: 'https://jean-ci.example.com',
+      }),
+    );
+  }
+  const discardDelivered: number[] = [];
+  const discardDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber === 10) {
+      return { ok: false, status: 410, errorCategory: 'http_4xx' };
+    }
+    if (parsed.data?.prNumber !== undefined) discardDelivered.push(parsed.data.prNumber);
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  const discardHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: discardStore,
+    deliverEventWebhook: discardDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+  await callEventsRpc(discardHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url: 'https://hooks.discard.example/mcp', secret },
+    cursor: 'evt_v1_0',
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(discardDelivered, [11]);
+
+  // 3) Unsubscribing mid-replay stops subsequent queued replay events before attempt 0
+  const unsubStore = new InMemoryMcpEventsStore();
+  for (const pr of [21, 22, 23]) {
+    await unsubStore.insertEvent(
+      buildPrReviewCompletedPayload({
+        repo: 'telegraphic-dev/jean-ci',
+        prNumber: pr,
+        headSha: 'f'.repeat(40),
+        checks: [{ checkId: pr, checkName: 'Code Review', conclusion: 'success' }],
+        baseUrl: 'https://jean-ci.example.com',
+      }),
+    );
+  }
+  const unsubUrl = 'https://hooks.unsub-mid.example/mcp';
+  const unsubKeyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    unsubUrl,
+    'pr_review.completed',
+    {},
+  ).subscriptionKeyHash;
+  const unsubDelivered: number[] = [];
+  const unsubDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber !== undefined) {
+      unsubDelivered.push(parsed.data.prNumber);
+      if (parsed.data.prNumber === 21) {
+        // Delete subscription immediately during first replayed event delivery
+        await unsubStore.deleteSubscriptionByKeyHash(unsubKeyHash);
+      }
+    }
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  const unsubHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: unsubStore,
+    deliverEventWebhook: unsubDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+  await callEventsRpc(unsubHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url: unsubUrl, secret },
+    cursor: 'evt_v1_0',
+  });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(unsubDelivered, [21]);
+});
+
+test('runPRReview never emits overallConclusion=success when an expected check fails to create or persist', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import { mock } from 'node:test';
+    import assert from 'node:assert/strict';
+
+    const dbExports = await import('./lib/db.ts');
+    let nextDbId = 600;
+    let failSecondInsert = true;
+    let failSecondPersist = false;
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        ...dbExports,
+        getRepo: async () => ({ full_name: 'acme/app', installation_id: 1, pr_review_enabled: true }),
+        getConfig: async () => 'Review this PR.',
+        DEFAULT_USER_PROMPT: 'Review this PR.',
+        insertCheckRun: async ({ check_name }) => {
+          if (failSecondInsert && check_name === 'Second Check') {
+            throw new Error('DB insert failure for second check');
+          }
+          nextDbId += 1;
+          return nextDbId;
+        },
+        setCheckRunGithubId: async () => {},
+        setReservedCheckInput: async () => {},
+        updateCheckRun: async (id) => {
+          if (failSecondPersist && id === 603) {
+            throw new Error('DB terminal persist failure');
+          }
+        },
+      },
+    });
+    mock.module('./lib/github.ts', {
+      namedExports: {
+        getInstallationOctokit: async () => ({}),
+        getPRDiff: async () => 'diff --git a/a.ts b/a.ts\\n+export const ok = true;\\n',
+        getPRInfo: async () => ({ title: 'Test PR', body: 'Body', head: { sha: '${'a'.repeat(40)}' } }),
+        createCheck: async (_octo, _o, _r, name) => ({ id: name.includes('Second') ? 902 : 901 }),
+        updateCheck: async () => {},
+        createPRReview: async () => {},
+        fetchPRCheckFiles: async () => [
+          { path: '.jean-ci/second.md', name: 'Second Check', prompt: 'Check second rule.' },
+        ],
+      },
+    });
+    mock.module('./lib/llm.ts', {
+      namedExports: {
+        callOpenClaw: async () => ({
+          success: true,
+          response: 'VERDICT: PASS\\nTITLE: Looks good\\nSUMMARY: Passed.',
+        }),
+      },
+    });
+
+    const { InMemoryMcpEventsStore } = await import('./lib/mcp/events.ts');
+    const { runPRReview } = await import('./lib/pr-review.ts');
+
+    // Case 1: 2 expected checks, check 1 succeeds, check 2 fails to create
+    const store1 = new InMemoryMcpEventsStore();
+    await runPRReview(1, 'acme', 'app', 88, '${'a'.repeat(40)}', undefined, {
+      mcpEventsStore: store1,
+    });
+    const prEvents1 = await store1.queryEvents({ name: 'pr_review.completed', afterId: 0, limit: 10 });
+    assert.equal(prEvents1.length, 1);
+    assert.equal(prEvents1[0].data.overallConclusion, 'failure');
+    assert.equal(prEvents1[0].data.incomplete, true);
+    assert.equal(prEvents1[0].data.checksCount, 1);
+    assert.equal(prEvents1[0].data.expectedChecksCount, 2);
+    assert.equal(prEvents1[0].data.incompleteChecksCount, 1);
+
+    // Case 2: 2 expected checks, both created (ids 602 & 603), check 2 fails to persist terminal status
+    failSecondInsert = false;
+    failSecondPersist = true;
+    const store2 = new InMemoryMcpEventsStore();
+    await runPRReview(1, 'acme', 'app', 89, '${'a'.repeat(40)}', undefined, {
+      mcpEventsStore: store2,
+    });
+    const prEvents2 = await store2.queryEvents({ name: 'pr_review.completed', afterId: 0, limit: 10 });
+    assert.equal(prEvents2.length, 1);
+    assert.equal(prEvents2[0].data.overallConclusion, 'failure');
+    assert.equal(prEvents2[0].data.incomplete, true);
+    assert.equal(prEvents2[0].data.checksCount, 1);
+    assert.equal(prEvents2[0].data.expectedChecksCount, 2);
+    assert.equal(prEvents2[0].data.incompleteChecksCount, 1);
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+    },
+  );
+});
+
+
+

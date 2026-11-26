@@ -292,8 +292,14 @@ export async function runPRReview(
 
   // Create ALL checks as pending first, storing in DB
   const checkRuns = [];
+  let failedCheckCreationCount = 0;
+  let failedCheckPersistenceCount = 0;
+  let cancelledDuringCreation = false;
   for (const check of checks) {
-    if (await isRunCancelled()) break;
+    if (await isRunCancelled()) {
+      cancelledDuringCreation = true;
+      break;
+    }
     try {
       const dbId = restart?.checkId ?? await insertCheckRun({
         repo: repoFullName,
@@ -324,6 +330,7 @@ export async function runPRReview(
       console.log(`Created pending check: ${check.name} (db: ${dbId})`);
     } catch (error: any) {
       if (restart) throw error;
+      failedCheckCreationCount += 1;
       console.error(`Error creating check "${check.name}":`, error.message);
     }
   }
@@ -338,6 +345,7 @@ export async function runPRReview(
           summary: 'Review run was cancelled by the caller before execution completed.',
         }, check.name);
       } catch (cancelErr: any) {
+        failedCheckPersistenceCount += 1;
         console.error(`Failed to mark cancelled check "${check.name}":`, cancelErr?.message || cancelErr);
       }
       continue;
@@ -538,12 +546,24 @@ export async function runPRReview(
           summary: `Review run failed before completion.\n\n- ${error.message}`,
         }, check.name);
       } catch (updateError: any) {
+        failedCheckPersistenceCount += 1;
         console.error('Failed to update check status:', updateError.message);
       }
     }
   }
 
-  if (completedChecksForEvents.length > 0) {
+  const expectedChecksCount = checks.length;
+  const incompleteChecksCount = Math.max(0, expectedChecksCount - completedChecksForEvents.length);
+  if (
+    expectedChecksCount > 0 &&
+    (completedChecksForEvents.length > 0 || failedCheckCreationCount > 0 || failedCheckPersistenceCount > 0)
+  ) {
+    const incompleteReason: 'failure' | 'cancelled' | undefined =
+      incompleteChecksCount > 0
+        ? failedCheckCreationCount > 0 || failedCheckPersistenceCount > 0 || !cancelledDuringCreation
+          ? 'failure'
+          : 'cancelled'
+        : undefined;
     try {
       const { buildPrReviewCompletedPayload } = await import('./mcp/events.ts');
       await emitMcpEvent(
@@ -552,6 +572,8 @@ export async function runPRReview(
           prNumber,
           headSha,
           checks: completedChecksForEvents,
+          expectedChecksCount,
+          incompleteReason,
           baseUrl: BASE_URL,
         }),
       );

@@ -118,6 +118,7 @@ export interface McpEventsStore {
     conclusion?: string;
     checkName?: string;
     limit: number;
+    order?: 'asc' | 'desc';
   }): Promise<McpEventRecord[]>;
   hasSkippedEventsBeforeFloor(params: {
     name: McpEventName;
@@ -243,6 +244,9 @@ export const MCP_EVENT_DESCRIPTORS: readonly McpEventTypeDescriptor[] = [
         'headSha',
         'overallConclusion',
         'checksCount',
+        'expectedChecksCount',
+        'incompleteChecksCount',
+        'incomplete',
         'failedCount',
         'checks',
         'prUrl',
@@ -253,6 +257,9 @@ export const MCP_EVENT_DESCRIPTORS: readonly McpEventTypeDescriptor[] = [
         headSha: { type: 'string' },
         overallConclusion: { type: 'string', enum: ['success', 'failure', 'neutral'] },
         checksCount: { type: 'integer' },
+        expectedChecksCount: { type: 'integer' },
+        incompleteChecksCount: { type: 'integer' },
+        incomplete: { type: 'boolean' },
         failedCount: { type: 'integer' },
         checks: {
           type: 'array',
@@ -760,11 +767,7 @@ export function createDbMcpEventsStore(): McpEventsStore {
       }
       if (sub.principal.startsWith('api-token:env:')) {
         const expectedFp = sub.principal.slice('api-token:env:'.length);
-        const envTokens = (process.env.PUBLIC_API_TOKENS || process.env.PUBLIC_API_TOKEN || '')
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean);
-        return envTokens.some(
+        return getConfiguredEnvApiTokens().some(
           (tok) => createHash('sha256').update(tok).digest('hex').slice(0, 16) === expectedFp,
         );
       }
@@ -772,6 +775,15 @@ export function createDbMcpEventsStore(): McpEventsStore {
     },
   };
   return sharedDbEventsStore;
+}
+
+export function getConfiguredEnvApiTokens(): string[] {
+  return [process.env.PUBLIC_API_TOKEN, process.env.PUBLIC_API_TOKENS]
+    .filter(Boolean)
+    .join(',')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 export class InMemoryMcpEventsStore implements McpEventsStore {
@@ -838,21 +850,24 @@ export class InMemoryMcpEventsStore implements McpEventsStore {
     conclusion?: string;
     checkName?: string;
     limit: number;
+    order?: 'asc' | 'desc';
   }): Promise<McpEventRecord[]> {
-    return this.events
-      .filter((e) => {
-        if (e.name !== params.name) return false;
-        if (e.id <= params.afterId) return false;
-        if (params.minCreatedAt && e.createdAt.getTime() < params.minCreatedAt.getTime()) return false;
-        if (params.repo && e.repo !== params.repo) return false;
-        if (params.prNumber !== undefined && e.prNumber !== params.prNumber) return false;
-        if (params.conclusion && e.conclusion !== params.conclusion) return false;
-        if (params.checkName && (!e.checkName || e.checkName.toLowerCase() !== params.checkName.toLowerCase())) {
-          return false;
-        }
-        return true;
-      })
-      .slice(0, params.limit);
+    const matched = this.events.filter((e) => {
+      if (e.name !== params.name) return false;
+      if (e.id <= params.afterId) return false;
+      if (params.minCreatedAt && e.createdAt.getTime() < params.minCreatedAt.getTime()) return false;
+      if (params.repo && e.repo !== params.repo) return false;
+      if (params.prNumber !== undefined && e.prNumber !== params.prNumber) return false;
+      if (params.conclusion && e.conclusion !== params.conclusion) return false;
+      if (params.checkName && (!e.checkName || e.checkName.toLowerCase() !== params.checkName.toLowerCase())) {
+        return false;
+      }
+      return true;
+    });
+    if (params.order === 'desc') {
+      return matched.slice(-params.limit).reverse();
+    }
+    return matched.slice(0, params.limit);
   }
 
   async hasSkippedEventsBeforeFloor(params: {
@@ -911,8 +926,8 @@ export class InMemoryMcpEventsStore implements McpEventsStore {
       active: true,
       consecutiveFailures: 0,
       lastDeliveryAt: existing?.lastDeliveryAt ?? null,
-      lastError: existing?.lastError ?? null,
-      failedSince: existing?.failedSince ?? null,
+      lastError: null,
+      failedSince: null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -1071,13 +1086,67 @@ async function sendTerminatedEnvelope(
   }).catch(() => {});
 }
 
+const subscriptionDeliveryChains = new Map<string, Promise<void>>();
+
+function enqueueSubscriptionDelivery<T>(
+  subscriptionKeyHash: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = subscriptionDeliveryChains.get(subscriptionKeyHash) ?? Promise.resolve();
+  let resolveDone!: () => void;
+  const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
+  });
+  const nextChain = prev.then(() => done);
+  subscriptionDeliveryChains.set(subscriptionKeyHash, nextChain);
+
+  return prev.then(async () => {
+    try {
+      return await fn();
+    } finally {
+      resolveDone();
+      if (subscriptionDeliveryChains.get(subscriptionKeyHash) === nextChain) {
+        subscriptionDeliveryChains.delete(subscriptionKeyHash);
+      }
+    }
+  });
+}
+
+async function hasEarlierUnacknowledgedMatchingEvent(
+  store: McpEventsStore,
+  sub: McpEventSubscription,
+  eventId: number,
+): Promise<boolean> {
+  if (eventId <= sub.lastCursorId) {
+    return false;
+  }
+  const args = sub.arguments || {};
+  const earliest = await store.queryEvents({
+    name: sub.eventName,
+    afterId: sub.lastCursorId,
+    repo: typeof args.repo === 'string' ? args.repo : undefined,
+    prNumber: typeof args.prNumber === 'number' ? args.prNumber : undefined,
+    conclusion: typeof args.conclusion === 'string' ? args.conclusion : undefined,
+    checkName: typeof args.checkName === 'string' ? args.checkName : undefined,
+    limit: 1,
+    order: 'asc',
+  });
+  return earliest.length > 0 && earliest[0].id < eventId;
+}
+
 export async function deliverEventToSubscription(params: {
   store: McpEventsStore;
   subscription: McpEventSubscription;
   event: McpEventRecord;
   deliverWebhook?: WebhookDeliverFn;
   retryDelaysMs?: number[];
-}): Promise<{ delivered: boolean; terminated?: boolean; lastError?: WebhookErrorCategory }> {
+}): Promise<{
+  delivered: boolean;
+  discarded?: boolean;
+  terminated?: boolean;
+  stopped?: boolean;
+  lastError?: WebhookErrorCategory;
+}> {
   const {
     store,
     subscription: sub,
@@ -1085,13 +1154,6 @@ export async function deliverEventToSubscription(params: {
     deliverWebhook = (p) => deliverWebhookPinnedHttps(p),
     retryDelaysMs = DEFAULT_RETRY_DELAYS_MS,
   } = params;
-
-  const authorized = await store.isPrincipalAuthorized(sub);
-  if (!authorized) {
-    await store.deleteSubscriptionByKeyHash(sub.subscriptionKeyHash);
-    await sendTerminatedEnvelope(sub, deliverWebhook);
-    return { delivered: false, terminated: true };
-  }
 
   const url = isValidWebhookCallbackUrl(sub.callbackUrl);
   if (!url) {
@@ -1114,7 +1176,7 @@ export async function deliverEventToSubscription(params: {
     cursor: encodeEventCursor(event.id),
   });
 
-  const secrets = getSigningSecrets(sub);
+  let currentSub = sub;
   let lastError: WebhookErrorCategory = 'http_5xx';
 
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
@@ -1123,63 +1185,104 @@ export async function deliverEventToSubscription(params: {
       if (delay > 0) {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
-      // Re-check that subscription wasn't unsubscribed during backoff
-      const latestSub = await store.getSubscriptionByKeyHash(sub.subscriptionKeyHash);
-      if (!latestSub || !latestSub.active || latestSub.expiresAt.getTime() <= Date.now()) {
-        return { delivered: false };
-      }
+    }
+
+    // Re-fetch latest subscription state before EVERY attempt including attempt 0
+    // (handles unsubscribe, expiry, suspension, failure state updates, or secret rotation).
+    const latestSub = await store.getSubscriptionByKeyHash(sub.subscriptionKeyHash);
+    if (!latestSub || !latestSub.active || latestSub.expiresAt.getTime() <= Date.now()) {
+      return { delivered: false, stopped: true };
+    }
+    currentSub = latestSub;
+
+    // Re-verify principal authorization immediately before every delivery attempt (including retries)
+    const authorized = await store.isPrincipalAuthorized(currentSub);
+    if (!authorized) {
+      await store.deleteSubscriptionByKeyHash(currentSub.subscriptionKeyHash);
+      await sendTerminatedEnvelope(currentSub, deliverWebhook);
+      return { delivered: false, terminated: true };
     }
 
     const timestampSec = Math.floor(Date.now() / 1000);
-    const signature = signStandardWebhook(webhookId, timestampSec, rawBody, secrets);
-    const res = await deliverWebhook({
-      url,
-      rawBody,
-      headers: {
-        'webhook-id': webhookId,
-        'webhook-timestamp': String(timestampSec),
-        'webhook-signature': signature,
-        'X-MCP-Subscription-Id': sub.subscriptionId,
-      },
-    });
+    const signature = signStandardWebhook(webhookId, timestampSec, rawBody, getSigningSecrets(currentSub));
+    let res: WebhookPostResponse;
+    try {
+      res = await deliverWebhook({
+        url,
+        rawBody,
+        headers: {
+          'webhook-id': webhookId,
+          'webhook-timestamp': String(timestampSec),
+          'webhook-signature': signature,
+          'X-MCP-Subscription-Id': currentSub.subscriptionId,
+        },
+      });
+    } catch {
+      res = { ok: false, errorCategory: 'connection_refused' };
+    }
 
     if (res.ok) {
-      await store.updateDeliveryStatus({
-        subscriptionKeyHash: sub.subscriptionKeyHash,
-        active: true,
-        consecutiveFailures: 0,
-        lastDeliveryAt: new Date(),
-        lastError: null,
-        failedSince: null,
-        lastCursorId: event.id,
-      });
+      // Only advance the recovery watermark and clear failure state if there is no unresolved
+      // prior delivery failure and no earlier matching event still unacknowledged.
+      const hasUnresolvedFailure =
+        currentSub.consecutiveFailures > 0 || currentSub.failedSince !== null;
+      const hasEarlierGap =
+        !hasUnresolvedFailure &&
+        (await hasEarlierUnacknowledgedMatchingEvent(store, currentSub, event.id));
+      if (!hasUnresolvedFailure && !hasEarlierGap) {
+        await store.updateDeliveryStatus({
+          subscriptionKeyHash: currentSub.subscriptionKeyHash,
+          active: true,
+          consecutiveFailures: 0,
+          lastDeliveryAt: new Date(),
+          lastError: null,
+          failedSince: null,
+          lastCursorId: event.id,
+        });
+      } else {
+        await store.updateDeliveryStatus({
+          subscriptionKeyHash: currentSub.subscriptionKeyHash,
+          active: currentSub.active,
+          consecutiveFailures: currentSub.consecutiveFailures,
+          lastDeliveryAt: new Date(),
+          lastError: currentSub.lastError,
+          failedSince: currentSub.failedSince,
+        });
+      }
       return { delivered: true };
     }
 
     lastError = res.errorCategory || 'http_5xx';
     // Per SEP-3415 §Webhook event delivery: 410 Gone and 413 Payload Too Large are non-retryable
-    // for that delivery and do not suspend the subscription itself.
+    // per-delivery discards that do not suspend the subscription itself.
     if (res.status === 410 || res.status === 413) {
-      await store.updateDeliveryStatus({
-        subscriptionKeyHash: sub.subscriptionKeyHash,
-        active: true,
-        consecutiveFailures: 0,
-        lastError: null,
-        failedSince: null,
-        lastCursorId: event.id,
-      });
-      return { delivered: false, lastError: 'http_4xx' };
+      const hasUnresolvedFailure =
+        currentSub.consecutiveFailures > 0 || currentSub.failedSince !== null;
+      const hasEarlierGap =
+        !hasUnresolvedFailure &&
+        (await hasEarlierUnacknowledgedMatchingEvent(store, currentSub, event.id));
+      if (!hasUnresolvedFailure && !hasEarlierGap) {
+        await store.updateDeliveryStatus({
+          subscriptionKeyHash: currentSub.subscriptionKeyHash,
+          active: true,
+          consecutiveFailures: 0,
+          lastError: null,
+          failedSince: null,
+          lastCursorId: event.id,
+        });
+      }
+      return { delivered: false, discarded: true, lastError: 'http_4xx' };
     }
   }
 
-  const nextFailures = sub.consecutiveFailures + 1;
+  const nextFailures = currentSub.consecutiveFailures + 1;
   const stillActive = nextFailures < MAX_CONSECUTIVE_FAILURES_BEFORE_SUSPEND;
   await store.updateDeliveryStatus({
-    subscriptionKeyHash: sub.subscriptionKeyHash,
+    subscriptionKeyHash: currentSub.subscriptionKeyHash,
     active: stillActive,
     consecutiveFailures: nextFailures,
     lastError,
-    failedSince: sub.failedSince ?? new Date(),
+    failedSince: currentSub.failedSince ?? new Date(),
   });
   return { delivered: false, lastError };
 }
@@ -1208,13 +1311,15 @@ export async function publishMcpEvent(
   if (matching.length > 0) {
     const dispatch = Promise.all(
       matching.map((sub) =>
-        deliverEventToSubscription({
-          store,
-          subscription: sub,
-          event: record,
-          deliverWebhook: options?.deliverWebhook,
-          retryDelaysMs: options?.retryDelaysMs,
-        }).catch((err) => {
+        enqueueSubscriptionDelivery(sub.subscriptionKeyHash, () =>
+          deliverEventToSubscription({
+            store,
+            subscription: sub,
+            event: record,
+            deliverWebhook: options?.deliverWebhook,
+            retryDelaysMs: options?.retryDelaysMs,
+          }),
+        ).catch((err) => {
           console.error(`[MCP Events] Webhook delivery failed for ${sub.subscriptionId}:`, err);
         }),
       ),
@@ -1528,13 +1633,16 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
     let replayEvents: McpEventRecord[] = [];
     let watermarkId = bounds.latestId;
 
-    if (isRefresh && existing) {
-      // Live refresh: supplied cursor at or behind watermark is a no-op; advance watermark during quiet periods
-      watermarkId = Math.max(existing.lastCursorId, bounds.latestId);
-    } else if (cursorSeq !== null) {
-      // Fresh subscribe with non-null cursor: replay missed events (bounded by retention + maxAgeMs)
-      let effectiveAfterId = cursorSeq;
-      if (bounds.oldestId !== null && cursorSeq > 0 && cursorSeq < bounds.oldestId - 1) {
+    // Determine whether we should recover/replay matching events from a starting position:
+    // - On refresh: start from the subscription's last acknowledged watermark so suspended or
+    //   temporarily failing subscriptions recover missed matching events instead of skipping them.
+    // - On fresh subscribe with non-null cursor: start from the client's supplied cursor.
+    const replayFromSeq =
+      isRefresh && existing ? existing.lastCursorId : cursorSeq !== null ? cursorSeq : null;
+
+    if (replayFromSeq !== null) {
+      let effectiveAfterId = replayFromSeq;
+      if (bounds.oldestId !== null && replayFromSeq > 0 && replayFromSeq < bounds.oldestId - 1) {
         truncated = true;
         effectiveAfterId = bounds.oldestId - 1;
       }
@@ -1552,7 +1660,9 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
           truncated = true;
         }
       }
-      const pendingReplay = await store.queryEvents({
+      // Query the NEWEST permitted window (DESC) so if the backlog exceeds DEFAULT_MAX_EVENTS,
+      // older events are dropped (truncated: true) and the latest events are delivered in ascending order.
+      const newestDesc = await store.queryEvents({
         name: params.name,
         afterId: effectiveAfterId,
         minCreatedAt,
@@ -1561,15 +1671,22 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
         conclusion: typeof validatedArgs.conclusion === 'string' ? validatedArgs.conclusion : undefined,
         checkName: typeof validatedArgs.checkName === 'string' ? validatedArgs.checkName : undefined,
         limit: DEFAULT_MAX_EVENTS + 1,
+        order: 'desc',
       });
-      if (pendingReplay.length > DEFAULT_MAX_EVENTS) {
+      if (newestDesc.length > DEFAULT_MAX_EVENTS) {
         truncated = true;
-        replayEvents = pendingReplay.slice(pendingReplay.length - DEFAULT_MAX_EVENTS);
+        replayEvents = newestDesc.slice(0, DEFAULT_MAX_EVENTS).reverse();
       } else {
-        replayEvents = pendingReplay;
+        replayEvents = newestDesc.reverse();
       }
-      // Do not advance watermark past unacknowledged replay events
-      watermarkId = replayEvents.length > 0 ? effectiveAfterId : Math.max(effectiveAfterId, bounds.latestId);
+      // Preserve safe-to-persist watermark:
+      // - If matching events are pending delivery, do not advance past the first unacknowledged event.
+      // - If no matching events exist in (effectiveAfterId, latestId], safely advance during quiet periods.
+      if (replayEvents.length > 0) {
+        watermarkId = truncated ? Math.max(effectiveAfterId, replayEvents[0].id - 1) : effectiveAfterId;
+      } else {
+        watermarkId = Math.max(effectiveAfterId, bounds.latestId);
+      }
     }
 
     // Secret rotation: keep old secret for a 5-minute dual-sign grace window
@@ -1595,19 +1712,33 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
     });
 
     if (replayEvents.length > 0) {
-      void (async () => {
+      void enqueueSubscriptionDelivery(saved.subscriptionKeyHash, async () => {
         for (const ev of replayEvents) {
-          await deliverEventToSubscription({
+          const latestSub = await store.getSubscriptionByKeyHash(saved.subscriptionKeyHash);
+          if (!latestSub || !latestSub.active || latestSub.expiresAt.getTime() <= Date.now()) {
+            break;
+          }
+          if (ev.id <= latestSub.lastCursorId) {
+            continue;
+          }
+          const outcome = await deliverEventToSubscription({
             store,
-            subscription: saved,
+            subscription: latestSub,
             event: ev,
             deliverWebhook,
             retryDelaysMs,
           }).catch((err) => {
             console.error(`[MCP Events] Replay delivery failed for ${saved.subscriptionId}:`, err);
+            return null;
           });
+          // Only continue replay if the event was delivered OR explicitly discarded (410/413).
+          // Any retry-exhausted failure, transport error, termination, or unsubscribe/expiry stops
+          // replay so the watermark remains strictly before the unresolved event.
+          if (!outcome || outcome.terminated || outcome.stopped || (!outcome.delivered && !outcome.discarded)) {
+            break;
+          }
         }
-      })();
+      });
     }
 
     return {
@@ -1765,6 +1896,8 @@ export interface PrReviewCompletedEventInput {
     checkIdentity?: string | null;
     conclusion: ReviewConclusion;
   }>;
+  expectedChecksCount?: number;
+  incompleteReason?: 'failure' | 'cancelled';
   baseUrl: string;
 }
 
@@ -1802,16 +1935,27 @@ export function buildPrReviewCheckCompletedPayload(input: PrReviewCheckCompleted
 
 export function buildPrReviewCompletedPayload(input: PrReviewCompletedEventInput) {
   const base = input.baseUrl.replace(/\/+$/, '');
+  const expectedChecksCount = Math.max(input.checks.length, input.expectedChecksCount ?? input.checks.length);
+  const incompleteChecksCount = Math.max(0, expectedChecksCount - input.checks.length);
+  const incomplete = incompleteChecksCount > 0;
   const failedCount = input.checks.filter((c) => c.conclusion === 'failure').length;
   const neutralCount = input.checks.filter((c) => c.conclusion === 'neutral').length;
-  const overallConclusion: ReviewConclusion =
-    failedCount > 0 ? 'failure' : neutralCount > 0 ? 'neutral' : 'success';
+  let overallConclusion: ReviewConclusion;
+  if (failedCount > 0 || (incomplete && input.incompleteReason !== 'cancelled')) {
+    overallConclusion = 'failure';
+  } else if (incomplete || neutralCount > 0 || input.checks.length === 0) {
+    overallConclusion = 'neutral';
+  } else {
+    overallConclusion = 'success';
+  }
   const sortedCheckIds = input.checks
     .map((c) => c.checkId)
     .sort((a, b) => a - b)
     .join(',');
   const runFingerprint = createHash('sha256')
-    .update(`${input.repo}#${input.prNumber}@${input.headSha}:${sortedCheckIds}`)
+    .update(
+      `${input.repo}#${input.prNumber}@${input.headSha}:${sortedCheckIds}:${expectedChecksCount}:${incompleteChecksCount}:${overallConclusion}`,
+    )
     .digest('hex')
     .slice(0, 16);
 
@@ -1828,6 +1972,9 @@ export function buildPrReviewCompletedPayload(input: PrReviewCompletedEventInput
       headSha: input.headSha,
       overallConclusion,
       checksCount: input.checks.length,
+      expectedChecksCount,
+      incompleteChecksCount,
+      incomplete,
       failedCount,
       checks: input.checks.map((c) => ({
         checkId: c.checkId,
