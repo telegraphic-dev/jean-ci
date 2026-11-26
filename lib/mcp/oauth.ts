@@ -41,6 +41,7 @@ export const OAUTH_CSRF_COOKIE_NAME = 'jean-ci-mcp-oauth-csrf';
 
 const MAX_CIMD_BYTES = 64 * 1024;
 const MAX_OAUTH_STATE_LEN = 2048;
+const MAX_REDIRECT_URIS = 100;
 const CIMD_TIMEOUT_MS = 5000;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
@@ -814,6 +815,8 @@ async function fetchCimdPinnedHttps(
         method: 'GET',
         headers: {
           Accept: 'application/json',
+          'Accept-Encoding': 'identity',
+          'User-Agent': 'jean-ci-mcp-oauth/1.0',
           Host: parsed.host,
         },
         servername: net.isIP(rawHost) ? undefined : rawHost,
@@ -919,8 +922,12 @@ export async function fetchCimdClient(
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
     if (doc.client_id !== clientId) return null;
 
-    const redirectUris = Array.isArray(doc.redirect_uris) ? doc.redirect_uris : [];
-    if (redirectUris.length === 0 || redirectUris.length > 10 || !redirectUris.every(isValidRedirectUri)) {
+    const rawRedirectUris = Array.isArray(doc.redirect_uris) ? doc.redirect_uris : [];
+    if (rawRedirectUris.length === 0 || rawRedirectUris.length > MAX_REDIRECT_URIS) {
+      return null;
+    }
+    const redirectUris = rawRedirectUris.filter(isValidRedirectUri);
+    if (redirectUris.length === 0) {
       return null;
     }
     const authMethod = typeof doc.token_endpoint_auth_method === 'string' ? doc.token_endpoint_auth_method : 'none';
@@ -983,12 +990,12 @@ export async function registerOAuthClient(store: McpOAuthStore, payload: unknown
   }
   const input = payload as Record<string, unknown>;
   const redirectUris = Array.isArray(input.redirect_uris) ? input.redirect_uris : [];
-  if (redirectUris.length === 0 || redirectUris.length > 10) {
+  if (redirectUris.length === 0 || redirectUris.length > MAX_REDIRECT_URIS) {
     return {
       status: 400,
       body: {
         error: 'invalid_redirect_uri',
-        error_description: 'redirect_uris must contain between 1 and 10 valid redirect URIs.',
+        error_description: `redirect_uris must contain between 1 and ${MAX_REDIRECT_URIS} valid redirect URIs.`,
       },
     };
   }
