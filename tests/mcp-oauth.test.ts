@@ -166,6 +166,46 @@ test('CIMD resolves valid HTTPS client metadata documents and blocks SSRF target
     async () => [{ address: '93.184.216.34' }],
   );
   assert.equal(mismatch, null);
+
+  // Multi-environment CIMD metadata with >10 redirect_uris (like MCPJam's 18 URIs) and a native custom scheme succeeds,
+  // retaining only validated https:// and loopback http:// redirect URIs
+  const manyUris = [
+    ...Array.from({ length: 18 }, (_, i) => `https://app.example.com/oauth/callback/${i}`),
+    'myapp://oauth/callback',
+  ];
+  const multiRedirectCimd = await fetchCimdClient(
+    clientId,
+    async () =>
+      new Response(
+        JSON.stringify({
+          client_id: clientId,
+          client_name: 'MCPJam',
+          redirect_uris: manyUris,
+          grant_types: ['authorization_code', 'refresh_token', 'urn:ietf:params:oauth:grant-type:device_code'],
+          token_endpoint_auth_method: 'none',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    async () => [{ address: '93.184.216.34' }],
+  );
+  assert.ok(multiRedirectCimd);
+  assert.equal(multiRedirectCimd.redirectUris.length, 18);
+  assert.equal(multiRedirectCimd.redirectUris.includes('myapp://oauth/callback'), false);
+
+  // Excessive (>100) redirect_uris is still rejected
+  const tooManyUris = await fetchCimdClient(
+    clientId,
+    async () =>
+      new Response(
+        JSON.stringify({
+          client_id: clientId,
+          redirect_uris: Array.from({ length: 101 }, (_, i) => `https://app.example.com/cb/${i}`),
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    async () => [{ address: '93.184.216.34' }],
+  );
+  assert.equal(tooManyUris, null);
 });
 
 test('full OAuth 2.1 PKCE S256 flow enforces audience, code replay revocation, refresh rotation, and revocation', async () => {
