@@ -1320,12 +1320,16 @@ test('expired subscription replacement resets watermark, detached replay rejects
       baseUrl: 'https://jean-ci.example.com',
     }),
   );
-  let getSubCalls = 0;
+  let inReplay = false;
+  const origUpsert = flakyStore.upsertSubscription.bind(flakyStore);
+  flakyStore.upsertSubscription = async (input) => {
+    const saved = await origUpsert(input);
+    inReplay = true;
+    return saved;
+  };
   const origGetSub = flakyStore.getSubscriptionByKeyHash.bind(flakyStore);
   flakyStore.getSubscriptionByKeyHash = async (keyHash: string) => {
-    getSubCalls += 1;
-    // Call 1 is inside events/subscribe; Call 2 is inside the detached replay loop
-    if (getSubCalls >= 2) {
+    if (inReplay) {
       throw new Error('simulated transient DB outage during replay');
     }
     return origGetSub(keyHash);
@@ -1599,6 +1603,133 @@ test('intermittent failures reset consecutiveFailures on success while pinning w
     },
   );
 });
+
+test('concurrent subscribe requests cannot bypass per-principal quota and concurrent publishes cannot fall between replay and subscription install', async () => {
+  const secret = makeWebhookSecret(32);
+
+  // 1) 35 concurrent fresh subscriptions on one principal with async verification delay:
+  //    all pass pre-check, yet atomic upsert quota ensures strictly 25 succeed and 10 get ResourceExhausted.
+  const quotaStore = new InMemoryMcpEventsStore();
+  const quotaDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    await new Promise((r) => setTimeout(r, 15));
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string };
+    return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+  };
+  const quotaHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: quotaStore,
+    deliverEventWebhook: quotaDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+
+  const results = await Promise.all(
+    Array.from({ length: 35 }, (_, idx) =>
+      callEventsRpc(quotaHandler, 'events/subscribe', {
+        name: 'pr_review.completed',
+        arguments: { prNumber: idx + 1 },
+        delivery: {
+          mode: 'webhook',
+          url: `https://hooks.concurrent-quota-${idx + 1}.example/mcp`,
+          secret,
+        },
+      }),
+    ),
+  );
+  const succeeded = results.filter((r) => !r.json.error);
+  const exhausted = results.filter((r) => r.json.error?.code === EventsErrorCode.ResourceExhausted);
+  assert.equal(succeeded.length, 25);
+  assert.equal(exhausted.length, 10);
+  assert.equal(await quotaStore.countActiveSubscriptions('oauth:42:clienthash123456'), 25);
+
+  // Refreshing an existing subscription at full quota still succeeds without consuming a new slot
+  const firstSucceededIdx = results.findIndex((r) => !r.json.error);
+  const refreshAtQuota = await callEventsRpc(quotaHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    arguments: { prNumber: firstSucceededIdx + 1 },
+    delivery: {
+      mode: 'webhook',
+      url: `https://hooks.concurrent-quota-${firstSucceededIdx + 1}.example/mcp`,
+      secret,
+    },
+  });
+  assert.equal(refreshAtQuota.json.error, undefined);
+  assert.equal(await quotaStore.countActiveSubscriptions('oauth:42:clienthash123456'), 25);
+
+  // 2) Event published right between subscription upsert and replay query is NOT missed
+  const gapStore = new InMemoryMcpEventsStore();
+  await gapStore.insertEvent(
+    buildPrReviewCompletedPayload({
+      repo: 'telegraphic-dev/jean-ci',
+      prNumber: 1,
+      headSha: '1'.repeat(40),
+      checks: [{ checkId: 1, checkName: 'Code Review', conclusion: 'success' }],
+      baseUrl: 'https://jean-ci.example.com',
+    }),
+  );
+
+  const deliveredPrs: number[] = [];
+  const gapDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber !== undefined) deliveredPrs.push(parsed.data.prNumber);
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+
+  // Hook queryEvents to inject a concurrent publish of PR #2 right as replay selection starts
+  // (after upsertSubscription has already installed the subscription!)
+  let injectedConcurrentPublish = false;
+  const origQueryEvents = gapStore.queryEvents.bind(gapStore);
+  gapStore.queryEvents = async (params) => {
+    if (!injectedConcurrentPublish && params.order === 'desc') {
+      injectedConcurrentPublish = true;
+      await publishMcpEvent(
+        gapStore,
+        buildPrReviewCompletedPayload({
+          repo: 'telegraphic-dev/jean-ci',
+          prNumber: 2,
+          headSha: '2'.repeat(40),
+          checks: [{ checkId: 2, checkName: 'Code Review', conclusion: 'success' }],
+          baseUrl: 'https://jean-ci.example.com',
+        }),
+        { deliverWebhook: gapDeliverFn, retryDelaysMs: [0], awaitDeliveries: true },
+      );
+    }
+    return origQueryEvents(params);
+  };
+
+  const gapHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: gapStore,
+    deliverEventWebhook: gapDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+  const gapUrl = 'https://hooks.zero-gap.example/mcp';
+  const gapRes = await callEventsRpc(gapHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url: gapUrl, secret },
+    cursor: 'evt_v1_0',
+  });
+  assert.equal(gapRes.json.error, undefined);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(injectedConcurrentPublish, true);
+  assert.ok(deliveredPrs.includes(1), 'historical PR #1 must be delivered');
+  assert.ok(deliveredPrs.includes(2), 'concurrently published PR #2 must not be missed');
+  const gapKeyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    gapUrl,
+    'pr_review.completed',
+    {},
+  ).subscriptionKeyHash;
+  const finalGapSub = await gapStore.getSubscriptionByKeyHash(gapKeyHash);
+  assert.equal(finalGapSub?.lastCursorId, 2);
+});
+
 
 
 

@@ -9,6 +9,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import {
+  advanceMcpEventSubscriptionCursor,
   countActiveMcpEventSubscriptionsForPrincipal,
   deleteMcpEventSubscriptionByKeyHash,
   getMcpEventStreamBounds,
@@ -20,6 +21,7 @@ import {
   isMcpEventEndpointVerified,
   listActiveMcpEventSubscriptionsByEventName,
   markMcpEventEndpointVerified,
+  McpEventSubscriptionQuotaExceededError,
   queryMcpEvents,
   updateMcpEventSubscriptionDeliveryStatus,
   upsertMcpEventSubscription,
@@ -140,7 +142,9 @@ export interface McpEventsStore {
     previousSecretExpiresAt: Date | null;
     expiresAt: Date;
     lastCursorId: number;
+    maxActivePerPrincipal?: number;
   }): Promise<McpEventSubscription>;
+  advanceSubscriptionCursor(keyHash: string, minCursorId: number): Promise<void>;
   deleteSubscriptionByKeyHash(keyHash: string): Promise<boolean>;
   listActiveSubscriptions(eventName: McpEventName): Promise<McpEventSubscription[]>;
   updateDeliveryStatus(params: {
@@ -748,8 +752,11 @@ export function createDbMcpEventsStore(): McpEventsStore {
           previousSecretExpiresAt: input.previousSecretExpiresAt,
           expiresAt: input.expiresAt,
           lastCursorId: input.lastCursorId,
+          maxActivePerPrincipal: input.maxActivePerPrincipal,
         }),
       ),
+    advanceSubscriptionCursor: (keyHash, minCursorId) =>
+      advanceMcpEventSubscriptionCursor(keyHash, minCursorId),
     deleteSubscriptionByKeyHash: (keyHash) => deleteMcpEventSubscriptionByKeyHash(keyHash),
     listActiveSubscriptions: async (eventName) =>
       (await listActiveMcpEventSubscriptionsByEventName(eventName)).map(mapSubscriptionRow),
@@ -910,10 +917,22 @@ export class InMemoryMcpEventsStore implements McpEventsStore {
     previousSecretExpiresAt: Date | null;
     expiresAt: Date;
     lastCursorId: number;
+    maxActivePerPrincipal?: number;
   }): Promise<McpEventSubscription> {
     const existing = this.subscriptions.get(input.subscriptionKeyHash);
     const now = new Date();
     const isExistingActive = Boolean(existing && existing.expiresAt.getTime() > now.getTime());
+    if (!isExistingActive && input.maxActivePerPrincipal !== undefined) {
+      let activeCount = 0;
+      for (const sub of this.subscriptions.values()) {
+        if (sub.principal === input.principal && sub.expiresAt.getTime() > now.getTime()) {
+          activeCount += 1;
+        }
+      }
+      if (activeCount >= input.maxActivePerPrincipal) {
+        throw new McpEventSubscriptionQuotaExceededError(input.maxActivePerPrincipal);
+      }
+    }
     const record: McpEventSubscription = {
       subscriptionKeyHash: input.subscriptionKeyHash,
       subscriptionId: input.subscriptionId,
@@ -939,6 +958,15 @@ export class InMemoryMcpEventsStore implements McpEventsStore {
     };
     this.subscriptions.set(input.subscriptionKeyHash, record);
     return { ...record };
+  }
+
+  async advanceSubscriptionCursor(keyHash: string, minCursorId: number): Promise<void> {
+    const sub = this.subscriptions.get(keyHash);
+    if (!sub) return;
+    if (minCursorId > sub.lastCursorId) {
+      sub.lastCursorId = minCursorId;
+      sub.updatedAt = new Date();
+    }
   }
 
   async deleteSubscriptionByKeyHash(keyHash: string): Promise<boolean> {
@@ -1610,11 +1638,14 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
       validatedArgs,
     );
 
-    const existing = await store.getSubscriptionByKeyHash(subscriptionKeyHash);
-    const isRefresh = Boolean(existing && existing.expiresAt.getTime() > Date.now());
-    const previousDeliveryStatus = existing && isRefresh ? buildDeliveryStatus(existing) : undefined;
+    const existingBeforeVerify = await store.getSubscriptionByKeyHash(subscriptionKeyHash);
+    const isRefreshBeforeVerify = Boolean(
+      existingBeforeVerify && existingBeforeVerify.expiresAt.getTime() > Date.now(),
+    );
 
-    if (!isRefresh) {
+    // Fast pre-check before outbound endpoint verification; the authoritative quota check
+    // runs atomically inside store.upsertSubscription under a per-principal lock.
+    if (!isRefreshBeforeVerify) {
       const activeCount = await store.countActiveSubscriptions(principal);
       if (activeCount >= MAX_SUBSCRIPTIONS_PER_PRINCIPAL) {
         throw new ProtocolError(
@@ -1641,13 +1672,14 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
       );
     }
 
-    const bounds = await store.getStreamBounds();
+    // Re-read current subscription state after verification so refresh status, secret rotation,
+    // and replay starting position reflect the latest persisted state.
+    const existing = await store.getSubscriptionByKeyHash(subscriptionKeyHash);
+    const isRefresh = Boolean(existing && existing.expiresAt.getTime() > Date.now());
+    const previousDeliveryStatus = existing && isRefresh ? buildDeliveryStatus(existing) : undefined;
+
     const grantedTtlMs = computeGrantedTtlMs(params.ttlMs);
     const expiresAt = new Date(Date.now() + grantedTtlMs);
-
-    let truncated = false;
-    let replayEvents: McpEventRecord[] = [];
-    let watermarkId = bounds.latestId;
 
     // Determine whether we should recover/replay matching events from a starting position:
     // - On refresh: start from the subscription's last acknowledged watermark so suspended or
@@ -1656,9 +1688,59 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
     const replayFromSeq =
       isRefresh && existing ? existing.lastCursorId : cursorSeq !== null ? cursorSeq : null;
 
+    const initialWatermarkId =
+      replayFromSeq !== null ? replayFromSeq : (await store.getStreamBounds()).latestId;
+
+    // Secret rotation: keep old secret for a 5-minute dual-sign grace window
+    const secretChanged = Boolean(existing && existing.secret !== params.delivery.secret);
+    const previousSecret = secretChanged ? existing!.secret : (existing?.previousSecret ?? null);
+    const previousSecretExpiresAt = secretChanged
+      ? new Date(Date.now() + SECRET_ROTATION_GRACE_MS)
+      : (existing?.previousSecretExpiresAt ?? null);
+
+    // Install/update the subscription BEFORE querying the catch-up window so:
+    // 1. Per-principal quota is enforced atomically with insertion across concurrent callers.
+    // 2. Any event published concurrently either appears in the subsequent replay query or sees
+    //    the already-installed subscription in publishMcpEvent (zero gap between replay and live).
+    let saved: McpEventSubscription;
+    try {
+      saved = await store.upsertSubscription({
+        subscriptionKeyHash,
+        subscriptionId,
+        principal,
+        oauthTokenFamilyId,
+        eventName: params.name,
+        arguments: validatedArgs,
+        callbackUrl: parsedUrl.toString(),
+        secret: params.delivery.secret,
+        previousSecret,
+        previousSecretExpiresAt,
+        expiresAt,
+        lastCursorId: initialWatermarkId,
+        maxActivePerPrincipal: MAX_SUBSCRIPTIONS_PER_PRINCIPAL,
+      });
+    } catch (err) {
+      if (
+        err instanceof McpEventSubscriptionQuotaExceededError ||
+        (err instanceof Error && err.name === 'McpEventSubscriptionQuotaExceededError')
+      ) {
+        throw new ProtocolError(
+          EventsErrorCode.ResourceExhausted,
+          `Active webhook subscription quota exceeded (max ${MAX_SUBSCRIPTIONS_PER_PRINCIPAL} per principal).`,
+          { limit: 'subscriptions', max: MAX_SUBSCRIPTIONS_PER_PRINCIPAL },
+        );
+      }
+      throw err;
+    }
+
+    let truncated = false;
+    let replayEvents: McpEventRecord[] = [];
+    let watermarkId = saved.lastCursorId;
+
     if (replayFromSeq !== null) {
-      let effectiveAfterId = replayFromSeq;
-      if (bounds.oldestId !== null && replayFromSeq > 0 && replayFromSeq < bounds.oldestId - 1) {
+      const bounds = await store.getStreamBounds();
+      let effectiveAfterId = saved.lastCursorId;
+      if (bounds.oldestId !== null && effectiveAfterId > 0 && effectiveAfterId < bounds.oldestId - 1) {
         truncated = true;
         effectiveAfterId = bounds.oldestId - 1;
       }
@@ -1676,8 +1758,8 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
           truncated = true;
         }
       }
-      // Query the NEWEST permitted window (DESC) so if the backlog exceeds DEFAULT_MAX_EVENTS,
-      // older events are dropped (truncated: true) and the latest events are delivered in ascending order.
+      // Query the NEWEST permitted window (DESC) AFTER the subscription is installed so no event
+      // can fall between historical replay and live delivery.
       const newestDesc = await store.queryEvents({
         name: params.name,
         afterId: effectiveAfterId,
@@ -1697,35 +1779,16 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
       }
       // Preserve safe-to-persist watermark:
       // - If matching events are pending delivery, do not advance past the first unacknowledged event.
-      // - If no matching events exist in (effectiveAfterId, latestId], safely advance during quiet periods.
+      // - If no matching events exist in (effectiveAfterId, bounds.latestId], safely advance during quiet periods.
       if (replayEvents.length > 0) {
         watermarkId = truncated ? Math.max(effectiveAfterId, replayEvents[0].id - 1) : effectiveAfterId;
       } else {
         watermarkId = Math.max(effectiveAfterId, bounds.latestId);
       }
+      if (watermarkId > saved.lastCursorId) {
+        await store.advanceSubscriptionCursor(saved.subscriptionKeyHash, watermarkId);
+      }
     }
-
-    // Secret rotation: keep old secret for a 5-minute dual-sign grace window
-    const secretChanged = Boolean(existing && existing.secret !== params.delivery.secret);
-    const previousSecret = secretChanged ? existing!.secret : (existing?.previousSecret ?? null);
-    const previousSecretExpiresAt = secretChanged
-      ? new Date(Date.now() + SECRET_ROTATION_GRACE_MS)
-      : (existing?.previousSecretExpiresAt ?? null);
-
-    const saved = await store.upsertSubscription({
-      subscriptionKeyHash,
-      subscriptionId,
-      principal,
-      oauthTokenFamilyId,
-      eventName: params.name,
-      arguments: validatedArgs,
-      callbackUrl: parsedUrl.toString(),
-      secret: params.delivery.secret,
-      previousSecret,
-      previousSecretExpiresAt,
-      expiresAt,
-      lastCursorId: watermarkId,
-    });
 
     if (replayEvents.length > 0) {
       void enqueueSubscriptionDelivery(saved.subscriptionKeyHash, async () => {

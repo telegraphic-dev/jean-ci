@@ -3252,6 +3252,15 @@ export async function countActiveMcpEventSubscriptionsForPrincipal(principal: st
   return Number(result.rows[0]?.count || 0);
 }
 
+export class McpEventSubscriptionQuotaExceededError extends Error {
+  readonly maxSubscriptions: number;
+  constructor(maxSubscriptions: number) {
+    super(`Active webhook subscription quota exceeded (max ${maxSubscriptions} per principal).`);
+    this.name = 'McpEventSubscriptionQuotaExceededError';
+    this.maxSubscriptions = maxSubscriptions;
+  }
+}
+
 export async function upsertMcpEventSubscription(data: {
   subscriptionKeyHash: string;
   subscriptionId: string;
@@ -3265,47 +3274,95 @@ export async function upsertMcpEventSubscription(data: {
   previousSecretExpiresAt: Date | null;
   expiresAt: Date;
   lastCursorId: number;
+  maxActivePerPrincipal?: number;
 }): Promise<McpEventSubscriptionDbRecord> {
-  const result = await pool.query<McpEventSubscriptionDbRecord>(
-    `INSERT INTO jean_ci_mcp_event_subscriptions (
-       subscription_key_hash, subscription_id, principal, oauth_token_family_id,
-       event_name, arguments_json, callback_url, secret,
-       previous_secret, previous_secret_expires_at, expires_at,
-       last_cursor_id, active, consecutive_failures, updated_at
-     )
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, TRUE, 0, CURRENT_TIMESTAMP)
-     ON CONFLICT (subscription_key_hash) DO UPDATE SET
-       oauth_token_family_id = EXCLUDED.oauth_token_family_id,
-       secret = EXCLUDED.secret,
-       previous_secret = EXCLUDED.previous_secret,
-       previous_secret_expires_at = EXCLUDED.previous_secret_expires_at,
-       expires_at = EXCLUDED.expires_at,
-       last_cursor_id = CASE
-         WHEN jean_ci_mcp_event_subscriptions.expires_at <= NOW() THEN EXCLUDED.last_cursor_id
-         ELSE GREATEST(jean_ci_mcp_event_subscriptions.last_cursor_id, EXCLUDED.last_cursor_id)
-       END,
-       active = TRUE,
-       consecutive_failures = 0,
-       last_error = NULL,
-       failed_since = NULL,
-       updated_at = CURRENT_TIMESTAMP
-     RETURNING *`,
-    [
-      data.subscriptionKeyHash,
-      data.subscriptionId,
-      data.principal,
-      data.oauthTokenFamilyId,
-      data.eventName,
-      JSON.stringify(data.argumentsJson),
-      data.callbackUrl,
-      data.secret,
-      data.previousSecret,
-      data.previousSecretExpiresAt,
-      data.expiresAt,
-      data.lastCursorId,
-    ],
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext('mcp_event_sub_quota'), hashtext($1))`,
+      [data.principal],
+    );
+    if (data.maxActivePerPrincipal !== undefined) {
+      const existingRes = await client.query<{ is_active_refresh: boolean }>(
+        `SELECT (expires_at > NOW()) AS is_active_refresh
+         FROM jean_ci_mcp_event_subscriptions
+         WHERE subscription_key_hash = $1`,
+        [data.subscriptionKeyHash],
+      );
+      const isActiveRefresh = Boolean(existingRes.rows[0]?.is_active_refresh);
+      if (!isActiveRefresh) {
+        const countRes = await client.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
+           FROM jean_ci_mcp_event_subscriptions
+           WHERE principal = $1 AND expires_at > NOW()`,
+          [data.principal],
+        );
+        if (Number(countRes.rows[0]?.count || 0) >= data.maxActivePerPrincipal) {
+          throw new McpEventSubscriptionQuotaExceededError(data.maxActivePerPrincipal);
+        }
+      }
+    }
+    const result = await client.query<McpEventSubscriptionDbRecord>(
+      `INSERT INTO jean_ci_mcp_event_subscriptions (
+         subscription_key_hash, subscription_id, principal, oauth_token_family_id,
+         event_name, arguments_json, callback_url, secret,
+         previous_secret, previous_secret_expires_at, expires_at,
+         last_cursor_id, active, consecutive_failures, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, TRUE, 0, CURRENT_TIMESTAMP)
+       ON CONFLICT (subscription_key_hash) DO UPDATE SET
+         oauth_token_family_id = EXCLUDED.oauth_token_family_id,
+         secret = EXCLUDED.secret,
+         previous_secret = EXCLUDED.previous_secret,
+         previous_secret_expires_at = EXCLUDED.previous_secret_expires_at,
+         expires_at = EXCLUDED.expires_at,
+         last_cursor_id = CASE
+           WHEN jean_ci_mcp_event_subscriptions.expires_at <= NOW() THEN EXCLUDED.last_cursor_id
+           ELSE GREATEST(jean_ci_mcp_event_subscriptions.last_cursor_id, EXCLUDED.last_cursor_id)
+         END,
+         active = TRUE,
+         consecutive_failures = 0,
+         last_error = NULL,
+         failed_since = NULL,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [
+        data.subscriptionKeyHash,
+        data.subscriptionId,
+        data.principal,
+        data.oauthTokenFamilyId,
+        data.eventName,
+        JSON.stringify(data.argumentsJson),
+        data.callbackUrl,
+        data.secret,
+        data.previousSecret,
+        data.previousSecretExpiresAt,
+        data.expiresAt,
+        data.lastCursorId,
+      ],
+    );
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function advanceMcpEventSubscriptionCursor(
+  subscriptionKeyHash: string,
+  minCursorId: number,
+): Promise<void> {
+  await pool.query(
+    `UPDATE jean_ci_mcp_event_subscriptions
+     SET last_cursor_id = GREATEST(last_cursor_id, $2),
+         updated_at = CURRENT_TIMESTAMP
+     WHERE subscription_key_hash = $1`,
+    [subscriptionKeyHash, minCursorId],
   );
-  return result.rows[0];
 }
 
 export async function deleteMcpEventSubscriptionByKeyHash(keyHash: string): Promise<boolean> {
