@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import dns from 'node:dns/promises';
 import https from 'node:https';
 import net from 'node:net';
@@ -1610,9 +1610,33 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+export function computeConsentCsrfToken(
+  sessionCsrfSecret: string,
+  requestId: string,
+  pendingCsrfToken: string,
+): string {
+  return createHmac('sha256', sessionCsrfSecret)
+    .update(`${requestId}:${pendingCsrfToken}`)
+    .digest('hex');
+}
+
+export function isSameOriginConsentSubmission(req: Request, baseUrl?: string): boolean {
+  const expectedOrigin = normalizeOrigin(baseUrl);
+  const origin = req.headers.get('origin');
+  if (origin) {
+    if (origin !== expectedOrigin) return false;
+  }
+  const fetchSite = req.headers.get('sec-fetch-site')?.trim().toLowerCase();
+  if (fetchSite && fetchSite !== 'same-origin') {
+    return false;
+  }
+  return true;
+}
+
 export function renderConsentPageHtml(
   pending: McpOAuthPending,
   user: { id: string; login: string },
+  csrfToken: string = pending.csrfToken,
 ): string {
   const scopes = pending.scope.split(/\s+/).filter(Boolean);
   let redirectOrigin = pending.redirectUri;
@@ -1692,7 +1716,7 @@ export function renderConsentPageHtml(
     </div>
     <form method="POST" action="/oauth/authorize" class="actions">
       <input type="hidden" name="request_id" value="${escapeHtml(pending.requestId)}" />
-      <input type="hidden" name="csrf_token" value="${escapeHtml(pending.csrfToken)}" />
+      <input type="hidden" name="csrf_token" value="${escapeHtml(csrfToken)}" />
       <button type="submit" name="decision" value="deny" class="deny">Deny</button>
       <button type="submit" name="decision" value="approve" class="approve">Approve</button>
     </form>
@@ -1701,15 +1725,15 @@ export function renderConsentPageHtml(
 </html>`;
 }
 
-export function buildConsentHtmlHeaders(csrfToken: string): Record<string, string> {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+export function buildConsentHtmlHeaders(_csrfToken?: string): Record<string, string> {
   return {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
     Pragma: 'no-cache',
     'X-Frame-Options': 'DENY',
+    // Omit form-action 'self' because Chromium/Safari apply form-action to the 302 OAuth callback
+    // redirect target (e.g. https://app.mcpjam.com/oauth/callback or http://127.0.0.1:*/callback).
     'Content-Security-Policy':
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
-    'Set-Cookie': `${OAUTH_CSRF_COOKIE_NAME}=${csrfToken}; Path=/oauth/authorize; HttpOnly; SameSite=Lax; Max-Age=${PENDING_AUTH_TTL_SEC}${secure}`,
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
   };
 }

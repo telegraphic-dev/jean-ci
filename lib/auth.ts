@@ -12,6 +12,7 @@ export interface SessionData {
   };
   oauthState?: string;
   oauthReturnTo?: string;
+  mcpOAuthCsrfSecret?: string;
 }
 
 export async function getSession() {

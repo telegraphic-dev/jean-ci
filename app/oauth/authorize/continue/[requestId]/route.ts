@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, requireReviewAdmin } from '@/lib/auth';
 import { APP_BASE_URL } from '@/lib/config';
 import {
   buildConsentHtmlHeaders,
+  computeConsentCsrfToken,
   createDbMcpOAuthStore,
   renderConsentPageHtml,
 } from '@/lib/mcp/oauth';
@@ -46,9 +48,18 @@ export async function GET(
     return new NextResponse(admin.error, { status: 403, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  const html = renderConsentPageHtml(pending, admin.user);
+  if (!session.mcpOAuthCsrfSecret || !/^[a-f0-9]{64}$/.test(session.mcpOAuthCsrfSecret)) {
+    session.mcpOAuthCsrfSecret = randomBytes(32).toString('hex');
+    await session.save();
+  }
+  const formCsrfToken = computeConsentCsrfToken(
+    session.mcpOAuthCsrfSecret,
+    pending.requestId,
+    pending.csrfToken,
+  );
+  const html = renderConsentPageHtml(pending, admin.user, formCsrfToken);
   return new NextResponse(html, {
     status: 200,
-    headers: buildConsentHtmlHeaders(pending.csrfToken),
+    headers: buildConsentHtmlHeaders(),
   });
 }

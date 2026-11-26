@@ -11,11 +11,13 @@ import {
   buildConsentHtmlHeaders,
   buildProtectedResourceMetadata,
   buildWwwAuthenticateHeader,
+  computeConsentCsrfToken,
   createPendingAuthorization,
   exchangeOAuthToken,
   fetchCimdClient,
   isCimdClientId,
   isPrivateIpAddress,
+  isSameOriginConsentSubmission,
   isValidRedirectUri,
   redirectUriMatches,
   registerOAuthClient,
@@ -847,5 +849,54 @@ test('OAuth authorization preserves state > 1024 chars verbatim and explicitly r
   assert.equal(tooLong.status, 400);
   assert.equal(tooLong.error, 'invalid_request');
 });
+
+test('consent CSRF tokens bind to iron-session secret across concurrent tabs, enforce same-origin POST, and allow 302 callback redirect in CSP', () => {
+  const sessionSecretA = randomBytes(32).toString('hex');
+  const sessionSecretB = randomBytes(32).toString('hex');
+  const req1 = { requestId: 'a'.repeat(32), csrfToken: '1'.repeat(48) };
+  const req2 = { requestId: 'b'.repeat(32), csrfToken: '2'.repeat(48) };
+
+  const tok1 = computeConsentCsrfToken(sessionSecretA, req1.requestId, req1.csrfToken);
+  const tok2 = computeConsentCsrfToken(sessionSecretA, req2.requestId, req2.csrfToken);
+  const tok1OtherSession = computeConsentCsrfToken(sessionSecretB, req1.requestId, req1.csrfToken);
+
+  assert.match(tok1, /^[a-f0-9]{64}$/);
+  assert.match(tok2, /^[a-f0-9]{64}$/);
+  assert.notEqual(tok1, tok2);
+  assert.notEqual(tok1, tok1OtherSession);
+  assert.equal(tok1, computeConsentCsrfToken(sessionSecretA, req1.requestId, req1.csrfToken));
+
+  // Same-origin POST check
+  const baseUrl = 'https://jean-ci.telegraphic.app';
+  const sameOriginReq = new Request(`${baseUrl}/oauth/authorize`, {
+    method: 'POST',
+    headers: { Origin: baseUrl, 'Sec-Fetch-Site': 'same-origin' },
+  });
+  const crossOriginReq = new Request(`${baseUrl}/oauth/authorize`, {
+    method: 'POST',
+    headers: { Origin: 'https://evil.example', 'Sec-Fetch-Site': 'cross-site' },
+  });
+  const nullOriginReq = new Request(`${baseUrl}/oauth/authorize`, {
+    method: 'POST',
+    headers: { Origin: 'null' },
+  });
+  const crossFetchSiteReq = new Request(`${baseUrl}/oauth/authorize`, {
+    method: 'POST',
+    headers: { 'Sec-Fetch-Site': 'cross-site' },
+  });
+  assert.equal(isSameOriginConsentSubmission(sameOriginReq, baseUrl), true);
+  assert.equal(isSameOriginConsentSubmission(crossOriginReq, baseUrl), false);
+  assert.equal(isSameOriginConsentSubmission(nullOriginReq, baseUrl), false);
+  assert.equal(isSameOriginConsentSubmission(crossFetchSiteReq, baseUrl), false);
+
+  // Consent page CSP must block clickjacking/scripts/base-hijacking without blocking OAuth 302 callback redirects
+  const headers = buildConsentHtmlHeaders();
+  assert.equal(headers['X-Frame-Options'], 'DENY');
+  assert.match(headers['Content-Security-Policy'], /frame-ancestors 'none'/);
+  assert.match(headers['Content-Security-Policy'], /base-uri 'none'/);
+  assert.doesNotMatch(headers['Content-Security-Policy'], /form-action/);
+  assert.equal(headers['Set-Cookie'], undefined);
+});
+
 
 

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '../../../../lib/auth';
 import { exchangeCodeForToken, getGitHubUser } from '../../../../lib/github';
@@ -29,6 +30,9 @@ export async function GET(req: NextRequest) {
       return new NextResponse('Access denied - not an admin', { status: 403 });
     }
     session.user = { id: String(user.id), login: user.login, avatar: user.avatar_url };
+    if (!session.mcpOAuthCsrfSecret || !/^[a-f0-9]{64}$/.test(session.mcpOAuthCsrfSecret)) {
+      session.mcpOAuthCsrfSecret = randomBytes(32).toString('hex');
+    }
     delete session.oauthState;
     delete session.oauthReturnTo;
     await session.save();
