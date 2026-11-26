@@ -1238,5 +1238,221 @@ test('runPRReview never emits overallConclusion=success when an expected check f
   );
 });
 
+test('expired subscription replacement resets watermark, detached replay rejects safely, and successive approval prompts emit distinct events', async () => {
+  const secret = makeWebhookSecret(32);
+
+  // 1) Replacing an expired subscription resets lastCursorId instead of preserving the expired high watermark
+  const expStore = new InMemoryMcpEventsStore();
+  for (let pr = 1; pr <= 5; pr += 1) {
+    await expStore.insertEvent(
+      buildPrReviewCompletedPayload({
+        repo: 'telegraphic-dev/jean-ci',
+        prNumber: pr,
+        headSha: String(pr).repeat(40),
+        checks: [{ checkId: pr, checkName: 'Code Review', conclusion: 'success' }],
+        baseUrl: 'https://jean-ci.example.com',
+      }),
+    );
+  }
+  const expUrl = 'https://hooks.expired-reset.example/mcp';
+  const expKeyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    expUrl,
+    'pr_review.completed',
+    {},
+  ).subscriptionKeyHash;
+
+  // Insert an already-expired subscription row with high watermark = 5 (simulating pre-cleanup DB row)
+  await expStore.upsertSubscription({
+    subscriptionKeyHash: expKeyHash,
+    subscriptionId: 'sub_expired_old',
+    principal: 'oauth:42:clienthash123456',
+    oauthTokenFamilyId: null,
+    eventName: 'pr_review.completed',
+    arguments: {},
+    callbackUrl: expUrl,
+    secret,
+    previousSecret: null,
+    previousSecretExpiresAt: null,
+    expiresAt: new Date(Date.now() - 60_000),
+    lastCursorId: 5,
+  });
+
+  const replayedAfterExpiry: number[] = [];
+  const expDeliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    if (parsed.data?.prNumber !== undefined) replayedAfterExpiry.push(parsed.data.prNumber);
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  const expHandler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: expStore,
+    deliverEventWebhook: expDeliverFn,
+    eventRetryDelaysMs: [0],
+  });
+
+  // Resubscribe with cursor=evt_v1_2: should reset watermark from expired 5 to 2 and replay PRs 3, 4, 5!
+  const recreated = await callEventsRpc(expHandler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url: expUrl, secret },
+    cursor: 'evt_v1_2',
+  });
+  assert.equal(recreated.json.result?.cursor, 'evt_v1_2');
+  assert.equal(recreated.json.result?.truncated, false);
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual(replayedAfterExpiry, [3, 4, 5]);
+  const updatedSub = await expStore.getSubscriptionByKeyHash(expKeyHash);
+  assert.equal(updatedSub?.lastCursorId, 5);
+
+  // 2) Detached replay catching store.getSubscriptionByKeyHash rejection produces NO unhandledRejection
+  const flakyStore = new InMemoryMcpEventsStore();
+  await flakyStore.insertEvent(
+    buildPrReviewCompletedPayload({
+      repo: 'telegraphic-dev/jean-ci',
+      prNumber: 99,
+      headSha: '9'.repeat(40),
+      checks: [{ checkId: 99, checkName: 'Code Review', conclusion: 'success' }],
+      baseUrl: 'https://jean-ci.example.com',
+    }),
+  );
+  let getSubCalls = 0;
+  const origGetSub = flakyStore.getSubscriptionByKeyHash.bind(flakyStore);
+  flakyStore.getSubscriptionByKeyHash = async (keyHash: string) => {
+    getSubCalls += 1;
+    // Call 1 is inside events/subscribe; Call 2 is inside the detached replay loop
+    if (getSubCalls >= 2) {
+      throw new Error('simulated transient DB outage during replay');
+    }
+    return origGetSub(keyHash);
+  };
+
+  let unhandledCount = 0;
+  const onUnhandled = () => {
+    unhandledCount += 1;
+  };
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const flakyHandler = createJeanCiMcpHandler({
+      baseUrl: 'https://jean-ci.example.com',
+      taskStore: new InMemoryMcpTaskStore(),
+      taskAbortRegistry: new McpTaskAbortRegistry(),
+      eventsStore: flakyStore,
+      deliverEventWebhook: async ({ rawBody }) => {
+        const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string };
+        return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+      },
+      eventRetryDelaysMs: [0],
+    });
+    const res = await callEventsRpc(flakyHandler, 'events/subscribe', {
+      name: 'pr_review.completed',
+      delivery: { mode: 'webhook', url: 'https://hooks.flaky-replay.example/mcp', secret },
+      cursor: 'evt_v1_0',
+    });
+    assert.equal(res.json.error, undefined);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(unhandledCount, 0);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+
+  // 3) Successive Hermes approval prompts in the same check emit distinct pr_review.approval_required events
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import { mock } from 'node:test';
+    import assert from 'node:assert/strict';
+
+    const dbExports = await import('./lib/db.ts');
+    let currentPrompts = [
+      { prompt_id: 'prompt-1', execution_generation: 0, choices: ['once', 'deny'] },
+    ];
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        ...dbExports,
+        getRepo: async () => ({ full_name: 'acme/app', installation_id: 1, pr_review_enabled: true }),
+        getConfig: async () => 'Review this PR.',
+        DEFAULT_USER_PROMPT: 'Review this PR.',
+        insertCheckRun: async () => 701,
+        setCheckRunGithubId: async () => {},
+        setReservedCheckInput: async () => {},
+        updateCheckRun: async () => {},
+        reviewRunStore: {
+          ...dbExports.reviewRunStore,
+          get: async () => [
+            { segment: 1, run_id: 'run-abc', status: 'waiting', pending: currentPrompts, history: [] },
+          ],
+        },
+      },
+    });
+    mock.module('./lib/github.ts', {
+      namedExports: {
+        getInstallationOctokit: async () => ({}),
+        getPRDiff: async () => 'diff --git a/a.ts b/a.ts\\n+export const ok = true;\\n',
+        getPRInfo: async () => ({ title: 'Test PR', body: 'Body', head: { sha: '${'a'.repeat(40)}' } }),
+        createCheck: async () => ({ id: 970 }),
+        updateCheck: async () => {},
+        createPRReview: async () => {},
+        fetchPRCheckFiles: async () => [],
+      },
+    });
+    mock.module('./lib/review-approval-comments.ts', {
+      namedExports: { postReviewApprovalComments: async () => {} },
+    });
+    mock.module('./lib/review-approvals.ts', {
+      namedExports: { notifyReviewApproval: async () => {} },
+    });
+    mock.module('./lib/llm.ts', {
+      namedExports: {
+        callOpenClaw: async (_prompt, _ctx, meta) => {
+          // Poll 1 & Poll 2 for first approval prompt -> should emit ONCE
+          await meta.onWaiting();
+          await meta.onWaiting();
+          // Run resumes and pauses again for a second approval prompt -> should emit a SECOND distinct event!
+          currentPrompts = [
+            { prompt_id: 'prompt-2', execution_generation: 1, choices: ['once', 'deny'] },
+          ];
+          await meta.onWaiting();
+          return {
+            success: true,
+            response: 'VERDICT: PASS\\nTITLE: Looks good\\nSUMMARY: Approved and passed.',
+          };
+        },
+      },
+    });
+
+    const { InMemoryMcpEventsStore } = await import('./lib/mcp/events.ts');
+    const { runPRReview } = await import('./lib/pr-review.ts');
+    const store = new InMemoryMcpEventsStore();
+    await runPRReview(1, 'acme', 'app', 91, '${'a'.repeat(40)}', undefined, {
+      mcpEventsStore: store,
+    });
+    const approvalEvents = await store.queryEvents({
+      name: 'pr_review.approval_required',
+      afterId: 0,
+      limit: 10,
+    });
+    assert.equal(approvalEvents.length, 2);
+    assert.notEqual(approvalEvents[0].eventId, approvalEvents[1].eventId);
+    assert.equal(approvalEvents[0].data.promptId, 'prompt-1');
+    assert.equal(approvalEvents[0].data.executionGeneration, 0);
+    assert.equal(approvalEvents[1].data.promptId, 'prompt-2');
+    assert.equal(approvalEvents[1].data.executionGeneration, 1);
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+    },
+  );
+});
+
+
 
 

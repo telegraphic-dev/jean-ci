@@ -357,6 +357,9 @@ export const MCP_EVENT_DESCRIPTORS: readonly McpEventTypeDescriptor[] = [
         prNumber: { type: 'integer' },
         headSha: { type: 'string' },
         checkName: { type: 'string' },
+        segment: { type: 'integer' },
+        executionGeneration: { type: 'integer' },
+        promptId: { type: 'string' },
         detailsUrl: { type: 'string', format: 'uri' },
         prUrl: { type: 'string', format: 'uri' },
       },
@@ -910,6 +913,7 @@ export class InMemoryMcpEventsStore implements McpEventsStore {
   }): Promise<McpEventSubscription> {
     const existing = this.subscriptions.get(input.subscriptionKeyHash);
     const now = new Date();
+    const isExistingActive = Boolean(existing && existing.expiresAt.getTime() > now.getTime());
     const record: McpEventSubscription = {
       subscriptionKeyHash: input.subscriptionKeyHash,
       subscriptionId: input.subscriptionId,
@@ -922,7 +926,9 @@ export class InMemoryMcpEventsStore implements McpEventsStore {
       previousSecret: input.previousSecret,
       previousSecretExpiresAt: input.previousSecretExpiresAt,
       expiresAt: input.expiresAt,
-      lastCursorId: Math.max(existing?.lastCursorId ?? 0, input.lastCursorId),
+      lastCursorId: isExistingActive
+        ? Math.max(existing!.lastCursorId, input.lastCursorId)
+        : input.lastCursorId,
       active: true,
       consecutiveFailures: 0,
       lastDeliveryAt: existing?.lastDeliveryAt ?? null,
@@ -1738,6 +1744,8 @@ export function registerMcpEventsExtension(server: McpServer, options: McpEvents
             break;
           }
         }
+      }).catch((err) => {
+        console.error(`[MCP Events] Replay task failed for ${saved.subscriptionId}:`, err);
       });
     }
 
@@ -1907,6 +1915,10 @@ export interface PrReviewApprovalRequiredEventInput {
   prNumber: number;
   headSha: string;
   checkName: string;
+  approvalId?: string;
+  segment?: number;
+  executionGeneration?: number;
+  promptId?: string;
   baseUrl: string;
 }
 
@@ -1990,8 +2002,16 @@ export function buildPrReviewCompletedPayload(input: PrReviewCompletedEventInput
 
 export function buildPrReviewApprovalRequiredPayload(input: PrReviewApprovalRequiredEventInput) {
   const base = input.baseUrl.replace(/\/+$/, '');
+  const identitySource =
+    input.approvalId ??
+    (input.promptId !== undefined
+      ? `${input.segment ?? 1}:${input.executionGeneration ?? 0}:${input.promptId}`
+      : null);
+  const eventId = identitySource
+    ? `jci_appr_${input.checkId}_${createHash('sha256').update(identitySource).digest('hex').slice(0, 12)}`
+    : `jci_appr_${input.checkId}`;
   return {
-    eventId: `jci_appr_${input.checkId}`,
+    eventId,
     name: 'pr_review.approval_required' as const,
     repo: input.repo,
     prNumber: input.prNumber,
@@ -2003,6 +2023,9 @@ export function buildPrReviewApprovalRequiredPayload(input: PrReviewApprovalRequ
       prNumber: input.prNumber,
       headSha: input.headSha,
       checkName: input.checkName,
+      ...(input.segment !== undefined ? { segment: input.segment } : {}),
+      ...(input.executionGeneration !== undefined ? { executionGeneration: input.executionGeneration } : {}),
+      ...(input.promptId !== undefined ? { promptId: input.promptId } : {}),
       detailsUrl: `${base}/checks/${input.checkId}`,
       prUrl: `https://github.com/${input.repo}/pull/${input.prNumber}`,
     },

@@ -3280,7 +3280,10 @@ export async function upsertMcpEventSubscription(data: {
        previous_secret = EXCLUDED.previous_secret,
        previous_secret_expires_at = EXCLUDED.previous_secret_expires_at,
        expires_at = EXCLUDED.expires_at,
-       last_cursor_id = GREATEST(jean_ci_mcp_event_subscriptions.last_cursor_id, EXCLUDED.last_cursor_id),
+       last_cursor_id = CASE
+         WHEN jean_ci_mcp_event_subscriptions.expires_at <= NOW() THEN EXCLUDED.last_cursor_id
+         ELSE GREATEST(jean_ci_mcp_event_subscriptions.last_cursor_id, EXCLUDED.last_cursor_id)
+       END,
        active = TRUE,
        consecutive_failures = 0,
        last_error = NULL,

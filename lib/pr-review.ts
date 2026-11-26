@@ -385,6 +385,7 @@ export async function runPRReview(
       const chunkedResponses = [];
       let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
       let cancelledDuringCheck = false;
+      const emittedApprovalKeys = new Set<string>();
       for (const [index, reviewContext] of reviewContexts.entries()) {
         if (await isRunCancelled()) {
           cancelledDuringCheck = true;
@@ -392,7 +393,6 @@ export async function runPRReview(
         }
         await restart?.assertOwner?.();
         let approvalWaitReported = false;
-        let approvalEventEmitted = false;
         const result = await callOpenClaw(check.prompt, reviewContext.context, {
           owner,
           repo,
@@ -423,23 +423,69 @@ export async function runPRReview(
             // Only a link and server-owned repo/SHA are sent, never tool text.
             const { notifyReviewApproval } = await import('./review-approvals.ts');
             await notifyReviewApproval(dbId);
-            if (!approvalEventEmitted) {
-              approvalEventEmitted = true;
-              try {
-                const { buildPrReviewApprovalRequiredPayload } = await import('./mcp/events.ts');
-                await emitMcpEvent(
-                  buildPrReviewApprovalRequiredPayload({
-                    checkId: dbId,
-                    repo: repoFullName,
-                    prNumber,
-                    headSha,
-                    checkName: check.name,
-                    baseUrl: BASE_URL,
-                  }),
-                );
-              } catch (eventErr: any) {
-                console.warn(`Ignoring pr_review.approval_required event error (db: ${dbId}):`, eventErr?.message || eventErr);
+            try {
+              const { buildPrReviewApprovalRequiredPayload } = await import('./mcp/events.ts');
+              const dbMod = await import('./db.ts');
+              const bindings =
+                typeof dbMod.reviewRunStore?.get === 'function'
+                  ? await dbMod.reviewRunStore.get(dbId).catch(() => [])
+                  : [];
+              const pendingPrompts: Array<{
+                segment: number;
+                runId: string;
+                executionGeneration: number;
+                promptId: string;
+              }> = [];
+              for (const binding of bindings) {
+                for (const prompt of binding.pending || []) {
+                  pendingPrompts.push({
+                    segment: binding.segment,
+                    runId: binding.run_id ?? '',
+                    executionGeneration: prompt.execution_generation,
+                    promptId: prompt.prompt_id,
+                  });
+                }
               }
+              if (pendingPrompts.length > 0) {
+                for (const prompt of pendingPrompts) {
+                  const approvalKey = `${prompt.segment}:${prompt.runId}:${prompt.executionGeneration}:${prompt.promptId}`;
+                  if (emittedApprovalKeys.has(approvalKey)) continue;
+                  emittedApprovalKeys.add(approvalKey);
+                  await emitMcpEvent(
+                    buildPrReviewApprovalRequiredPayload({
+                      checkId: dbId,
+                      repo: repoFullName,
+                      prNumber,
+                      headSha,
+                      checkName: check.name,
+                      approvalId: approvalKey,
+                      segment: prompt.segment,
+                      executionGeneration: prompt.executionGeneration,
+                      promptId: prompt.promptId,
+                      baseUrl: BASE_URL,
+                    }),
+                  );
+                }
+              } else {
+                const fallbackKey = `fallback:${index + 1}`;
+                if (!emittedApprovalKeys.has(fallbackKey)) {
+                  emittedApprovalKeys.add(fallbackKey);
+                  await emitMcpEvent(
+                    buildPrReviewApprovalRequiredPayload({
+                      checkId: dbId,
+                      repo: repoFullName,
+                      prNumber,
+                      headSha,
+                      checkName: check.name,
+                      approvalId: fallbackKey,
+                      segment: index + 1,
+                      baseUrl: BASE_URL,
+                    }),
+                  );
+                }
+              }
+            } catch (eventErr: any) {
+              console.warn(`Ignoring pr_review.approval_required event error (db: ${dbId}):`, eventErr?.message || eventErr);
             }
           },
         });
