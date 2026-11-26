@@ -1657,6 +1657,110 @@ test('strict fetchPRCheckFiles and get_pr_reviews preserve definition-fetch erro
   assert.equal(upsertCalls, 0);
 });
 
+test('MCP handler rejects untrusted Origin headers with 403 and undeclared tasks operations with -32021', async () => {
+  const fixture = createFixtureDeps();
+  const handler = createJeanCiMcpHandler({
+    ...fixture.deps,
+    baseUrl: 'http://127.0.0.1:3000',
+  });
+
+  // 1) Untrusted Origin rejected with HTTP 403 (DNS-rebinding protection)
+  const evilOriginReq = new Request('http://127.0.0.1:3000/api/mcp', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Origin: 'https://evil.example',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+    }),
+  });
+  const evilOriginRes = await handler.fetch(evilOriginReq, { authInfo: makeAuthInfo() });
+  assert.equal(evilOriginRes.status, 403);
+
+  // Malformed "null" Origin rejected with HTTP 403
+  const nullOriginReq = new Request('http://127.0.0.1:3000/api/mcp', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Origin: 'null',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+    }),
+  });
+  const nullOriginRes = await handler.fetch(nullOriginReq, { authInfo: makeAuthInfo() });
+  assert.equal(nullOriginRes.status, 403);
+
+  // Loopback Origin to loopback endpoint is allowed
+  const localOriginReq = new Request('http://127.0.0.1:3000/api/mcp', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Origin: 'http://localhost:6274',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'initialize',
+      params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+    }),
+  });
+  const localOriginRes = await handler.fetch(localOriginReq, { authInfo: makeAuthInfo() });
+  assert.equal(localOriginRes.status, 200);
+
+  // 2) Create a task with tasks capability declared, then verify all 4 task operations
+  //    reject with HTTP 400 and JSON-RPC -32021 when tasks capability is omitted.
+  const tasksCaps = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
+  const createRes = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'retrigger_pr_review', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 171 } },
+    { mcpName: 'retrigger_pr_review', clientCapabilities: tasksCaps },
+  );
+  const taskId = createRes.json.result.taskId as string;
+  assert.ok(taskId);
+
+  const undeclaredGet = await callModernMcp(handler, 'tasks/get', { taskId }, { mcpName: taskId });
+  assert.equal(undeclaredGet.status, 400);
+  assert.equal(undeclaredGet.json.error.code, -32021);
+
+  const undeclaredUpdate = await callModernMcp(
+    handler,
+    'tasks/update',
+    { taskId, inputResponses: {} },
+    { mcpName: taskId },
+  );
+  assert.equal(undeclaredUpdate.status, 400);
+  assert.equal(undeclaredUpdate.json.error.code, -32021);
+
+  const undeclaredCancel = await callModernMcp(handler, 'tasks/cancel', { taskId }, { mcpName: taskId });
+  assert.equal(undeclaredCancel.status, 400);
+  assert.equal(undeclaredCancel.json.error.code, -32021);
+
+  const undeclaredSub = await callModernMcp(
+    handler,
+    'subscriptions/listen',
+    { notifications: { taskIds: [taskId] } },
+    {},
+  );
+  assert.equal(undeclaredSub.status, 400);
+  assert.equal(undeclaredSub.json.error.code, -32021);
+  assert.deepEqual(undeclaredSub.json.error.data?.requiredCapabilities, {
+    extensions: { 'io.modelcontextprotocol/tasks': {} },
+  });
+});
+
+
 
 
 

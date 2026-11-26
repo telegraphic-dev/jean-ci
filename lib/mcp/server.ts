@@ -42,6 +42,7 @@ import {
 } from './server-card.ts';
 import { getJeanCiSkillCatalog } from './skills.ts';
 import {
+  TASKS_EXTENSION_ID,
   clientSupportsTasks,
   createDbMcpTaskStore,
   createWorkingMcpTask,
@@ -863,7 +864,7 @@ export async function createJeanCiMcpServer(
         `Found ${total} open PR(s) (page ${page}/${Math.max(1, totalPages)}):`,
         ...items.map(
           (pr) =>
-            `- **${pr.repo}#${pr.number}** [${pr.checkStatus.toUpperCase()}] ${pr.title} (by ${pr.author}, \`${pr.headSha}\`${pr.latestReviewIsCurrent ? '' : ', review stale'}${pr.latestReviewId ? `, check #${pr.latestReviewId}` : ''})`,
+            `- **${pr.repo}#${pr.number}** [${(pr.checkStatus || 'pending').toUpperCase()}] ${pr.title} (by ${pr.author}, \`${pr.headSha}\`${pr.latestReviewIsCurrent ? '' : ', review stale'}${pr.latestReviewId ? `, check #${pr.latestReviewId}` : ''})`,
         ),
       ];
 
@@ -1830,8 +1831,137 @@ export async function createJeanCiMcpServer(
   return server;
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+function parseAllowedOrigins(baseUrl: string): Set<string> {
+  const allowed = new Set<string>();
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      allowed.add(parsed.origin);
+    }
+  } catch {
+    // Ignore malformed base URL
+  }
+  const extra = process.env.MCP_ALLOWED_ORIGINS || '';
+  for (const raw of extra.split(',')) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        allowed.add(parsed.origin);
+      }
+    } catch {
+      // Ignore invalid origin entries
+    }
+  }
+  return allowed;
+}
+
+/**
+ * Validates the HTTP Origin header per MCP Streamable HTTP DNS-rebinding rules.
+ * Requests without an Origin header (CLI/SDK clients) are permitted; requests
+ * carrying an untrusted Origin header are rejected with HTTP 403 Forbidden.
+ */
+export function validateMcpOrigin(request: Request, baseUrl: string = APP_BASE_URL): Response | null {
+  const originHeader = request.headers.get('origin');
+  if (!originHeader) return null;
+
+  let originUrl: URL;
+  try {
+    originUrl = new URL(originHeader);
+  } catch {
+    return new Response(JSON.stringify({ error: 'Forbidden: invalid Origin header' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+  }
+
+  if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') {
+    return new Response(JSON.stringify({ error: 'Forbidden: unsupported Origin scheme' }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    });
+  }
+
+  const allowedOrigins = parseAllowedOrigins(baseUrl);
+  if (allowedOrigins.has(originUrl.origin)) {
+    return null;
+  }
+
+  try {
+    const requestUrl = new URL(request.url);
+    if (
+      LOOPBACK_HOSTS.has(originUrl.hostname.toLowerCase()) &&
+      LOOPBACK_HOSTS.has(requestUrl.hostname.toLowerCase())
+    ) {
+      return null;
+    }
+  } catch {
+    // Fall through to 403
+  }
+
+  return new Response(JSON.stringify({ error: 'Forbidden: untrusted Origin header' }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
+}
+
+async function checkTaskSubscriptionCapability(request: Request): Promise<Response | null> {
+  if (request.method !== 'POST') return null;
+  if (request.headers.get('mcp-method')?.trim().toLowerCase() !== 'subscriptions/listen') {
+    return null;
+  }
+
+  let parsed: {
+    id?: string | number | null;
+    method?: unknown;
+    params?: {
+      notifications?: { taskIds?: unknown };
+      _meta?: Record<string, unknown>;
+    };
+  };
+  try {
+    parsed = (await request.clone().json()) as typeof parsed;
+  } catch {
+    return null;
+  }
+
+  if (parsed?.method !== 'subscriptions/listen') return null;
+  if (parsed?.params?.notifications?.taskIds === undefined) return null;
+
+  const clientCaps = parsed.params._meta?.['io.modelcontextprotocol/clientCapabilities'] as
+    | ClientCapabilities
+    | undefined;
+  if (clientSupportsTasks(clientCaps)) return null;
+
+  return new Response(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: parsed.id ?? null,
+      error: {
+        code: ProtocolErrorCode.MissingRequiredClientCapability,
+        message: `Client must declare the "${TASKS_EXTENSION_ID}" capability before subscribing to task notifications.`,
+        data: {
+          requiredCapabilities: {
+            extensions: {
+              [TASKS_EXTENSION_ID]: {},
+            },
+          },
+        },
+      },
+    }),
+    {
+      status: 400,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    },
+  );
+}
+
 export function createJeanCiMcpHandler(partialDeps?: Partial<JeanCiMcpDeps>): McpHttpHandler {
-  return createMcpHandler(
+  const configuredBaseUrl = partialDeps?.baseUrl ?? APP_BASE_URL;
+  const inner = createMcpHandler(
     async (ctx) => createJeanCiMcpServer(partialDeps, ctx),
     {
       // Support both 2026-07-28 (modern stateless) and 2025-11-25 (stateless fallback)
@@ -1842,4 +1972,17 @@ export function createJeanCiMcpHandler(partialDeps?: Partial<JeanCiMcpDeps>): Mc
       },
     },
   );
+
+  return {
+    ...inner,
+    fetch: async (request, options) => {
+      const originError = validateMcpOrigin(request, configuredBaseUrl);
+      if (originError) return originError;
+
+      const taskSubError = await checkTaskSubscriptionCapability(request);
+      if (taskSubError) return taskSubError;
+
+      return inner.fetch(request, options);
+    },
+  };
 }

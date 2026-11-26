@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import * as z from 'zod/v4';
-import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
+import { MissingRequiredClientCapabilityError, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { CallToolResult, ClientCapabilities, McpServer } from '@modelcontextprotocol/server';
 import {
   createMcpTaskRecord,
@@ -283,6 +283,21 @@ const TaskUpdateParamsSchema = z.object({
   inputResponses: z.record(z.string(), z.unknown()).optional(),
 });
 
+export function assertClientSupportsTasks(capabilities?: ClientCapabilities | null): void {
+  if (!clientSupportsTasks(capabilities)) {
+    throw new MissingRequiredClientCapabilityError(
+      {
+        requiredCapabilities: {
+          extensions: {
+            [TASKS_EXTENSION_ID]: {},
+          },
+        },
+      },
+      `Client must declare the "${TASKS_EXTENSION_ID}" capability before using task methods.`,
+    );
+  }
+}
+
 export function registerMcpTasksExtension(server: McpServer, options: McpTasksExtensionOptions): void {
   const {
     taskStore,
@@ -312,6 +327,7 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     'tasks/get',
     { params: TaskIdParamsSchema },
     async ({ taskId }) => {
+      assertClientSupportsTasks(server.server.getClientCapabilities());
       const task = await requireOwnedTask(taskId);
       return toWireTask(task);
     },
@@ -321,6 +337,7 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     'tasks/update',
     { params: TaskUpdateParamsSchema },
     async (params, ctx) => {
+      assertClientSupportsTasks(server.server.getClientCapabilities());
       const task = await requireOwnedTask(params.taskId);
       const responses =
         params.inputResponses ??
@@ -337,6 +354,7 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     'tasks/cancel',
     { params: TaskIdParamsSchema },
     async ({ taskId }) => {
+      assertClientSupportsTasks(server.server.getClientCapabilities());
       const task = await requireOwnedTask(taskId);
       if (!isTerminalTaskStatus(task.status)) {
         await taskStore.update(task.taskId, {

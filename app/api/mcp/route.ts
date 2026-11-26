@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { AuthInfo, McpHttpHandler } from '@modelcontextprotocol/server';
 import { requirePublicApiToken } from '@/lib/public-api';
-import { createJeanCiMcpHandler } from '@/lib/mcp/server';
+import { createJeanCiMcpHandler, validateMcpOrigin } from '@/lib/mcp/server';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,6 +32,11 @@ function unauthorizedMcpResponse(message = 'Unauthorized') {
 }
 
 async function handleMcpRequest(req: NextRequest): Promise<Response> {
+  const originError = validateMcpOrigin(req);
+  if (originError) {
+    return originError;
+  }
+
   const auth = await requirePublicApiToken(req);
   if (!auth.authorized) {
     const body = await auth.response.json().catch(() => ({ error: 'Unauthorized' }));

@@ -15,6 +15,7 @@ Jean CI exposes a remote **Model Context Protocol (MCP)** server over Streamable
 
 - Create a token in the Jean CI Admin UI (stored hashed in `jean_ci_api_tokens`), or configure `PUBLIC_API_TOKEN` / `PUBLIC_API_TOKENS`.
 - Send `Authorization: Bearer <token>` on every request to `/api/mcp`.
+- Cross-origin browser requests carrying an untrusted `Origin` header are rejected with `403 Forbidden` per MCP Streamable HTTP DNS-rebinding rules (same-origin `APP_BASE_URL`, loopback-to-loopback local dev, and optional comma-separated `MCP_ALLOWED_ORIGINS` are permitted; CLI/SDK clients without an `Origin` header are always allowed).
 
 > **Security boundary**: Browser-session GitHub administrator controls for Hermes tool approvals (`POST /api/checks/{id}/approval` — **Approve once** / **Deny**) are intentionally **not** exposed over bearer-token MCP. When a check is waiting on a tool approval, `get_review_check` returns a safe read-only indicator (`approvalStatus.waitingForApproval: true`) and the authenticated `/checks/<id>` URL for a human admin to open.
 
