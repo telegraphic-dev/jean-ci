@@ -5,30 +5,59 @@ Jean CI exposes a remote **Model Context Protocol (MCP)** server over Streamable
 ## Protocol & Endpoints
 
 - **Protocol revision**: **MCP `2026-07-28`** (latest stateless per-request envelope, `server/discover`, `resultType`, cache hints, MRTR elicitation) with automatic stateless backward compatibility for **`2025-11-25`** clients.
-- **Streamable HTTP endpoint**: `POST /api/mcp`
+- **Streamable HTTP endpoint**: `POST /mcp` (canonical; `/api/mcp` is also supported as a backward-compatible alias).
+- **OAuth 2.1 discovery**:
+  - `GET /.well-known/oauth-protected-resource` & `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728)
+  - `GET /.well-known/oauth-authorization-server` (RFC 8414)
+  - `POST /oauth/register` (RFC 7591 Dynamic Client Registration) + Client ID Metadata Documents (CIMD)
+  - `GET/POST /oauth/authorize` (PKCE S256 + GitHub admin sign-in & consent)
+  - `POST /oauth/token` (authorization code + rotating refresh tokens) and `POST /oauth/revoke` (RFC 7009)
 - **MCP Server Card (SEP-2127)**: `GET /api/mcp/server-card` (`application/mcp-server-card+json`)
 - **AI Catalog discovery**: `GET /.well-known/ai-catalog.json` (`application/ai-catalog+json`)
 
 ## Authentication
 
-`/api/mcp` uses the same Bearer API token authentication as `/api/public/v1/*`:
+`/mcp` (and `/api/mcp`) supports **automatic MCP OAuth 2.1** out of the box as well as static Bearer API tokens:
+
+### 1. Automatic OAuth 2.1 (Recommended for Claude, ChatGPT, Cursor, VS Code, MCPJam)
+
+Simply add `https://jean-ci.example.com/mcp` as a remote MCP server with **no manual tokens or headers**:
+- Unauthenticated requests receive `401` with an RFC 9728 `WWW-Authenticate` header pointing to `/.well-known/oauth-protected-resource/mcp`.
+- Clients automatically register via **Dynamic Client Registration (`/oauth/register`)** or **Client ID Metadata Documents (CIMD)** and start a PKCE `S256` flow at `/oauth/authorize`.
+- Jean CI reuses your existing **GitHub OAuth** admin login (`ADMIN_GITHUB_ID`, `SESSION_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`) — no extra GitHub callback URL is needed.
+- Access tokens expire after 1 hour with rotating 30-day refresh tokens, RFC 8707 audience binding, and `mcp:read` / `mcp:write` scope enforcement.
+
+### 2. Static Bearer API Token (CI / Headless Scripts)
 
 - Create a token in the Jean CI Admin UI (stored hashed in `jean_ci_api_tokens`), or configure `PUBLIC_API_TOKEN` / `PUBLIC_API_TOKENS`.
-- Send `Authorization: Bearer <token>` on every request to `/api/mcp`.
+- Send `Authorization: Bearer <token>` on every request to `/mcp`.
 - Cross-origin browser requests carrying an untrusted `Origin` header are rejected with `403 Forbidden` per MCP Streamable HTTP DNS-rebinding rules (same-origin `APP_BASE_URL`, loopback-to-loopback local dev, and optional comma-separated `MCP_ALLOWED_ORIGINS` are permitted; CLI/SDK clients without an `Origin` header are always allowed).
 
-> **Security boundary**: Browser-session GitHub administrator controls for Hermes tool approvals (`POST /api/checks/{id}/approval` — **Approve once** / **Deny**) are intentionally **not** exposed over bearer-token MCP. When a check is waiting on a tool approval, `get_review_check` returns a safe read-only indicator (`approvalStatus.waitingForApproval: true`) and the authenticated `/checks/<id>` URL for a human admin to open.
+> **Security boundary**: Browser-session GitHub administrator controls for Hermes tool approvals (`POST /api/checks/{id}/approval` — **Approve once** / **Deny**) are intentionally **not** exposed over MCP (whether authenticated via OAuth 2.1 or static Bearer token). When a check is waiting on a tool approval, `get_review_check` returns a safe read-only indicator (`approvalStatus.waitingForApproval: true`) and the authenticated `/checks/<id>` URL for a human admin to open.
 
 ## Client Configuration
 
-### Claude Code / Cursor / VS Code / Generic Streamable HTTP
+### Automatic OAuth (Claude, ChatGPT, Cursor, VS Code, Claude Code)
 
 ```json
 {
   "mcpServers": {
     "jean-ci": {
       "type": "http",
-      "url": "https://jean-ci.example.com/api/mcp",
+      "url": "https://jean-ci.example.com/mcp"
+    }
+  }
+}
+```
+
+### Static Bearer Token (Headless / CI)
+
+```json
+{
+  "mcpServers": {
+    "jean-ci": {
+      "type": "http",
+      "url": "https://jean-ci.example.com/mcp",
       "headers": {
         "Authorization": "Bearer ${JEAN_CI_API_TOKEN}"
       }
@@ -37,13 +66,11 @@ Jean CI exposes a remote **Model Context Protocol (MCP)** server over Streamable
 }
 ```
 
-### MCP Inspector
+### MCPJam / MCP Inspector
 
 ```bash
-npx @modelcontextprotocol/inspector
+npx -y @mcpjam/inspector@latest --url https://jean-ci.example.com/mcp
 ```
-
-Select **Streamable HTTP**, enter `https://jean-ci.example.com/api/mcp`, and add the `Authorization: Bearer <token>` header.
 
 ## Official MCP Extensions Enabled
 

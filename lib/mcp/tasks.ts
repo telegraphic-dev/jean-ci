@@ -270,6 +270,8 @@ export interface McpTasksExtensionOptions {
   taskStore: McpTaskStore;
   ownerSubject: string;
   abortRegistry?: McpTaskAbortRegistry;
+  canRead?: boolean;
+  canWrite?: boolean;
   onTaskUpdate?: (task: McpTaskRecord, inputResponses: Record<string, unknown>) => Promise<void>;
   onTaskCancel?: (task: McpTaskRecord) => Promise<void>;
 }
@@ -303,6 +305,8 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     taskStore,
     ownerSubject,
     abortRegistry = defaultMcpTaskAbortRegistry,
+    canRead = true,
+    canWrite = true,
     onTaskUpdate,
     onTaskCancel,
   } = options;
@@ -328,6 +332,12 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     { params: TaskIdParamsSchema },
     async ({ taskId }) => {
       assertClientSupportsTasks(server.server.getClientCapabilities());
+      if (!canRead) {
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
+          'Insufficient OAuth scope: "mcp:read" is required to inspect tasks.',
+        );
+      }
       const task = await requireOwnedTask(taskId);
       return toWireTask(task);
     },
@@ -338,6 +348,12 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     { params: TaskUpdateParamsSchema },
     async (params, ctx) => {
       assertClientSupportsTasks(server.server.getClientCapabilities());
+      if (!canWrite) {
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
+          'Insufficient OAuth scope: "mcp:write" is required to update tasks.',
+        );
+      }
       const task = await requireOwnedTask(params.taskId);
       const responses =
         params.inputResponses ??
@@ -355,6 +371,12 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
     { params: TaskIdParamsSchema },
     async ({ taskId }) => {
       assertClientSupportsTasks(server.server.getClientCapabilities());
+      if (!canWrite) {
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
+          'Insufficient OAuth scope: "mcp:write" is required to cancel tasks.',
+        );
+      }
       const task = await requireOwnedTask(taskId);
       if (!isTerminalTaskStatus(task.status)) {
         await taskStore.update(task.taskId, {

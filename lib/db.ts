@@ -272,6 +272,66 @@ export async function initDatabase() {
         expires_at TIMESTAMPTZ
       );
       CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_tasks_expires ON jean_ci_mcp_tasks(expires_at);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_oauth_clients (
+        client_id TEXT PRIMARY KEY,
+        client_secret_hash TEXT,
+        client_name TEXT NOT NULL,
+        redirect_uris JSONB NOT NULL,
+        grant_types JSONB NOT NULL,
+        token_endpoint_auth_method TEXT NOT NULL DEFAULT 'none',
+        scope TEXT NOT NULL DEFAULT 'mcp:read mcp:write',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_oauth_pending (
+        request_id TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        state TEXT,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL DEFAULT 'S256',
+        resource TEXT NOT NULL,
+        csrf_token TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_pending_expires ON jean_ci_mcp_oauth_pending(expires_at);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_oauth_codes (
+        code_hash TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        code_challenge TEXT NOT NULL,
+        resource TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_login TEXT NOT NULL,
+        used_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_codes_expires ON jean_ci_mcp_oauth_codes(expires_at);
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_oauth_tokens (
+        token_hash TEXT PRIMARY KEY,
+        token_type TEXT NOT NULL,
+        family_id TEXT NOT NULL,
+        source_code_hash TEXT,
+        client_id TEXT NOT NULL,
+        resource TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        user_login TEXT NOT NULL,
+        revoked_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_tokens_family ON jean_ci_mcp_oauth_tokens(family_id);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_tokens_code ON jean_ci_mcp_oauth_tokens(source_code_hash);
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_oauth_tokens_expires ON jean_ci_mcp_oauth_tokens(expires_at);
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -2468,6 +2528,520 @@ export async function reconcileInterruptedMcpTasks(startedBefore: Date): Promise
     [startedBefore, JSON.stringify(errorPayload)]
   );
   return result.rowCount || 0;
+}
+
+export interface McpOAuthClientDbRecord {
+  client_id: string;
+  client_secret_hash: string | null;
+  client_name: string;
+  redirect_uris: string[];
+  grant_types: string[];
+  token_endpoint_auth_method: string;
+  scope: string;
+  created_at: Date;
+}
+
+export interface McpOAuthPendingDbRecord {
+  request_id: string;
+  client_id: string;
+  client_name: string;
+  redirect_uri: string;
+  scope: string;
+  state: string | null;
+  code_challenge: string;
+  code_challenge_method: string;
+  resource: string;
+  csrf_token: string;
+  expires_at: Date;
+  created_at: Date;
+}
+
+export interface McpOAuthCodeDbRecord {
+  code_hash: string;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  resource: string;
+  scope: string;
+  user_id: string;
+  user_login: string;
+  used_at: Date | null;
+  expires_at: Date;
+  created_at: Date;
+}
+
+export interface McpOAuthTokenDbRecord {
+  token_hash: string;
+  token_type: 'access' | 'refresh';
+  family_id: string;
+  source_code_hash: string | null;
+  client_id: string;
+  resource: string;
+  scope: string;
+  user_id: string;
+  user_login: string;
+  revoked_at: Date | null;
+  expires_at: Date;
+  created_at: Date;
+}
+
+export async function createMcpOAuthClient(data: {
+  clientId: string;
+  clientSecretHash: string | null;
+  clientName: string;
+  redirectUris: string[];
+  grantTypes: string[];
+  tokenEndpointAuthMethod: string;
+  scope: string;
+}): Promise<McpOAuthClientDbRecord> {
+  const result = await pool.query<McpOAuthClientDbRecord>(
+    `INSERT INTO jean_ci_mcp_oauth_clients
+       (client_id, client_secret_hash, client_name, redirect_uris, grant_types, token_endpoint_auth_method, scope)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+     RETURNING *`,
+    [
+      data.clientId,
+      data.clientSecretHash,
+      data.clientName,
+      JSON.stringify(data.redirectUris),
+      JSON.stringify(data.grantTypes),
+      data.tokenEndpointAuthMethod,
+      data.scope,
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function getMcpOAuthClient(clientId: string): Promise<McpOAuthClientDbRecord | null> {
+  const result = await pool.query<McpOAuthClientDbRecord>(
+    `SELECT * FROM jean_ci_mcp_oauth_clients WHERE client_id = $1`,
+    [clientId],
+  );
+  return result.rows[0] || null;
+}
+
+export async function createMcpOAuthPending(data: {
+  requestId: string;
+  clientId: string;
+  clientName: string;
+  redirectUri: string;
+  scope: string;
+  state: string | null;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  resource: string;
+  csrfToken: string;
+  expiresAt: Date;
+}): Promise<McpOAuthPendingDbRecord> {
+  const result = await pool.query<McpOAuthPendingDbRecord>(
+    `INSERT INTO jean_ci_mcp_oauth_pending
+       (request_id, client_id, client_name, redirect_uri, scope, state, code_challenge, code_challenge_method, resource, csrf_token, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING *`,
+    [
+      data.requestId,
+      data.clientId,
+      data.clientName,
+      data.redirectUri,
+      data.scope,
+      data.state,
+      data.codeChallenge,
+      data.codeChallengeMethod,
+      data.resource,
+      data.csrfToken,
+      data.expiresAt,
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function getMcpOAuthPending(requestId: string): Promise<McpOAuthPendingDbRecord | null> {
+  const result = await pool.query<McpOAuthPendingDbRecord>(
+    `SELECT * FROM jean_ci_mcp_oauth_pending WHERE request_id = $1 AND expires_at > NOW()`,
+    [requestId],
+  );
+  return result.rows[0] || null;
+}
+
+export async function consumeMcpOAuthPending(requestId: string): Promise<McpOAuthPendingDbRecord | null> {
+  const result = await pool.query<McpOAuthPendingDbRecord>(
+    `DELETE FROM jean_ci_mcp_oauth_pending WHERE request_id = $1 AND expires_at > NOW() RETURNING *`,
+    [requestId],
+  );
+  return result.rows[0] || null;
+}
+
+export async function createMcpOAuthCode(data: {
+  codeHash: string;
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  resource: string;
+  scope: string;
+  userId: string;
+  userLogin: string;
+  expiresAt: Date;
+}): Promise<McpOAuthCodeDbRecord> {
+  const result = await pool.query<McpOAuthCodeDbRecord>(
+    `INSERT INTO jean_ci_mcp_oauth_codes
+       (code_hash, client_id, redirect_uri, code_challenge, resource, scope, user_id, user_login, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING *`,
+    [
+      data.codeHash,
+      data.clientId,
+      data.redirectUri,
+      data.codeChallenge,
+      data.resource,
+      data.scope,
+      data.userId,
+      data.userLogin,
+      data.expiresAt,
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function getMcpOAuthCode(codeHash: string): Promise<McpOAuthCodeDbRecord | null> {
+  const result = await pool.query<McpOAuthCodeDbRecord>(
+    `SELECT * FROM jean_ci_mcp_oauth_codes WHERE code_hash = $1`,
+    [codeHash],
+  );
+  return result.rows[0] || null;
+}
+
+export async function markMcpOAuthCodeUsed(codeHash: string): Promise<McpOAuthCodeDbRecord | null> {
+  const result = await pool.query<McpOAuthCodeDbRecord>(
+    `UPDATE jean_ci_mcp_oauth_codes
+     SET used_at = CURRENT_TIMESTAMP
+     WHERE code_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+     RETURNING *`,
+    [codeHash],
+  );
+  return result.rows[0] || null;
+}
+
+export async function createMcpOAuthToken(data: {
+  tokenHash: string;
+  tokenType: 'access' | 'refresh';
+  familyId: string;
+  sourceCodeHash: string | null;
+  clientId: string;
+  resource: string;
+  scope: string;
+  userId: string;
+  userLogin: string;
+  expiresAt: Date;
+}): Promise<McpOAuthTokenDbRecord> {
+  const result = await pool.query<McpOAuthTokenDbRecord>(
+    `INSERT INTO jean_ci_mcp_oauth_tokens
+       (token_hash, token_type, family_id, source_code_hash, client_id, resource, scope, user_id, user_login, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING *`,
+    [
+      data.tokenHash,
+      data.tokenType,
+      data.familyId,
+      data.sourceCodeHash,
+      data.clientId,
+      data.resource,
+      data.scope,
+      data.userId,
+      data.userLogin,
+      data.expiresAt,
+    ],
+  );
+  return result.rows[0];
+}
+
+export async function getMcpOAuthToken(tokenHash: string): Promise<McpOAuthTokenDbRecord | null> {
+  const result = await pool.query<McpOAuthTokenDbRecord>(
+    `SELECT * FROM jean_ci_mcp_oauth_tokens WHERE token_hash = $1`,
+    [tokenHash],
+  );
+  return result.rows[0] || null;
+}
+
+export async function revokeMcpOAuthToken(tokenHash: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE jean_ci_mcp_oauth_tokens
+     SET revoked_at = CURRENT_TIMESTAMP
+     WHERE token_hash = $1 AND revoked_at IS NULL`,
+    [tokenHash],
+  );
+  return (result.rowCount || 0) > 0;
+}
+
+const MCP_OAUTH_FAMILY_LOCK_NS = 918273;
+
+export async function revokeMcpOAuthTokensByFamily(familyId: string): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [MCP_OAUTH_FAMILY_LOCK_NS, familyId]);
+    const result = await client.query(
+      `UPDATE jean_ci_mcp_oauth_tokens
+       SET revoked_at = CURRENT_TIMESTAMP
+       WHERE family_id = $1 AND revoked_at IS NULL`,
+      [familyId],
+    );
+    await client.query('COMMIT');
+    return result.rowCount || 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function revokeMcpOAuthTokensByCode(sourceCodeHash: string): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SELECT code_hash FROM jean_ci_mcp_oauth_codes WHERE code_hash = $1 FOR UPDATE`, [sourceCodeHash]);
+    const families = await client.query<{ family_id: string }>(
+      `SELECT DISTINCT family_id FROM jean_ci_mcp_oauth_tokens WHERE source_code_hash = $1 ORDER BY family_id`,
+      [sourceCodeHash],
+    );
+    for (const fam of families.rows) {
+      await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [MCP_OAUTH_FAMILY_LOCK_NS, fam.family_id]);
+    }
+    const result = await client.query(
+      `UPDATE jean_ci_mcp_oauth_tokens
+       SET revoked_at = CURRENT_TIMESTAMP
+       WHERE source_code_hash = $1 AND revoked_at IS NULL`,
+      [sourceCodeHash],
+    );
+    await client.query('COMMIT');
+    return result.rowCount || 0;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export type AtomicOAuthCodeExchangeResult =
+  | { status: 'issued' }
+  | { status: 'not_found' }
+  | { status: 'expired' }
+  | { status: 'replayed' };
+
+export async function exchangeMcpOAuthCodeAtomic(params: {
+  codeHash: string;
+  accessToken: {
+    tokenHash: string;
+    familyId: string;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+  refreshToken: {
+    tokenHash: string;
+    familyId: string;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+}): Promise<AtomicOAuthCodeExchangeResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const codeRes = await client.query<McpOAuthCodeDbRecord>(
+      `SELECT * FROM jean_ci_mcp_oauth_codes WHERE code_hash = $1 FOR UPDATE`,
+      [params.codeHash],
+    );
+    const row = codeRes.rows[0];
+    if (!row) {
+      await client.query('COMMIT');
+      return { status: 'not_found' };
+    }
+    if (row.used_at) {
+      const families = await client.query<{ family_id: string }>(
+        `SELECT DISTINCT family_id FROM jean_ci_mcp_oauth_tokens WHERE source_code_hash = $1 ORDER BY family_id`,
+        [params.codeHash],
+      );
+      for (const fam of families.rows) {
+        await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [MCP_OAUTH_FAMILY_LOCK_NS, fam.family_id]);
+      }
+      await client.query(
+        `UPDATE jean_ci_mcp_oauth_tokens
+         SET revoked_at = CURRENT_TIMESTAMP
+         WHERE source_code_hash = $1 AND revoked_at IS NULL`,
+        [params.codeHash],
+      );
+      await client.query('COMMIT');
+      return { status: 'replayed' };
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      await client.query('COMMIT');
+      return { status: 'expired' };
+    }
+
+    await client.query(
+      `UPDATE jean_ci_mcp_oauth_codes SET used_at = CURRENT_TIMESTAMP WHERE code_hash = $1`,
+      [params.codeHash],
+    );
+
+    const insertSql = `INSERT INTO jean_ci_mcp_oauth_tokens
+       (token_hash, token_type, family_id, source_code_hash, client_id, resource, scope, user_id, user_login, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
+
+    await client.query(insertSql, [
+      params.accessToken.tokenHash,
+      'access',
+      params.accessToken.familyId,
+      params.codeHash,
+      params.accessToken.clientId,
+      params.accessToken.resource,
+      params.accessToken.scope,
+      params.accessToken.userId,
+      params.accessToken.userLogin,
+      params.accessToken.expiresAt,
+    ]);
+    await client.query(insertSql, [
+      params.refreshToken.tokenHash,
+      'refresh',
+      params.refreshToken.familyId,
+      params.codeHash,
+      params.refreshToken.clientId,
+      params.refreshToken.resource,
+      params.refreshToken.scope,
+      params.refreshToken.userId,
+      params.refreshToken.userLogin,
+      params.refreshToken.expiresAt,
+    ]);
+
+    await client.query('COMMIT');
+    return { status: 'issued' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export type AtomicOAuthRefreshRotateResult =
+  | { status: 'rotated' }
+  | { status: 'not_found' }
+  | { status: 'expired' }
+  | { status: 'replayed' };
+
+export async function rotateMcpOAuthRefreshTokenAtomic(params: {
+  refreshTokenHash: string;
+  familyId: string;
+  accessToken: {
+    tokenHash: string;
+    sourceCodeHash: string | null;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+  nextRefreshToken: {
+    tokenHash: string;
+    sourceCodeHash: string | null;
+    clientId: string;
+    resource: string;
+    scope: string;
+    userId: string;
+    userLogin: string;
+    expiresAt: Date;
+  };
+}): Promise<AtomicOAuthRefreshRotateResult> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [
+      MCP_OAUTH_FAMILY_LOCK_NS,
+      params.familyId,
+    ]);
+    const tokenRes = await client.query<McpOAuthTokenDbRecord>(
+      `SELECT * FROM jean_ci_mcp_oauth_tokens WHERE token_hash = $1 FOR UPDATE`,
+      [params.refreshTokenHash],
+    );
+    const row = tokenRes.rows[0];
+    if (!row || row.token_type !== 'refresh' || row.family_id !== params.familyId) {
+      await client.query('COMMIT');
+      return { status: 'not_found' };
+    }
+    if (row.revoked_at) {
+      await client.query(
+        `UPDATE jean_ci_mcp_oauth_tokens
+         SET revoked_at = CURRENT_TIMESTAMP
+         WHERE family_id = $1 AND revoked_at IS NULL`,
+        [params.familyId],
+      );
+      await client.query('COMMIT');
+      return { status: 'replayed' };
+    }
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      await client.query('COMMIT');
+      return { status: 'expired' };
+    }
+
+    await client.query(
+      `UPDATE jean_ci_mcp_oauth_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = $1`,
+      [params.refreshTokenHash],
+    );
+
+    const insertSql = `INSERT INTO jean_ci_mcp_oauth_tokens
+       (token_hash, token_type, family_id, source_code_hash, client_id, resource, scope, user_id, user_login, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
+
+    await client.query(insertSql, [
+      params.accessToken.tokenHash,
+      'access',
+      params.familyId,
+      params.accessToken.sourceCodeHash,
+      params.accessToken.clientId,
+      params.accessToken.resource,
+      params.accessToken.scope,
+      params.accessToken.userId,
+      params.accessToken.userLogin,
+      params.accessToken.expiresAt,
+    ]);
+    await client.query(insertSql, [
+      params.nextRefreshToken.tokenHash,
+      'refresh',
+      params.familyId,
+      params.nextRefreshToken.sourceCodeHash,
+      params.nextRefreshToken.clientId,
+      params.nextRefreshToken.resource,
+      params.nextRefreshToken.scope,
+      params.nextRefreshToken.userId,
+      params.nextRefreshToken.userLogin,
+      params.nextRefreshToken.expiresAt,
+    ]);
+
+    await client.query('COMMIT');
+    return { status: 'rotated' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function cleanupExpiredMcpOAuth(): Promise<number> {
+  const [p, c, t] = await Promise.all([
+    pool.query(`DELETE FROM jean_ci_mcp_oauth_pending WHERE expires_at <= NOW()`),
+    pool.query(`DELETE FROM jean_ci_mcp_oauth_codes WHERE expires_at <= NOW() - INTERVAL '1 hour'`),
+    pool.query(`DELETE FROM jean_ci_mcp_oauth_tokens WHERE expires_at <= NOW() - INTERVAL '1 day'`),
+  ]);
+  return (p.rowCount || 0) + (c.rowCount || 0) + (t.rowCount || 0);
 }
 
 

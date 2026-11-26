@@ -361,6 +361,27 @@ export async function createJeanCiMcpServer(
   const actorLabel =
     (typeof requestCtx?.authInfo?.extra?.actor === 'string' && requestCtx.authInfo.extra.actor) ||
     ownerSubject;
+  const isOAuthCaller = requestCtx?.authInfo?.extra?.source === 'oauth';
+  const hasReadScope =
+    !isOAuthCaller || Boolean(requestCtx?.authInfo?.scopes?.includes('mcp:read'));
+  const hasWriteScope =
+    !isOAuthCaller || Boolean(requestCtx?.authInfo?.scopes?.includes('mcp:write'));
+  const insufficientReadScopeError = () =>
+    toolError(
+      'Insufficient OAuth scope: this action requires the "mcp:read" scope. Re-authorize your MCP client with "mcp:read".',
+    );
+  const insufficientWriteScopeError = () =>
+    toolError(
+      'Insufficient OAuth scope: this action requires the "mcp:write" scope. Re-authorize your MCP client with "mcp:write".',
+    );
+  const assertReadScope = () => {
+    if (!hasReadScope) {
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        'Insufficient OAuth scope: this resource requires the "mcp:read" scope.',
+      );
+    }
+  };
 
   const server = new McpServer(
     {
@@ -396,6 +417,8 @@ export async function createJeanCiMcpServer(
     taskStore: deps.taskStore,
     ownerSubject,
     abortRegistry: deps.taskAbortRegistry,
+    canRead: hasReadScope,
+    canWrite: hasWriteScope,
   });
 
   // 3. Official Extension: Skills over MCP (io.modelcontextprotocol/skills)
@@ -416,6 +439,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async () => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const [openPRs, pendingDeploys, tasks] = await Promise.all([
         deps.getOpenPRsCount(),
         deps.getPendingDeploymentsCount(),
@@ -459,6 +483,7 @@ export async function createJeanCiMcpServer(
       },
     },
     async ({ repo, prNumber, headSha }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const [repoConfig, reviewState, rawChecks] = await Promise.all([
         deps.getRepo(repo),
         deps.getPRReviewState(repo, prNumber),
@@ -596,6 +621,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ repo }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const repoConfig = await deps.getRepo(repo);
       if (!repoConfig) {
         return toolError(`Repository not found: ${repo}`);
@@ -653,6 +679,7 @@ export async function createJeanCiMcpServer(
       },
     },
     async ({ checkId, includePrompt, includeDiff, maxDiffChars }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const check = await deps.getCheckRun(checkId);
       if (!check) {
         return toolError(`Check run #${checkId} not found.`);
@@ -750,6 +777,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ repo, page, limit }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const result = await deps.getDeploymentsByRepoPaginated(repo, page, limit);
       const items = result.items.map((row) => sanitizeDeploymentEvent(row));
       return jsonToolResult(
@@ -780,6 +808,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ repo, eventType, page, limit }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const result = await deps.getRecentEventsPaginated(page, limit, eventType, repo);
       const items = result.items.map((row) => sanitizeWebhookEvent(row));
       return jsonToolResult(
@@ -807,6 +836,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ repo }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const repoConfig = await deps.getRepo(repo);
       if (!repoConfig) {
         return toolError(`Repository not found: ${repo}`);
@@ -845,6 +875,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ repo, status, staleOnly, page, limit }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const allOpen = await deps.getOpenPRsFromEvents();
       const filtered = allOpen.filter((pr) => {
         if (repo && pr.repo !== repo) return false;
@@ -886,6 +917,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ repo, page, limit }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const result = repo
         ? await deps.getDeploymentPipelinesByRepo(repo, page, limit)
         : await deps.getDeploymentPipelines(page, limit);
@@ -915,6 +947,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async ({ repo, ref }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const repoConfig = await deps.getRepo(repo);
       if (!repoConfig) {
         return toolError(`Repository is not tracked by Jean CI: ${repo}`);
@@ -998,6 +1031,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async (args) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const result = await deps.getCheckRunsFiltered(args);
       const items = result.items.map((c) => serializeCheckSummary(c, baseUrl));
       const lines = [
@@ -1029,6 +1063,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ prReviewEnabledOnly }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       const repos = await deps.getReposWithActivity();
       const filtered = prReviewEnabledOnly ? repos.filter((r) => r.pr_review_enabled) : repos;
       const lines = [
@@ -1057,6 +1092,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
     },
     async ({ view, repo, task, offset, limit }) => {
+      if (!hasReadScope) return insufficientReadScopeError();
       if (view === 'summary') {
         const [summary, stats] = await Promise.all([deps.getTaskSummary(repo), deps.getTaskStats()]);
         const redacted = summary.map(({ last_output: _o, ...rest }) => ({
@@ -1106,6 +1142,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ checkId, reason }, ctx) => {
+      if (!hasWriteScope) return insufficientWriteScopeError();
       const checkRun = await deps.getCheckRun(checkId);
       if (!checkRun) {
         return toolError(`Check run #${checkId} not found.`);
@@ -1220,6 +1257,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async ({ repo: inputRepo, prNumber: inputPrNumber, checkId, onlyThisCheck, checkNames, expectedHeadSha }) => {
+      if (!hasWriteScope) return insufficientWriteScopeError();
       let targetRepo = inputRepo;
       let targetPrNumber = inputPrNumber;
       let targetCheckNames = checkNames && checkNames.length > 0 ? [...checkNames] : undefined;
@@ -1500,6 +1538,7 @@ export async function createJeanCiMcpServer(
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ repo, diff, headSha, ref, title, body, selectedChecks }) => {
+      if (!hasWriteScope) return insufficientWriteScopeError();
       const request: LocalReviewRequest = {
         repo,
         diff,
@@ -1594,6 +1633,7 @@ export async function createJeanCiMcpServer(
       cacheHint: { ttlMs: 10_000, cacheScope: 'private' },
     },
     async (uri) => {
+      assertReadScope();
       const [openPRs, pendingDeploys, tasks] = await Promise.all([
         deps.getOpenPRsCount(),
         deps.getPendingDeploymentsCount(),
@@ -1621,6 +1661,7 @@ export async function createJeanCiMcpServer(
       cacheHint: { ttlMs: 30_000, cacheScope: 'private' },
     },
     async (uri) => {
+      assertReadScope();
       const items = await deps.getReposWithActivity();
       return {
         contents: [
@@ -1644,6 +1685,7 @@ export async function createJeanCiMcpServer(
       cacheHint: { ttlMs: 10_000, cacheScope: 'private' },
     },
     async (uri) => {
+      assertReadScope();
       const items = await deps.getOpenPRsFromEvents();
       return {
         contents: [
@@ -1667,6 +1709,7 @@ export async function createJeanCiMcpServer(
       cacheHint: { ttlMs: 5_000, cacheScope: 'private' },
     },
     async (uri, variables) => {
+      assertReadScope();
       const checkId = Number(variables.checkId);
       if (!Number.isSafeInteger(checkId) || checkId <= 0) {
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Invalid checkId: ${String(variables.checkId)}`);
@@ -1706,11 +1749,13 @@ export async function createJeanCiMcpServer(
       list: undefined,
       complete: {
         owner: async (value) => {
+          if (!hasReadScope) return [];
           const repos = await deps.getReposWithActivity();
           const owners = [...new Set(repos.map((r) => r.full_name.split('/')[0]))];
           return owners.filter((o) => o.toLowerCase().startsWith(value.toLowerCase()));
         },
         repo: async (value, ctx) => {
+          if (!hasReadScope) return [];
           const ownerFilter = ctx?.arguments?.owner;
           const repos = await deps.getReposWithActivity();
           return repos
@@ -1727,6 +1772,7 @@ export async function createJeanCiMcpServer(
       cacheHint: { ttlMs: 5_000, cacheScope: 'private' },
     },
     async (uri, variables) => {
+      assertReadScope();
       const owner = String(variables.owner || '');
       const repo = String(variables.repo || '');
       const fullName = `${owner}/${repo}`;
@@ -1771,6 +1817,7 @@ export async function createJeanCiMcpServer(
       description: 'Guide an assistant through inspecting, classifying, fixing, and retriggering Jean CI reviews for a pull request.',
       argsSchema: z.object({
         repo: completable(RepoSlugSchema.describe('Repository slug in owner/repo format'), async (value) => {
+          if (!hasReadScope) return [];
           const repos = await deps.getReposWithActivity();
           return repos
             .map((r) => r.full_name)

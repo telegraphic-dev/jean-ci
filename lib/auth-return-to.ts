@@ -2,6 +2,7 @@
 export function validateReturnTo(value: unknown): string | null {
   if (typeof value !== 'string' || value.length > 512 || /[%\\\x00-\x20\x7f]/.test(value)) return null;
   if (/^\/checks\/[1-9]\d*$/.test(value)) return value;
+  if (/^\/oauth\/authorize\/continue\/[a-f0-9]{32}$/.test(value)) return value;
   if (/^\/admin(?:\/[A-Za-z0-9_-]+)*$/.test(value)
     && !/^\/admin\/(?:auth|login|logout)(?:\/|$)/.test(value)) return value;
   return null;
