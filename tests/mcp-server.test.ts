@@ -382,6 +382,7 @@ test('MCP 2026-07-28 server/discover advertises latest protocol, cache hints, an
   assert.ok(extensions['io.modelcontextprotocol/ui'], 'MCP Apps extension advertised');
   assert.ok(extensions['io.modelcontextprotocol/tasks'], 'MCP Tasks extension advertised');
   assert.ok(extensions['io.modelcontextprotocol/skills'], 'Skills over MCP extension advertised');
+  assert.ok(extensions['io.modelcontextprotocol/events'], 'MCP Events extension advertised');
 });
 
 test('MCP legacy 2025-11-25 initialize handshake works via stateless fallback', async () => {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, setReservedCheckInput, updateCheckRun } from './db.ts';
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
 import { callOpenClaw } from './llm.ts';
@@ -109,6 +110,10 @@ export interface RunPRReviewOptions {
   isCancelled?: () => boolean | Promise<boolean>;
   onCheckCreated?: (info: { dbId: number; checkName: string; githubCheckId: number }) => void | Promise<void>;
   onCheckCompleted?: (info: { dbId: number; checkName: string; conclusion: 'success' | 'failure' | 'neutral'; title: string }) => void | Promise<void>;
+  /** Optional MCP Events store override (primarily for testing). */
+  mcpEventsStore?: import('./mcp/events.ts').McpEventsStore;
+  /** Optional observer for emitted MCP Events (primarily for testing). */
+  onMcpEvent?: (event: { eventId: string; name: string; data: Record<string, unknown> }) => void | Promise<void>;
 }
 
 export async function runPRReview(
@@ -127,6 +132,44 @@ export async function runPRReview(
       return Boolean(await options.isCancelled());
     } catch {
       return false;
+    }
+  };
+
+  const repoFullName = `${owner}/${repo}`;
+  const executionId = randomUUID();
+  const checkIdentityByDbId = new Map<number, string>();
+  const completedChecksForEvents: Array<{
+    checkId: number;
+    checkName: string;
+    checkIdentity: string | null;
+    conclusion: 'success' | 'failure' | 'neutral';
+  }> = [];
+
+  const emitMcpEvent = async (
+    eventInput: {
+      eventId: string;
+      name: 'pr_review.completed' | 'pr_review.check_completed' | 'pr_review.approval_required';
+      repo?: string | null;
+      prNumber?: number | null;
+      conclusion?: string | null;
+      checkName?: string | null;
+      data: Record<string, unknown>;
+    },
+  ) => {
+    try {
+      if (options?.onMcpEvent) {
+        await options.onMcpEvent({
+          eventId: eventInput.eventId,
+          name: eventInput.name,
+          data: eventInput.data,
+        });
+      }
+      if (options?.mcpEventsStore || process.env.DATABASE_URL) {
+        const { emitPrReviewMcpEventSafely } = await import('./mcp/events.ts');
+        await emitPrReviewMcpEventSafely(eventInput, options?.mcpEventsStore);
+      }
+    } catch (eventErr: any) {
+      console.warn(`Ignoring MCP event emission error (${eventInput.name}):`, eventErr?.message || eventErr);
     }
   };
 
@@ -156,8 +199,34 @@ export async function runPRReview(
         console.warn(`Ignoring onCheckCompleted callback failure for check "${checkName}" (db: ${dbIdArg}):`, callbackError?.message || callbackError);
       }
     }
+    if (checkName) {
+      const checkIdentity = checkIdentityByDbId.get(dbIdArg) ?? null;
+      completedChecksForEvents.push({
+        checkId: dbIdArg,
+        checkName,
+        checkIdentity,
+        conclusion: payload.conclusion,
+      });
+      try {
+        const { buildPrReviewCheckCompletedPayload } = await import('./mcp/events.ts');
+        await emitMcpEvent(
+          buildPrReviewCheckCompletedPayload({
+            checkId: dbIdArg,
+            repo: repoFullName,
+            prNumber,
+            headSha,
+            checkName,
+            checkIdentity,
+            conclusion: payload.conclusion,
+            executionId,
+            baseUrl: BASE_URL,
+          }),
+        );
+      } catch (eventErr: any) {
+        console.warn(`Ignoring pr_review.check_completed event error for check "${checkName}" (db: ${dbIdArg}):`, eventErr?.message || eventErr);
+      }
+    }
   };
-  const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
 
   if (!repoConfig || !repoConfig.pr_review_enabled) {
@@ -226,8 +295,14 @@ export async function runPRReview(
 
   // Create ALL checks as pending first, storing in DB
   const checkRuns = [];
+  let failedCheckCreationCount = 0;
+  let failedCheckPersistenceCount = 0;
+  let cancelledDuringCreation = false;
   for (const check of checks) {
-    if (await isRunCancelled()) break;
+    if (await isRunCancelled()) {
+      cancelledDuringCreation = true;
+      break;
+    }
     try {
       const dbId = restart?.checkId ?? await insertCheckRun({
         repo: repoFullName,
@@ -246,6 +321,7 @@ export async function runPRReview(
       const checkRun = await createCheck(octokit, owner, repo, `jean-ci / ${check.name}`, headSha, 'queued');
       await setCheckRunGithubId(dbId, checkRun.id);
 
+      checkIdentityByDbId.set(dbId, check.identity);
       checkRuns.push({ check, checkRun, dbId });
       if (options?.onCheckCreated) {
         try {
@@ -257,6 +333,7 @@ export async function runPRReview(
       console.log(`Created pending check: ${check.name} (db: ${dbId})`);
     } catch (error: any) {
       if (restart) throw error;
+      failedCheckCreationCount += 1;
       console.error(`Error creating check "${check.name}":`, error.message);
     }
   }
@@ -271,6 +348,7 @@ export async function runPRReview(
           summary: 'Review run was cancelled by the caller before execution completed.',
         }, check.name);
       } catch (cancelErr: any) {
+        failedCheckPersistenceCount += 1;
         console.error(`Failed to mark cancelled check "${check.name}":`, cancelErr?.message || cancelErr);
       }
       continue;
@@ -310,6 +388,7 @@ export async function runPRReview(
       const chunkedResponses = [];
       let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
       let cancelledDuringCheck = false;
+      const emittedApprovalKeys = new Set<string>();
       for (const [index, reviewContext] of reviewContexts.entries()) {
         if (await isRunCancelled()) {
           cancelledDuringCheck = true;
@@ -347,6 +426,70 @@ export async function runPRReview(
             // Only a link and server-owned repo/SHA are sent, never tool text.
             const { notifyReviewApproval } = await import('./review-approvals.ts');
             await notifyReviewApproval(dbId);
+            try {
+              const { buildPrReviewApprovalRequiredPayload } = await import('./mcp/events.ts');
+              const dbMod = await import('./db.ts');
+              const bindings =
+                typeof dbMod.reviewRunStore?.get === 'function'
+                  ? await dbMod.reviewRunStore.get(dbId).catch(() => [])
+                  : [];
+              const pendingPrompts: Array<{
+                segment: number;
+                runId: string;
+                executionGeneration: number;
+                promptId: string;
+              }> = [];
+              for (const binding of bindings) {
+                for (const prompt of binding.pending || []) {
+                  pendingPrompts.push({
+                    segment: binding.segment,
+                    runId: binding.run_id ?? '',
+                    executionGeneration: prompt.execution_generation,
+                    promptId: prompt.prompt_id,
+                  });
+                }
+              }
+              if (pendingPrompts.length > 0) {
+                for (const prompt of pendingPrompts) {
+                  const approvalKey = `${prompt.segment}:${prompt.runId}:${prompt.executionGeneration}:${prompt.promptId}`;
+                  if (emittedApprovalKeys.has(approvalKey)) continue;
+                  emittedApprovalKeys.add(approvalKey);
+                  await emitMcpEvent(
+                    buildPrReviewApprovalRequiredPayload({
+                      checkId: dbId,
+                      repo: repoFullName,
+                      prNumber,
+                      headSha,
+                      checkName: check.name,
+                      approvalId: approvalKey,
+                      segment: prompt.segment,
+                      executionGeneration: prompt.executionGeneration,
+                      promptId: prompt.promptId,
+                      baseUrl: BASE_URL,
+                    }),
+                  );
+                }
+              } else {
+                const fallbackKey = `fallback:${executionId}:${index + 1}`;
+                if (!emittedApprovalKeys.has(fallbackKey)) {
+                  emittedApprovalKeys.add(fallbackKey);
+                  await emitMcpEvent(
+                    buildPrReviewApprovalRequiredPayload({
+                      checkId: dbId,
+                      repo: repoFullName,
+                      prNumber,
+                      headSha,
+                      checkName: check.name,
+                      approvalId: fallbackKey,
+                      segment: index + 1,
+                      baseUrl: BASE_URL,
+                    }),
+                  );
+                }
+              }
+            } catch (eventErr: any) {
+              console.warn(`Ignoring pr_review.approval_required event error (db: ${dbId}):`, eventErr?.message || eventErr);
+            }
           },
         });
         if (!result.success) {
@@ -452,8 +595,40 @@ export async function runPRReview(
           summary: `Review run failed before completion.\n\n- ${error.message}`,
         }, check.name);
       } catch (updateError: any) {
+        failedCheckPersistenceCount += 1;
         console.error('Failed to update check status:', updateError.message);
       }
+    }
+  }
+
+  const expectedChecksCount = checks.length;
+  const incompleteChecksCount = Math.max(0, expectedChecksCount - completedChecksForEvents.length);
+  if (
+    expectedChecksCount > 0 &&
+    (completedChecksForEvents.length > 0 || failedCheckCreationCount > 0 || failedCheckPersistenceCount > 0)
+  ) {
+    const incompleteReason: 'failure' | 'cancelled' | undefined =
+      incompleteChecksCount > 0
+        ? failedCheckCreationCount > 0 || failedCheckPersistenceCount > 0 || !cancelledDuringCreation
+          ? 'failure'
+          : 'cancelled'
+        : undefined;
+    try {
+      const { buildPrReviewCompletedPayload } = await import('./mcp/events.ts');
+      await emitMcpEvent(
+        buildPrReviewCompletedPayload({
+          repo: repoFullName,
+          prNumber,
+          headSha,
+          checks: completedChecksForEvents,
+          expectedChecksCount,
+          incompleteReason,
+          executionId,
+          baseUrl: BASE_URL,
+        }),
+      );
+    } catch (eventErr: any) {
+      console.warn(`Ignoring pr_review.completed event error for ${repoFullName}#${prNumber}:`, eventErr?.message || eventErr);
     }
   }
 }

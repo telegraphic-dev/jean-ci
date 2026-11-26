@@ -46,6 +46,7 @@ export function buildMcpServerCard(baseUrl?: string) {
         'io.modelcontextprotocol/ui',
         'io.modelcontextprotocol/tasks',
         'io.modelcontextprotocol/skills',
+        'io.modelcontextprotocol/events',
       ],
     },
     documentationUrl: `${origin}/api/public/openapi.json`,
