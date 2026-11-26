@@ -254,6 +254,24 @@ export async function initDatabase() {
         value JSONB NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
+
+      CREATE TABLE IF NOT EXISTS jean_ci_mcp_tasks (
+        task_id TEXT PRIMARY KEY,
+        owner_subject TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'working',
+        status_message TEXT,
+        input_requests JSONB,
+        result JSONB,
+        error JSONB,
+        metadata JSONB NOT NULL DEFAULT '{}',
+        ttl_ms INTEGER,
+        poll_interval_ms INTEGER NOT NULL DEFAULT 2500,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_jean_ci_mcp_tasks_expires ON jean_ci_mcp_tasks(expires_at);
     `);
 
     // Migration: rename global_prompt -> user_prompt
@@ -2168,3 +2186,237 @@ export async function getTaskStats(): Promise<TaskStats> {
     failures_24h: parseInt(result.rows[0].failures_24h || '0', 10),
   };
 }
+
+export interface CheckRunFilterOptions {
+  repo?: string;
+  prNumber?: number;
+  status?: string;
+  conclusion?: string;
+  checkName?: string;
+  headSha?: string;
+  page?: number;
+  limit?: number;
+}
+
+export interface CheckRunSummaryRecord extends PublicCheckRun {
+  check_identity?: string;
+  pr_title?: string;
+}
+
+export async function getCheckRunsFiltered(
+  options: CheckRunFilterOptions = {}
+): Promise<PaginatedResult<CheckRunSummaryRecord>> {
+  const page = Math.max(1, options.page ?? 1);
+  const limit = Math.min(100, Math.max(1, options.limit ?? 25));
+  const offset = (page - 1) * limit;
+
+  const whereClauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.repo) {
+    params.push(options.repo);
+    whereClauses.push(`repo = $${params.length}`);
+  }
+  if (options.prNumber !== undefined) {
+    params.push(options.prNumber);
+    whereClauses.push(`pr_number = $${params.length}`);
+  }
+  if (options.status) {
+    params.push(options.status);
+    whereClauses.push(`status = $${params.length}`);
+  }
+  if (options.conclusion) {
+    params.push(options.conclusion);
+    whereClauses.push(`conclusion = $${params.length}`);
+  }
+  if (options.checkName) {
+    params.push(options.checkName);
+    whereClauses.push(`LOWER(check_name) = LOWER($${params.length})`);
+  }
+  if (options.headSha) {
+    params.push(`${options.headSha}%`);
+    whereClauses.push(`head_sha LIKE $${params.length}`);
+  }
+
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const pageParams = [...params, limit, offset];
+
+  const [items, countResult] = await Promise.all([
+    pool.query(
+      `SELECT id, github_check_id, repo, pr_number, check_name, check_identity, head_sha,
+              status, conclusion, title, summary, pr_title,
+              manually_overridden, override_reason, overridden_by, overridden_at,
+              created_at, completed_at
+       FROM jean_ci_check_runs
+       ${whereSql}
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      pageParams
+    ),
+    pool.query(`SELECT COUNT(*) FROM jean_ci_check_runs ${whereSql}`, params),
+  ]);
+
+  const total = parseInt(countResult.rows[0].count || '0', 10);
+  return { items: items.rows, total, page, limit, totalPages: Math.ceil(total / limit) };
+}
+
+export async function getCheckRunsForPR(
+  repo: string,
+  prNumber: number,
+  headSha?: string
+): Promise<CheckRunSummaryRecord[]> {
+  const params: unknown[] = [repo, prNumber];
+  let shaClause = '';
+  if (headSha) {
+    params.push(`${headSha}%`);
+    shaClause = `AND head_sha LIKE $3`;
+  }
+  const result = await pool.query(
+    `SELECT id, github_check_id, repo, pr_number, check_name, check_identity, head_sha,
+            status, conclusion, title, summary, pr_title,
+            manually_overridden, override_reason, overridden_by, overridden_at,
+            created_at, completed_at
+     FROM jean_ci_check_runs
+     WHERE repo = $1 AND pr_number = $2 ${shaClause}
+     ORDER BY created_at DESC, id DESC
+     LIMIT 200`,
+    params
+  );
+  return result.rows;
+}
+
+export interface CheckApprovalWaitSummary {
+  waitingForApproval: boolean;
+  pendingCount: number;
+  hasDenied: boolean;
+  segmentCount: number;
+}
+
+// Read-only safe summary for bearer-token MCP clients: never exposes run IDs,
+// commands, arguments, or approval prompts (those remain admin-browser-session only).
+export async function getCheckApprovalSummary(checkId: number): Promise<CheckApprovalWaitSummary> {
+  const result = await pool.query(
+    `SELECT
+       COUNT(*)::int AS segment_count,
+       COALESCE(SUM(CASE WHEN jsonb_typeof(pending) = 'array' THEN jsonb_array_length(pending) ELSE 0 END), 0)::int AS pending_count,
+       COALESCE(BOOL_OR(denied), FALSE) AS has_denied
+     FROM jean_ci_review_runs
+     WHERE check_id = $1`,
+    [checkId]
+  );
+  const row = result.rows[0];
+  const pendingCount = Number(row?.pending_count || 0);
+  return {
+    waitingForApproval: pendingCount > 0,
+    pendingCount,
+    hasDenied: Boolean(row?.has_denied),
+    segmentCount: Number(row?.segment_count || 0),
+  };
+}
+
+export interface McpTaskDbRecord {
+  task_id: string;
+  owner_subject: string;
+  tool_name: string;
+  status: 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
+  status_message: string | null;
+  input_requests: Record<string, unknown> | null;
+  result: unknown;
+  error: { code: number; message: string; data?: unknown } | null;
+  metadata: Record<string, unknown>;
+  ttl_ms: number | null;
+  poll_interval_ms: number;
+  created_at: Date;
+  last_updated_at: Date;
+  expires_at: Date | null;
+}
+
+export async function createMcpTaskRecord(data: {
+  taskId: string;
+  ownerSubject: string;
+  toolName: string;
+  status?: McpTaskDbRecord['status'];
+  statusMessage?: string | null;
+  metadata?: Record<string, unknown>;
+  ttlMs?: number | null;
+  pollIntervalMs?: number;
+}): Promise<McpTaskDbRecord> {
+  const ttlMs = data.ttlMs === undefined ? 3_600_000 : data.ttlMs;
+  const expiresAt = ttlMs === null ? null : new Date(Date.now() + ttlMs);
+  const result = await pool.query(
+    `INSERT INTO jean_ci_mcp_tasks
+       (task_id, owner_subject, tool_name, status, status_message, metadata, ttl_ms, poll_interval_ms, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+     RETURNING *`,
+    [
+      data.taskId,
+      data.ownerSubject,
+      data.toolName,
+      data.status ?? 'working',
+      data.statusMessage ?? null,
+      JSON.stringify(data.metadata ?? {}),
+      ttlMs,
+      data.pollIntervalMs ?? 2500,
+      expiresAt,
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function getMcpTaskRecord(taskId: string): Promise<McpTaskDbRecord | null> {
+  const result = await pool.query(
+    `SELECT * FROM jean_ci_mcp_tasks
+     WHERE task_id = $1 AND (expires_at IS NULL OR expires_at > NOW())`,
+    [taskId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateMcpTaskRecord(
+  taskId: string,
+  patch: {
+    status?: McpTaskDbRecord['status'];
+    statusMessage?: string | null;
+    inputRequests?: Record<string, unknown> | null;
+    result?: unknown;
+    error?: { code: number; message: string; data?: unknown } | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<McpTaskDbRecord | null> {
+  const result = await pool.query(
+    `UPDATE jean_ci_mcp_tasks
+     SET status = COALESCE($2, status),
+         status_message = CASE WHEN $3 THEN $4 ELSE status_message END,
+         input_requests = CASE WHEN $5 THEN $6::jsonb ELSE input_requests END,
+         result = CASE WHEN $7 THEN $8::jsonb ELSE result END,
+         error = CASE WHEN $9 THEN $10::jsonb ELSE error END,
+         metadata = CASE WHEN $11 THEN $12::jsonb ELSE metadata END,
+         last_updated_at = CURRENT_TIMESTAMP
+     WHERE task_id = $1
+       AND status NOT IN ('completed', 'failed', 'cancelled')
+     RETURNING *`,
+    [
+      taskId,
+      patch.status ?? null,
+      patch.statusMessage !== undefined,
+      patch.statusMessage ?? null,
+      patch.inputRequests !== undefined,
+      patch.inputRequests == null ? null : JSON.stringify(patch.inputRequests),
+      patch.result !== undefined,
+      patch.result === undefined ? null : JSON.stringify(patch.result),
+      patch.error !== undefined,
+      patch.error == null ? null : JSON.stringify(patch.error),
+      patch.metadata !== undefined,
+      patch.metadata === undefined ? null : JSON.stringify(patch.metadata),
+    ]
+  );
+  return result.rows[0] || null;
+}
+
+export async function cleanupExpiredMcpTasks(): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM jean_ci_mcp_tasks WHERE expires_at IS NOT NULL AND expires_at <= NOW()`
+  );
+  return result.rowCount || 0;
+}
+

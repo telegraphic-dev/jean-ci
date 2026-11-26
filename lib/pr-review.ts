@@ -96,11 +96,42 @@ async function completeCheck(
   // PATCHes this exact check ID; it never invokes the reviewer or posts reviews.
 }
 
-export async function runPRReview(installationId: number, owner: string, repo: string, prNumber: number, headSha: string, restart?: { checkId: number; checkName: string; checkIdentity?: string; assertOwner: () => Promise<void>; persist: typeof updateCheckRun }) {
+export interface RunPRReviewOptions {
+  /** Optional subset of check names to run (case-insensitive trimmed match). Omit to run all checks. */
+  checkNames?: string[];
+  onCheckCreated?: (info: { dbId: number; checkName: string; githubCheckId: number }) => void | Promise<void>;
+  onCheckCompleted?: (info: { dbId: number; checkName: string; conclusion: 'success' | 'failure' | 'neutral'; title: string }) => void | Promise<void>;
+}
+
+export async function runPRReview(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string,
+  restart?: { checkId: number; checkName: string; checkIdentity?: string; assertOwner: () => Promise<void>; persist: typeof updateCheckRun },
+  options?: RunPRReviewOptions,
+) {
   const persist = restart ? restart.persist : updateCheckRun;
-  const complete = async (...args: [any, string, string, number, number, Parameters<typeof completeCheck>[5]]) => {
+  const complete = async (
+    octokitArg: any,
+    ownerArg: string,
+    repoArg: string,
+    checkRunIdArg: number,
+    dbIdArg: number,
+    payload: Parameters<typeof completeCheck>[5],
+    checkName?: string,
+  ) => {
     await restart?.assertOwner?.();
-    return completeCheck(...args, persist, !restart, restart?.assertOwner);
+    await completeCheck(octokitArg, ownerArg, repoArg, checkRunIdArg, dbIdArg, payload, persist, !restart, restart?.assertOwner);
+    if (checkName && options?.onCheckCompleted) {
+      await options.onCheckCompleted({
+        dbId: dbIdArg,
+        checkName,
+        conclusion: payload.conclusion,
+        title: payload.title,
+      });
+    }
   };
   const repoFullName = `${owner}/${repo}`;
   const repoConfig = await getRepo(repoFullName);
@@ -131,8 +162,18 @@ export async function runPRReview(installationId: number, owner: string, repo: s
   // Fetch check files from repo
   const checkFiles = await fetchPRCheckFiles(octokit, owner, repo, headSha);
   const userPrompt = await getConfig('user_prompt') || DEFAULT_USER_PROMPT;
-  const checks = normalizeChecks(userPrompt, checkFiles).filter(c => !restart || (restart.checkIdentity ? c.identity === restart.checkIdentity : c.name === restart.checkName));
+  const allChecks = normalizeChecks(userPrompt, checkFiles);
+  let checks = allChecks.filter(c => !restart || (restart.checkIdentity ? c.identity === restart.checkIdentity : c.name === restart.checkName));
   if (restart && checks.length !== 1) throw new Error('The requested check is missing or its legacy name is ambiguous at the reviewed head');
+  if (!restart && options?.checkNames && options.checkNames.length > 0) {
+    const requested = new Set(options.checkNames.map((n) => n.trim().toLowerCase()).filter(Boolean));
+    const available = new Set(allChecks.map((c) => c.name.trim().toLowerCase()));
+    const unknown = [...requested].filter((name) => !available.has(name));
+    if (unknown.length > 0) {
+      throw new Error(`Unknown check name(s) at ${headSha.slice(0, 7)}: ${unknown.join(', ')}. Available: ${allChecks.map((c) => c.name).join(', ')}`);
+    }
+    checks = allChecks.filter((c) => requested.has(c.name.trim().toLowerCase()));
+  }
 
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
@@ -160,6 +201,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
       await setCheckRunGithubId(dbId, checkRun.id);
 
       checkRuns.push({ check, checkRun, dbId });
+      await options?.onCheckCreated?.({ dbId, checkName: check.name, githubCheckId: checkRun.id });
       console.log(`Created pending check: ${check.name} (db: ${dbId})`);
     } catch (error: any) {
       if (restart) throw error;
@@ -184,7 +226,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
             conclusion: 'failure',
             title: '❌ Invalid review prompt',
             summary: buildPromptValidationSummary(promptValidation.errors),
-          });
+          }, check.name);
           console.log(`Check "${check.name}" failed prompt validation`);
           continue;
         }
@@ -257,7 +299,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
             title: preservedFailure.title,
             summary: `${linkReviewedLocations(preservedFailure.reviewMarkdown, { owner, repo, headSha, diff })}\n\n${REVIEW_INTERRUPTION_NOTICE} [View full details](${BASE_URL}/checks/${dbId})`,
             diagnostics: withReviewInterruption(preservedFailure.normalized, executionFailure.summary),
-          });
+          }, check.name);
           console.log(`Check "${check.name}" preserved an earlier blocking finding after a later reviewer execution failure`);
           continue;
         }
@@ -266,7 +308,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           title: executionFailure.title,
           summary: `Reviewer execution did not finish. [View full details](${BASE_URL}/checks/${dbId})`,
           diagnostics: executionFailure.summary,
-        });
+        }, check.name);
         console.log(`Check "${check.name}" ${executionFailure.conclusion === 'neutral' ? 'marked neutral due to gateway outage' : 'failed during reviewer execution'}`);
         continue;
       }
@@ -280,7 +322,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           conclusion: 'neutral',
           title: '⚠️ Review superseded',
           summary: `The PR head changed while this review was running, so its result was discarded.\n\n- Reviewed head: ${headSha}\n- Current head: ${latestPrInfo.head?.sha || 'unknown'}`,
-        });
+        }, check.name);
         console.log(`Check "${check.name}" superseded by newer head for ${repoFullName}#${prNumber}`);
         continue;
       }
@@ -303,7 +345,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
         title: parsed.title,
         summary: buildPublicCheckSummary(parsed, { owner, repo, headSha, diff }, `${BASE_URL}/checks/${dbId}`),
         diagnostics: parsed.normalized,
-      });
+      }, check.name);
 
       console.log(`Check "${check.name}" completed: ${conclusion}`);
     } catch (error: any) {
@@ -314,7 +356,7 @@ export async function runPRReview(installationId: number, owner: string, repo: s
           conclusion: 'failure',
           title: '❌ Check failed',
           summary: `Review run failed before completion.\n\n- ${error.message}`,
-        });
+        }, check.name);
       } catch (updateError: any) {
         console.error('Failed to update check status:', updateError.message);
       }
