@@ -15,7 +15,7 @@ import {
   buildDiscoveryJsonResponse,
   buildMcpServerCard,
 } from '../lib/mcp/server-card.ts';
-import type { CheckRun, CheckRunSummaryRecord, OpenPR, Repo } from '../lib/db.ts';
+import { summarizeCheckApprovalRuns, type CheckRun, type CheckRunSummaryRecord, type OpenPR, type Repo } from '../lib/db.ts';
 
 function createFixtureDeps() {
   const taskStore = new InMemoryMcpTaskStore();
@@ -1381,5 +1381,158 @@ test('runPRReview isolates onCheckCreated/onCheckCompleted errors so completed v
     { cwd: process.cwd(), stdio: 'pipe' },
   );
 });
+
+test('summarizeCheckApprovalRuns and get_review_check exclude completed checks, terminal segments, and expired prompts', async () => {
+  const nowMs = 1_700_000_000_000;
+  const futureSec = Math.floor((nowMs + 600_000) / 1000);
+  const pastSec = Math.floor((nowMs - 60_000) / 1000);
+
+  // Completed check (e.g. recovered after restart) must never report waitingForApproval
+  const completedSummary = summarizeCheckApprovalRuns(
+    'completed',
+    [
+      {
+        status: 'waiting_for_approval',
+        pending: [{ prompt_id: 'p1', execution_generation: 1, app_deadline_at: futureSec }],
+        denied: false,
+      },
+    ],
+    nowMs,
+  );
+  assert.equal(completedSummary.waitingForApproval, false);
+  assert.equal(completedSummary.pendingCount, 0);
+  assert.equal(completedSummary.segmentCount, 1);
+
+  // Active check with only expired prompts or terminal segments must not report waitingForApproval
+  const expiredSummary = summarizeCheckApprovalRuns(
+    'in_progress',
+    [
+      {
+        status: 'waiting_for_approval',
+        pending: [{ prompt_id: 'p-expired', execution_generation: 1, app_deadline_at: pastSec }],
+        denied: false,
+      },
+      {
+        status: 'failed',
+        pending: [{ prompt_id: 'p-terminal', execution_generation: 1, app_deadline_at: futureSec }],
+        denied: true,
+      },
+    ],
+    nowMs,
+  );
+  assert.equal(expiredSummary.waitingForApproval, false);
+  assert.equal(expiredSummary.pendingCount, 0);
+  assert.equal(expiredSummary.hasDenied, true);
+
+  // Active check with unexpired prompt on active segment reports waitingForApproval
+  const activeSummary = summarizeCheckApprovalRuns(
+    'in_progress',
+    [
+      {
+        status: 'waiting_for_approval',
+        pending: [
+          { prompt_id: 'p-expired', execution_generation: 1, app_deadline_at: pastSec },
+          { prompt_id: 'p-live', execution_generation: 1, app_deadline_at: futureSec },
+        ],
+        denied: false,
+      },
+    ],
+    nowMs,
+  );
+  assert.equal(activeSummary.waitingForApproval, true);
+  assert.equal(activeSummary.pendingCount, 1);
+
+  // get_review_check also defensively clamps completed checks to waitingForApproval=false
+  const fixture = createFixtureDeps();
+  const handler = createJeanCiMcpHandler({
+    ...fixture.deps,
+    getCheckApprovalSummary: async () => ({
+      waitingForApproval: true,
+      pendingCount: 2,
+      hasDenied: false,
+      segmentCount: 1,
+    }),
+  });
+  const res = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'get_review_check', arguments: { checkId: 42 } },
+    { mcpName: 'get_review_check' },
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.json.result.structuredContent.check.status, 'completed');
+  assert.equal(res.json.result.structuredContent.approvalStatus.waitingForApproval, false);
+  assert.equal(res.json.result.structuredContent.approvalStatus.pendingCount, 0);
+  assert.equal(res.json.result.structuredContent.approvalStatus.approvalPageUrl, null);
+});
+
+test('retrigger_pr_review validates requested check names before advancing PR review tracking state', async () => {
+  const fixture = createFixtureDeps();
+  let upsertCalls = 0;
+  const removedCheck: CheckRun = {
+    id: 99,
+    github_check_id: 9999,
+    repo: 'telegraphic-dev/jean-ci',
+    pr_number: 171,
+    check_name: 'removed-check',
+    check_identity: 'path:.jean-ci/pr-checks/removed-check.md',
+    head_sha: '0000000000000000000000000000000000000001',
+    status: 'completed',
+    conclusion: 'failure',
+    title: 'Failed',
+    summary: 'Old check',
+    created_at: new Date('2026-11-25T09:00:00Z'),
+    completed_at: new Date('2026-11-25T09:01:00Z'),
+  };
+
+  const handler = createJeanCiMcpHandler({
+    ...fixture.deps,
+    getCheckRun: async (id) => (id === 99 ? removedCheck : fixture.deps.getCheckRun(id)),
+    getPRInfo: async (_inst, owner, repo, prNumber) => ({
+      number: prNumber,
+      state: 'open',
+      title: 'Draft PR',
+      draft: true,
+      html_url: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
+      head: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', ref: 'draft-branch' },
+      base: { sha: '0000000000000000000000000000000000000001', ref: 'main' },
+    }),
+    upsertPRReviewState: async (state) => {
+      upsertCalls += 1;
+      await fixture.deps.upsertPRReviewState(state);
+    },
+  });
+
+  // 1) Direct unknown checkNames
+  const unknownRes = await callModernMcp(
+    handler,
+    'tools/call',
+    {
+      name: 'retrigger_pr_review',
+      arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 171, checkNames: ['does-not-exist'] },
+    },
+    { mcpName: 'retrigger_pr_review' },
+  );
+  assert.equal(unknownRes.json.result.isError, true);
+  assert.match(unknownRes.json.result.content[0].text, /Unknown check name/i);
+  assert.equal(upsertCalls, 0, 'rejected checkNames must not advance jean_ci_pr_review_state');
+  assert.equal(fixture.triggeredRuns.length, 0);
+
+  // 2) onlyThisCheck referencing a custom check removed from the current head
+  const removedRes = await callModernMcp(
+    handler,
+    'tools/call',
+    {
+      name: 'retrigger_pr_review',
+      arguments: { checkId: 99, onlyThisCheck: true },
+    },
+    { mcpName: 'retrigger_pr_review' },
+  );
+  assert.equal(removedRes.json.result.isError, true);
+  assert.match(removedRes.json.result.content[0].text, /removed-check/i);
+  assert.equal(upsertCalls, 0, 'removed check retrigger must not mark draft head as reviewed');
+  assert.equal(fixture.triggeredRuns.length, 0);
+});
+
 
 

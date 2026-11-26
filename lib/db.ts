@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { approvalPrompts, observedApproval, approvalDeadline, terminalDiagnostic } from './hermes-runs.ts';
+import { approvalPrompts, observedApproval, approvalDeadline, terminalDiagnostic, terminalRun } from './hermes-runs.ts';
 import type { RunBinding, RunStore, HermesRun, ApprovalPrompt } from './hermes-runs.ts';
 import { buildGatewayChatSessionUrl } from './openclaw-chat-links.ts';
 
@@ -2292,26 +2292,57 @@ export interface CheckApprovalWaitSummary {
   segmentCount: number;
 }
 
-// Read-only safe summary for bearer-token MCP clients: never exposes run IDs,
-// commands, arguments, or approval prompts (those remain admin-browser-session only).
-export async function getCheckApprovalSummary(checkId: number): Promise<CheckApprovalWaitSummary> {
-  const result = await pool.query(
-    `SELECT
-       COUNT(*)::int AS segment_count,
-       COALESCE(SUM(CASE WHEN jsonb_typeof(pending) = 'array' THEN jsonb_array_length(pending) ELSE 0 END), 0)::int AS pending_count,
-       COALESCE(BOOL_OR(denied), FALSE) AS has_denied
-     FROM jean_ci_review_runs
-     WHERE check_id = $1`,
-    [checkId]
-  );
-  const row = result.rows[0];
-  const pendingCount = Number(row?.pending_count || 0);
+export function summarizeCheckApprovalRuns(
+  checkStatus: string | null | undefined,
+  rows: Array<{ status?: string | null; pending?: unknown; denied?: boolean | null }>,
+  nowMs: number = Date.now(),
+): CheckApprovalWaitSummary {
+  const segmentCount = rows.length;
+  const hasDenied = rows.some((row) => Boolean(row.denied));
+  if (!checkStatus || checkStatus === 'completed') {
+    return {
+      waitingForApproval: false,
+      pendingCount: 0,
+      hasDenied,
+      segmentCount,
+    };
+  }
+
+  let pendingCount = 0;
+  for (const row of rows) {
+    if (row.status && terminalRun(row.status)) continue;
+    if (!Array.isArray(row.pending)) continue;
+    for (const item of row.pending) {
+      if (!item || typeof item !== 'object') continue;
+      const deadline = approvalDeadline(item as ApprovalPrompt);
+      if (!deadline || deadline * 1000 > nowMs) {
+        pendingCount += 1;
+      }
+    }
+  }
+
   return {
     waitingForApproval: pendingCount > 0,
     pendingCount,
-    hasDenied: Boolean(row?.has_denied),
-    segmentCount: Number(row?.segment_count || 0),
+    hasDenied,
+    segmentCount,
   };
+}
+
+// Read-only safe summary for bearer-token MCP clients: never exposes run IDs,
+// commands, arguments, or approval prompts (those remain admin-browser-session only).
+export async function getCheckApprovalSummary(checkId: number): Promise<CheckApprovalWaitSummary> {
+  const [checkResult, runsResult] = await Promise.all([
+    pool.query(`SELECT status FROM jean_ci_check_runs WHERE id = $1`, [checkId]),
+    pool.query(
+      `SELECT status, pending, denied
+       FROM jean_ci_review_runs
+       WHERE check_id = $1`,
+      [checkId],
+    ),
+  ]);
+  const checkStatus = checkResult.rows[0]?.status ?? null;
+  return summarizeCheckApprovalRuns(checkStatus, runsResult.rows);
 }
 
 export interface McpTaskDbRecord {

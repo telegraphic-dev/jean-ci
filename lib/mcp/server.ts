@@ -648,7 +648,11 @@ export async function createJeanCiMcpServer(
       if (!check) {
         return toolError(`Check run #${checkId} not found.`);
       }
-      const approvalStatus = await deps.getCheckApprovalSummary(checkId);
+      const rawApprovalStatus = await deps.getCheckApprovalSummary(checkId);
+      const approvalStatus =
+        check.status === 'completed'
+          ? { ...rawApprovalStatus, waitingForApproval: false, pendingCount: 0 }
+          : rawApprovalStatus;
       const rawDiff = check.diff_preview || '';
       const diffTruncated = includeDiff && rawDiff.length > maxDiffChars;
       const diffPreview = includeDiff ? rawDiff.slice(0, maxDiffChars) : null;
@@ -1249,6 +1253,25 @@ export async function createJeanCiMcpServer(
         return toolError(
           `PR head SHA mismatch for ${targetRepo}#${targetPrNumber}: expected ${expectedHeadSha}, current GitHub head is ${headSha}.`,
         );
+      }
+
+      if (targetCheckNames && targetCheckNames.length > 0) {
+        const checkFiles = await deps.fetchPRCheckFiles(repoConfig.installation_id, owner, repoName, headSha);
+        const availableNames = [
+          'Code Review',
+          ...checkFiles
+            .slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((file) => file.name),
+        ];
+        const availableLower = new Set(availableNames.map((name) => name.trim().toLowerCase()));
+        const requested = new Set(targetCheckNames.map((name) => name.trim().toLowerCase()).filter(Boolean));
+        const unknown = [...requested].filter((name) => !availableLower.has(name));
+        if (requested.size === 0 || unknown.length > 0) {
+          return toolError(
+            `Unknown check name(s) at ${headSha.slice(0, 7)}: ${unknown.join(', ')}. Available: ${availableNames.join(', ')}`,
+          );
+        }
       }
 
       const previousState = await deps.getPRReviewState(targetRepo, targetPrNumber);
