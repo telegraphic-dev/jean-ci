@@ -1453,6 +1453,154 @@ test('expired subscription replacement resets watermark, detached replay rejects
   );
 });
 
+test('intermittent failures reset consecutiveFailures on success while pinning watermark, and restarted check runs emit distinct completion events', async () => {
+  // 1) Alternating fail/succeed deliveries never reach MAX_CONSECUTIVE_FAILURES_BEFORE_SUSPEND
+  //    while lastCursorId stays pinned behind the first failed event.
+  const store = new InMemoryMcpEventsStore();
+  const secret = makeWebhookSecret(32);
+  const url = 'https://hooks.intermittent.example/mcp';
+  const deliverFn: WebhookDeliverFn = async ({ rawBody }) => {
+    const parsed = JSON.parse(rawBody) as { type?: string; challenge?: string; data?: { prNumber?: number } };
+    if (parsed.type === 'verification') {
+      return { ok: true, status: 200, bodyText: JSON.stringify({ challenge: parsed.challenge }) };
+    }
+    // Fail odd PR numbers, succeed even PR numbers
+    const pr = parsed.data?.prNumber ?? 0;
+    if (pr % 2 === 1) {
+      return { ok: false, status: 503, errorCategory: 'http_5xx' };
+    }
+    return { ok: true, status: 200, bodyText: 'ok' };
+  };
+  const handler = createJeanCiMcpHandler({
+    baseUrl: 'https://jean-ci.example.com',
+    taskStore: new InMemoryMcpTaskStore(),
+    taskAbortRegistry: new McpTaskAbortRegistry(),
+    eventsStore: store,
+    deliverEventWebhook: deliverFn,
+    eventRetryDelaysMs: [0],
+  });
+  await callEventsRpc(handler, 'events/subscribe', {
+    name: 'pr_review.completed',
+    delivery: { mode: 'webhook', url, secret },
+  });
+  const keyHash = deriveSubscriptionIdentity(
+    'oauth:42:clienthash123456',
+    url,
+    'pr_review.completed',
+    {},
+  ).subscriptionKeyHash;
+
+  // Publish 24 events (12 odd failures interleaved with 12 even successes)
+  for (let pr = 1; pr <= 24; pr += 1) {
+    await publishMcpEvent(
+      store,
+      buildPrReviewCompletedPayload({
+        repo: 'telegraphic-dev/jean-ci',
+        prNumber: pr,
+        headSha: 'a'.repeat(40),
+        checks: [{ checkId: pr, checkName: 'Code Review', conclusion: 'success' }],
+        baseUrl: 'https://jean-ci.example.com',
+      }),
+      { deliverWebhook: deliverFn, retryDelaysMs: [0], awaitDeliveries: true },
+    );
+  }
+  const sub = await store.getSubscriptionByKeyHash(keyHash);
+  assert.equal(sub?.active, true, 'intermittent failures separated by successes must not suspend subscription');
+  assert.equal(sub?.consecutiveFailures, 0, 'latest successful delivery must reset consecutive failure streak');
+  assert.equal(sub?.lastCursorId, 0, 'recovery watermark must remain pinned before first failed event');
+  assert.equal(sub?.lastError, 'http_5xx');
+  assert.ok(sub?.failedSince, 'failedSince must remain set while gap is unrecovered');
+
+  // 2) Restarting a completed check reusing the same checkId emits NEW distinct completion events
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import { mock } from 'node:test';
+    import assert from 'node:assert/strict';
+
+    const dbExports = await import('./lib/db.ts');
+    let verdict = 'FAIL';
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        ...dbExports,
+        getRepo: async () => ({ full_name: 'acme/app', installation_id: 1, pr_review_enabled: true }),
+        getConfig: async () => 'Review this PR.',
+        DEFAULT_USER_PROMPT: 'Review this PR.',
+        insertCheckRun: async () => 808,
+        setCheckRunGithubId: async () => {},
+        setReservedCheckInput: async () => {},
+        updateCheckRun: async () => {},
+      },
+    });
+    mock.module('./lib/github.ts', {
+      namedExports: {
+        getInstallationOctokit: async () => ({}),
+        getPRDiff: async () => 'diff --git a/a.ts b/a.ts\\n+export const ok = true;\\n',
+        getPRInfo: async () => ({ title: 'Test PR', body: 'Body', state: 'open', head: { sha: '${'a'.repeat(40)}' } }),
+        createCheck: async () => ({ id: 980 }),
+        updateCheck: async () => {},
+        createPRReview: async () => {},
+        fetchPRCheckFiles: async () => [],
+      },
+    });
+    mock.module('./lib/llm.ts', {
+      namedExports: {
+        callOpenClaw: async () => ({
+          success: true,
+          response: 'VERDICT: ' + verdict + '\\nTITLE: Review result\\nSUMMARY: Done.',
+        }),
+      },
+    });
+
+    const { InMemoryMcpEventsStore } = await import('./lib/mcp/events.ts');
+    const { runPRReview } = await import('./lib/pr-review.ts');
+    const store = new InMemoryMcpEventsStore();
+
+    // Run 1: check 808 fails
+    await runPRReview(1, 'acme', 'app', 95, '${'a'.repeat(40)}', undefined, {
+      mcpEventsStore: store,
+    });
+
+    // Run 2: restart reusing checkId 808 now passes
+    verdict = 'PASS';
+    await runPRReview(
+      1,
+      'acme',
+      'app',
+      95,
+      '${'a'.repeat(40)}',
+      {
+        checkId: 808,
+        checkName: 'Code Review',
+        checkIdentity: 'global:code-review',
+        assertOwner: async () => {},
+        persist: async () => {},
+      },
+      { mcpEventsStore: store },
+    );
+
+    const checkEvents = await store.queryEvents({ name: 'pr_review.check_completed', afterId: 0, limit: 10 });
+    const prEvents = await store.queryEvents({ name: 'pr_review.completed', afterId: 0, limit: 10 });
+    assert.equal(checkEvents.length, 2);
+    assert.notEqual(checkEvents[0].eventId, checkEvents[1].eventId);
+    assert.equal(checkEvents[0].data.conclusion, 'failure');
+    assert.equal(checkEvents[1].data.conclusion, 'success');
+    assert.equal(prEvents.length, 2);
+    assert.notEqual(prEvents[0].eventId, prEvents[1].eventId);
+    assert.equal(prEvents[0].data.overallConclusion, 'failure');
+    assert.equal(prEvents[1].data.overallConclusion, 'success');
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+    },
+  );
+});
+
+
 
 
 

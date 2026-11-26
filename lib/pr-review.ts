@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { getRepo, getConfig, DEFAULT_USER_PROMPT, insertCheckRun, setCheckRunGithubId, setReservedCheckInput, updateCheckRun } from './db.ts';
 import { getInstallationOctokit, fetchPRCheckFiles, getPRInfo, getPRDiff, createCheck, updateCheck, createPRReview } from './github.ts';
 import { callOpenClaw } from './llm.ts';
@@ -135,6 +136,7 @@ export async function runPRReview(
   };
 
   const repoFullName = `${owner}/${repo}`;
+  const executionId = randomUUID();
   const checkIdentityByDbId = new Map<number, string>();
   const completedChecksForEvents: Array<{
     checkId: number;
@@ -216,6 +218,7 @@ export async function runPRReview(
             checkName,
             checkIdentity,
             conclusion: payload.conclusion,
+            executionId,
             baseUrl: BASE_URL,
           }),
         );
@@ -467,7 +470,7 @@ export async function runPRReview(
                   );
                 }
               } else {
-                const fallbackKey = `fallback:${index + 1}`;
+                const fallbackKey = `fallback:${executionId}:${index + 1}`;
                 if (!emittedApprovalKeys.has(fallbackKey)) {
                   emittedApprovalKeys.add(fallbackKey);
                   await emitMcpEvent(
@@ -620,6 +623,7 @@ export async function runPRReview(
           checks: completedChecksForEvents,
           expectedChecksCount,
           incompleteReason,
+          executionId,
           baseUrl: BASE_URL,
         }),
       );

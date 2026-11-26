@@ -1246,10 +1246,12 @@ export async function deliverEventToSubscription(params: {
           lastCursorId: event.id,
         });
       } else {
+        // Keep the recovery watermark and failedSince/lastError pinned behind the earlier
+        // unacknowledged event, but reset the consecutive failure streak since this delivery succeeded.
         await store.updateDeliveryStatus({
           subscriptionKeyHash: currentSub.subscriptionKeyHash,
           active: currentSub.active,
-          consecutiveFailures: currentSub.consecutiveFailures,
+          consecutiveFailures: 0,
           lastDeliveryAt: new Date(),
           lastError: currentSub.lastError,
           failedSince: currentSub.failedSince,
@@ -1275,6 +1277,14 @@ export async function deliverEventToSubscription(params: {
           lastError: null,
           failedSince: null,
           lastCursorId: event.id,
+        });
+      } else {
+        await store.updateDeliveryStatus({
+          subscriptionKeyHash: currentSub.subscriptionKeyHash,
+          active: currentSub.active,
+          consecutiveFailures: 0,
+          lastError: currentSub.lastError,
+          failedSince: currentSub.failedSince,
         });
       }
       return { delivered: false, discarded: true, lastError: 'http_4xx' };
@@ -1891,6 +1901,7 @@ export interface PrReviewCheckCompletedEventInput {
   checkName: string;
   checkIdentity?: string | null;
   conclusion: ReviewConclusion;
+  executionId?: string;
   baseUrl: string;
 }
 
@@ -1906,6 +1917,7 @@ export interface PrReviewCompletedEventInput {
   }>;
   expectedChecksCount?: number;
   incompleteReason?: 'failure' | 'cancelled';
+  executionId?: string;
   baseUrl: string;
 }
 
@@ -1924,8 +1936,11 @@ export interface PrReviewApprovalRequiredEventInput {
 
 export function buildPrReviewCheckCompletedPayload(input: PrReviewCheckCompletedEventInput) {
   const base = input.baseUrl.replace(/\/+$/, '');
+  const eventId = input.executionId
+    ? `jci_chk_${input.checkId}_${createHash('sha256').update(input.executionId).digest('hex').slice(0, 12)}`
+    : `jci_chk_${input.checkId}`;
   return {
-    eventId: `jci_chk_${input.checkId}`,
+    eventId,
     name: 'pr_review.check_completed' as const,
     repo: input.repo,
     prNumber: input.prNumber,
@@ -1966,7 +1981,7 @@ export function buildPrReviewCompletedPayload(input: PrReviewCompletedEventInput
     .join(',');
   const runFingerprint = createHash('sha256')
     .update(
-      `${input.repo}#${input.prNumber}@${input.headSha}:${sortedCheckIds}:${expectedChecksCount}:${incompleteChecksCount}:${overallConclusion}`,
+      `${input.repo}#${input.prNumber}@${input.headSha}:${sortedCheckIds}:${expectedChecksCount}:${incompleteChecksCount}:${overallConclusion}:${input.executionId ?? ''}`,
     )
     .digest('hex')
     .slice(0, 16);
