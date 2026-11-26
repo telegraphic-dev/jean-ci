@@ -99,6 +99,10 @@ async function completeCheck(
 export interface RunPRReviewOptions {
   /** Optional subset of check names to run (case-insensitive trimmed match). Omit to run all checks. */
   checkNames?: string[];
+  /** Cooperative cancellation signal for caller-triggered reviews (e.g. MCP Tasks cancel). */
+  signal?: AbortSignal;
+  /** Optional async cooperative cancellation predicate (e.g. durable task status check). */
+  isCancelled?: () => boolean | Promise<boolean>;
   onCheckCreated?: (info: { dbId: number; checkName: string; githubCheckId: number }) => void | Promise<void>;
   onCheckCompleted?: (info: { dbId: number; checkName: string; conclusion: 'success' | 'failure' | 'neutral'; title: string }) => void | Promise<void>;
 }
@@ -112,6 +116,16 @@ export async function runPRReview(
   restart?: { checkId: number; checkName: string; checkIdentity?: string; assertOwner: () => Promise<void>; persist: typeof updateCheckRun },
   options?: RunPRReviewOptions,
 ) {
+  const isRunCancelled = async (): Promise<boolean> => {
+    if (options?.signal?.aborted) return true;
+    if (!options?.isCancelled) return false;
+    try {
+      return Boolean(await options.isCancelled());
+    } catch {
+      return false;
+    }
+  };
+
   const persist = restart ? restart.persist : updateCheckRun;
   const complete = async (
     octokitArg: any,
@@ -124,13 +138,19 @@ export async function runPRReview(
   ) => {
     await restart?.assertOwner?.();
     await completeCheck(octokitArg, ownerArg, repoArg, checkRunIdArg, dbIdArg, payload, persist, !restart, restart?.assertOwner);
+    // Isolate observer callback failures so a transient progress-store error can
+    // never re-enter check error handling or overwrite an already-published verdict.
     if (checkName && options?.onCheckCompleted) {
-      await options.onCheckCompleted({
-        dbId: dbIdArg,
-        checkName,
-        conclusion: payload.conclusion,
-        title: payload.title,
-      });
+      try {
+        await options.onCheckCompleted({
+          dbId: dbIdArg,
+          checkName,
+          conclusion: payload.conclusion,
+          title: payload.title,
+        });
+      } catch (callbackError: any) {
+        console.warn(`Ignoring onCheckCompleted callback failure for check "${checkName}" (db: ${dbIdArg}):`, callbackError?.message || callbackError);
+      }
     }
   };
   const repoFullName = `${owner}/${repo}`;
@@ -139,6 +159,11 @@ export async function runPRReview(
   if (!repoConfig || !repoConfig.pr_review_enabled) {
     if (restart) throw new Error('Repository review disabled');
     console.log(`PR review disabled for ${repoFullName}`);
+    return;
+  }
+
+  if (await isRunCancelled()) {
+    console.log(`PR review cancelled before GitHub fetch for ${repoFullName}#${prNumber}`);
     return;
   }
 
@@ -175,6 +200,11 @@ export async function runPRReview(
     checks = allChecks.filter((c) => requested.has(c.name.trim().toLowerCase()));
   }
 
+  if (await isRunCancelled()) {
+    console.log(`PR review cancelled before creating checks for ${repoFullName}#${prNumber}`);
+    return;
+  }
+
   console.log(`Running ${checks.length} checks for ${repoFullName}#${prNumber}`);
 
   const diffPreview = truncateReviewDiff(diff, DIFF_PREVIEW_LIMIT);
@@ -182,6 +212,7 @@ export async function runPRReview(
   // Create ALL checks as pending first, storing in DB
   const checkRuns = [];
   for (const check of checks) {
+    if (await isRunCancelled()) break;
     try {
       const dbId = restart?.checkId ?? await insertCheckRun({
         repo: repoFullName,
@@ -201,7 +232,13 @@ export async function runPRReview(
       await setCheckRunGithubId(dbId, checkRun.id);
 
       checkRuns.push({ check, checkRun, dbId });
-      await options?.onCheckCreated?.({ dbId, checkName: check.name, githubCheckId: checkRun.id });
+      if (options?.onCheckCreated) {
+        try {
+          await options.onCheckCreated({ dbId, checkName: check.name, githubCheckId: checkRun.id });
+        } catch (callbackError: any) {
+          console.warn(`Ignoring onCheckCreated callback failure for check "${check.name}" (db: ${dbId}):`, callbackError?.message || callbackError);
+        }
+      }
       console.log(`Created pending check: ${check.name} (db: ${dbId})`);
     } catch (error: any) {
       if (restart) throw error;
@@ -211,6 +248,19 @@ export async function runPRReview(
 
   // Run each check
   for (const { check, checkRun, dbId } of checkRuns) {
+    if (await isRunCancelled()) {
+      try {
+        await complete(octokit, owner, repo, checkRun.id, dbId, {
+          conclusion: 'neutral',
+          title: '⚠️ Review cancelled',
+          summary: 'Review run was cancelled by the caller before execution completed.',
+        }, check.name);
+      } catch (cancelErr: any) {
+        console.error(`Failed to mark cancelled check "${check.name}":`, cancelErr?.message || cancelErr);
+      }
+      continue;
+    }
+
     try {
       await restart?.assertOwner?.();
       await updateCheck(octokit, owner, repo, checkRun.id, {
@@ -244,7 +294,12 @@ export async function runPRReview(
       });
       const chunkedResponses = [];
       let executionFailure: ReturnType<typeof buildExecutionFailureOutcome> | null = null;
+      let cancelledDuringCheck = false;
       for (const [index, reviewContext] of reviewContexts.entries()) {
+        if (await isRunCancelled()) {
+          cancelledDuringCheck = true;
+          break;
+        }
         await restart?.assertOwner?.();
         let approvalWaitReported = false;
         const result = await callOpenClaw(check.prompt, reviewContext.context, {
@@ -289,6 +344,15 @@ export async function runPRReview(
           executionFailure = buildExecutionFailureOutcome('unknown', error instanceof Error ? error.message : String(error));
           break;
         }
+      }
+      if (cancelledDuringCheck || await isRunCancelled()) {
+        await complete(octokit, owner, repo, checkRun.id, dbId, {
+          conclusion: 'neutral',
+          title: '⚠️ Review cancelled',
+          summary: 'Review run was cancelled by the caller before publication.',
+        }, check.name);
+        console.log(`Check "${check.name}" cancelled before completion`);
+        continue;
       }
       if (executionFailure) {
         const priorFailure = chunkedResponses.find(({ parsed }) => parsed.verdict === 'FAIL');

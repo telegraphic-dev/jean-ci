@@ -45,8 +45,11 @@ import {
   clientSupportsTasks,
   createDbMcpTaskStore,
   createWorkingMcpTask,
+  defaultMcpTaskAbortRegistry,
   registerMcpTasksExtension,
+  safeUpdateMcpTask,
   toCreateTaskToolResult,
+  type McpTaskAbortRegistry,
   type McpTaskStore,
 } from './tasks.ts';
 
@@ -77,6 +80,7 @@ export interface RepoCheckFile {
 export interface JeanCiMcpDeps {
   baseUrl: string;
   taskStore: McpTaskStore;
+  taskAbortRegistry: McpTaskAbortRegistry;
   getRepo: (fullName: string) => Promise<Repo | null>;
   getReposWithActivity: () => Promise<RepoWithActivity[]>;
   getOpenPRsFromEvents: () => Promise<OpenPR[]>;
@@ -140,6 +144,7 @@ export function createDefaultMcpDeps(): JeanCiMcpDeps {
   defaultDepsCache = {
     baseUrl: APP_BASE_URL,
     taskStore,
+    taskAbortRegistry: defaultMcpTaskAbortRegistry,
     getRepo: async (fullName) => (await import('../db.ts')).getRepo(fullName),
     getReposWithActivity: async () => (await import('../db.ts')).getReposWithActivity(),
     getOpenPRsFromEvents: async () => (await import('../db.ts')).getOpenPRsFromEvents(),
@@ -331,6 +336,7 @@ export async function createJeanCiMcpServer(
   registerMcpTasksExtension(server, {
     taskStore: deps.taskStore,
     ownerSubject,
+    abortRegistry: deps.taskAbortRegistry,
   });
 
   // 3. Official Extension: Skills over MCP (io.modelcontextprotocol/skills)
@@ -401,13 +407,40 @@ export async function createJeanCiMcpServer(
       ]);
 
       const allChecks = rawChecks.map((c) => serializeCheckSummary(c, baseUrl));
-      const latestByName = new Map<string, ReturnType<typeof serializeCheckSummary>>();
-      for (const check of allChecks) {
-        if (!latestByName.has(check.checkName)) {
-          latestByName.set(check.checkName, check);
+      // Keep full history in allChecks, but derive current latestChecks and rollup
+      // from the active reviewed head so removed/renamed historical checks from
+      // earlier commits do not pin the PR to "stale" indefinitely.
+      let checksForRollup = allChecks;
+      if (!headSha && allChecks.length > 0) {
+        const reviewedSha = reviewState?.last_reviewed_sha || null;
+        if (reviewedSha) {
+          const atReviewedHead = allChecks.filter((c) => c.headSha === reviewedSha);
+          if (atReviewedHead.length > 0) {
+            checksForRollup = atReviewedHead;
+          } else {
+            const newestSha = allChecks.find((c) => c.headSha)?.headSha ?? null;
+            if (newestSha) {
+              checksForRollup = allChecks.filter((c) => c.headSha === newestSha);
+            }
+          }
+        } else {
+          const newestSha = allChecks.find((c) => c.headSha)?.headSha ?? null;
+          if (newestSha) {
+            checksForRollup = allChecks.filter((c) => c.headSha === newestSha);
+          }
         }
       }
-      const latestChecks = [...latestByName.values()];
+
+      // Group by stable check_identity (falling back to checkName for legacy rows)
+      // so a custom check named "Code Review" never masks the global Code Review check.
+      const latestByIdentity = new Map<string, ReturnType<typeof serializeCheckSummary>>();
+      for (const check of checksForRollup) {
+        const key = check.checkIdentity || check.checkName;
+        if (!latestByIdentity.has(key)) {
+          latestByIdentity.set(key, check);
+        }
+      }
+      const latestChecks = [...latestByIdentity.values()];
       const overallStatus = computePrRollup(latestChecks, reviewState);
 
       const data = {
@@ -1129,6 +1162,17 @@ export async function createJeanCiMcpServer(
           },
         });
 
+        const abortController = deps.taskAbortRegistry.register(task.taskId);
+        const isTaskCancelled = async (): Promise<boolean> => {
+          if (abortController.signal.aborted) return true;
+          try {
+            const current = await deps.taskStore.get(task.taskId);
+            return current?.status === 'cancelled';
+          } catch {
+            return false;
+          }
+        };
+
         const createdChecks: Array<{ dbId: number; checkName: string; githubCheckId: number; detailsUrl: string }> = [];
         const completedChecks: Array<{
           dbId: number;
@@ -1138,31 +1182,36 @@ export async function createJeanCiMcpServer(
           detailsUrl: string;
         }> = [];
 
-        void deps
-          .runPRReview(repoConfig.installation_id, owner, repoName, targetPrNumber, headSha, {
-            checkNames: targetCheckNames,
-            onCheckCreated: async ({ dbId, checkName, githubCheckId }) => {
-              createdChecks.push({ dbId, checkName, githubCheckId, detailsUrl: `${baseUrl}/checks/${dbId}` });
-              await deps.taskStore.update(task.taskId, {
-                statusMessage: `Queued ${createdChecks.length} check(s) for ${targetRepo}#${targetPrNumber}: ${createdChecks.map((c) => c.checkName).join(', ')}`,
-                metadata: { repo: targetRepo, prNumber: targetPrNumber, headSha, createdChecks, completedChecks },
-              });
-            },
-            onCheckCompleted: async ({ dbId, checkName, conclusion, title }) => {
-              completedChecks.push({
-                dbId,
-                checkName,
-                conclusion,
-                title,
-                detailsUrl: `${baseUrl}/checks/${dbId}`,
-              });
-              await deps.taskStore.update(task.taskId, {
-                statusMessage: `Completed ${completedChecks.length}/${Math.max(createdChecks.length, completedChecks.length)} check(s): ${completedChecks.map((c) => `${c.checkName}=${c.conclusion}`).join(', ')}`,
-                metadata: { repo: targetRepo, prNumber: targetPrNumber, headSha, createdChecks, completedChecks },
-              });
-            },
-          })
-          .then(async () => {
+        void (async () => {
+          try {
+            await deps.runPRReview(repoConfig.installation_id, owner, repoName, targetPrNumber, headSha, {
+              checkNames: targetCheckNames,
+              signal: abortController.signal,
+              isCancelled: isTaskCancelled,
+              onCheckCreated: async ({ dbId, checkName, githubCheckId }) => {
+                createdChecks.push({ dbId, checkName, githubCheckId, detailsUrl: `${baseUrl}/checks/${dbId}` });
+                await safeUpdateMcpTask(deps.taskStore, task.taskId, {
+                  statusMessage: `Queued ${createdChecks.length} check(s) for ${targetRepo}#${targetPrNumber}: ${createdChecks.map((c) => c.checkName).join(', ')}`,
+                  metadata: { repo: targetRepo, prNumber: targetPrNumber, headSha, createdChecks, completedChecks },
+                });
+              },
+              onCheckCompleted: async ({ dbId, checkName, conclusion, title }) => {
+                completedChecks.push({
+                  dbId,
+                  checkName,
+                  conclusion,
+                  title,
+                  detailsUrl: `${baseUrl}/checks/${dbId}`,
+                });
+                await safeUpdateMcpTask(deps.taskStore, task.taskId, {
+                  statusMessage: `Completed ${completedChecks.length}/${Math.max(createdChecks.length, completedChecks.length)} check(s): ${completedChecks.map((c) => `${c.checkName}=${c.conclusion}`).join(', ')}`,
+                  metadata: { repo: targetRepo, prNumber: targetPrNumber, headSha, createdChecks, completedChecks },
+                });
+              },
+            });
+
+            if (await isTaskCancelled()) return;
+
             const payload = {
               status: 'completed',
               repo: targetRepo,
@@ -1180,20 +1229,25 @@ export async function createJeanCiMcpServer(
                 (c) => `- #${c.dbId} **${c.checkName}**: **${c.conclusion.toUpperCase()}** — ${c.title} (${c.detailsUrl})`,
               ),
             ];
-            await deps.taskStore.update(task.taskId, {
+            await safeUpdateMcpTask(deps.taskStore, task.taskId, {
               status: 'completed',
               statusMessage: `Finished ${completedChecks.length} check(s) for ${targetRepo}#${targetPrNumber}`,
               result: jsonToolResult(summaryLines.join('\n'), payload),
             });
-          })
-          .catch(async (error: unknown) => {
+          } catch (error: unknown) {
+            if (await isTaskCancelled()) return;
             const message = error instanceof Error ? error.message : String(error);
-            await deps.taskStore.update(task.taskId, {
+            await safeUpdateMcpTask(deps.taskStore, task.taskId, {
               status: 'completed',
               statusMessage: `Review run failed: ${message}`,
               result: toolError(`Retriggered PR review failed for ${targetRepo}#${targetPrNumber}: ${message}`),
             });
-          });
+          } finally {
+            deps.taskAbortRegistry.unregister(task.taskId);
+          }
+        })().catch((unexpectedError) => {
+          console.error(`[MCP Tasks] Unexpected failure in retrigger_pr_review task ${task.taskId}:`, unexpectedError);
+        });
 
         return toCreateTaskToolResult(task);
       }
@@ -1285,23 +1339,44 @@ export async function createJeanCiMcpServer(
           metadata: { repo, ref: headSha || ref },
         });
 
-        void deps
-          .runLocalReview(request)
-          .then(async (result) => {
-            await deps.taskStore.update(task.taskId, {
+        const abortController = deps.taskAbortRegistry.register(task.taskId);
+        const isTaskCancelled = async (): Promise<boolean> => {
+          if (abortController.signal.aborted) return true;
+          try {
+            const current = await deps.taskStore.get(task.taskId);
+            return current?.status === 'cancelled';
+          } catch {
+            return false;
+          }
+        };
+
+        void (async () => {
+          try {
+            const result = await deps.runLocalReview({
+              ...request,
+              signal: abortController.signal,
+              isCancelled: isTaskCancelled,
+            });
+            if (await isTaskCancelled()) return;
+            await safeUpdateMcpTask(deps.taskStore, task.taskId, {
               status: 'completed',
               statusMessage: `Local review completed for ${repo}: ${result.checks.length} check(s), ${result.executionFailures.length} execution failure(s)`,
               result: formatResult(result),
             });
-          })
-          .catch(async (error: unknown) => {
+          } catch (error: unknown) {
+            if (await isTaskCancelled()) return;
             const message = error instanceof Error ? error.message : String(error);
-            await deps.taskStore.update(task.taskId, {
+            await safeUpdateMcpTask(deps.taskStore, task.taskId, {
               status: 'completed',
               statusMessage: `Local review failed: ${message}`,
               result: toolError(`Local review failed: ${message}`),
             });
-          });
+          } finally {
+            deps.taskAbortRegistry.unregister(task.taskId);
+          }
+        })().catch((unexpectedError) => {
+          console.error(`[MCP Tasks] Unexpected failure in run_local_review task ${task.taskId}:`, unexpectedError);
+        });
 
         return toCreateTaskToolResult(task);
       }

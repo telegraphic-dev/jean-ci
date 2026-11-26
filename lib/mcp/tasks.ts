@@ -221,9 +221,55 @@ export async function createWorkingMcpTask(
   });
 }
 
+export async function safeUpdateMcpTask(
+  store: McpTaskStore,
+  taskId: string,
+  patch: McpTaskPatch,
+): Promise<McpTaskRecord | null> {
+  try {
+    return await store.update(taskId, patch);
+  } catch (error: unknown) {
+    console.error(
+      `[MCP Tasks] Failed to update task ${taskId} (${patch.status ?? 'progress'}):`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
+}
+
+export class McpTaskAbortRegistry {
+  private readonly controllers = new Map<string, AbortController>();
+
+  register(taskId: string): AbortController {
+    const controller = new AbortController();
+    this.controllers.set(taskId, controller);
+    return controller;
+  }
+
+  abort(taskId: string, reason?: unknown): boolean {
+    const controller = this.controllers.get(taskId);
+    if (!controller) return false;
+    if (!controller.signal.aborted) {
+      controller.abort(reason ?? new Error('Task cancelled by client'));
+    }
+    return true;
+  }
+
+  unregister(taskId: string): void {
+    this.controllers.delete(taskId);
+  }
+
+  isAborted(taskId: string): boolean {
+    return Boolean(this.controllers.get(taskId)?.signal.aborted);
+  }
+}
+
+export const defaultMcpTaskAbortRegistry = new McpTaskAbortRegistry();
+
 export interface McpTasksExtensionOptions {
   taskStore: McpTaskStore;
   ownerSubject: string;
+  abortRegistry?: McpTaskAbortRegistry;
   onTaskUpdate?: (task: McpTaskRecord, inputResponses: Record<string, unknown>) => Promise<void>;
   onTaskCancel?: (task: McpTaskRecord) => Promise<void>;
 }
@@ -238,7 +284,13 @@ const TaskUpdateParamsSchema = z.object({
 });
 
 export function registerMcpTasksExtension(server: McpServer, options: McpTasksExtensionOptions): void {
-  const { taskStore, ownerSubject, onTaskUpdate, onTaskCancel } = options;
+  const {
+    taskStore,
+    ownerSubject,
+    abortRegistry = defaultMcpTaskAbortRegistry,
+    onTaskUpdate,
+    onTaskCancel,
+  } = options;
 
   server.server.registerCapabilities({
     extensions: {
@@ -292,6 +344,7 @@ export function registerMcpTasksExtension(server: McpServer, options: McpTasksEx
           statusMessage: 'Cancelled by client request',
           inputRequests: null,
         });
+        abortRegistry.abort(task.taskId);
         await onTaskCancel?.(task);
       }
       return {};

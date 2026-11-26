@@ -31,6 +31,8 @@ export interface LocalReviewRequest {
   selectedChecks?: string[];
   headSha?: string | null;
   ref?: string | null;
+  signal?: AbortSignal;
+  isCancelled?: () => boolean | Promise<boolean>;
   __deps?: Partial<LocalReviewDeps>;
 }
 
@@ -220,12 +222,24 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
     throw new Error(`too many checks requested (max ${LOCAL_REVIEW_MAX_CHECKS})`);
   }
 
+  const isRunCancelled = async (): Promise<boolean> => {
+    if (input.signal?.aborted) return true;
+    if (!input.isCancelled) return false;
+    try {
+      return Boolean(await input.isCancelled());
+    } catch {
+      return false;
+    }
+  };
+
   const [owner, repoName] = splitRepoSlug(repo);
   const checks: LocalReviewCheckResult[] = [];
   const validationFailures: LocalReviewValidationFailure[] = [];
   const executionFailures: LocalReviewExecutionFailure[] = [];
 
   for (const check of preparedChecks) {
+    if (await isRunCancelled()) break;
+
     if (!check.isGlobal) {
       const promptValidation = validateReviewPrompt(check.prompt);
       if (!promptValidation.valid) {
@@ -240,6 +254,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
 
     const chunkedResponses = [];
     let failed = false;
+    let cancelled = false;
     try {
       const contexts = buildReviewContexts({
         title: input.title, body: input.body, diff: input.diff,
@@ -247,6 +262,10 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
         source: { kind: 'local-diff', promptRef: reviewRef, headSha: input.headSha?.trim() || reviewRef },
       });
       for (const [index, context] of contexts.entries()) {
+        if (await isRunCancelled()) {
+          cancelled = true;
+          break;
+        }
         const result = await deps.callReviewer(check.prompt, context.context, buildSessionMetadata(repo, contexts.length === 1 ? (check.isGlobal ? 'review' : check.name) : `${check.isGlobal ? 'review' : check.name}-${index + 1}`, input.headSha || reviewRef));
         if (!result.success) {
           executionFailures.push({ name: check.name, isGlobal: check.isGlobal, errorType: result.errorType, error: result.error });
@@ -262,6 +281,7 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       });
       failed = true;
     }
+    if (cancelled || await isRunCancelled()) break;
     // Never turn a partial PASS into a completed review. Keep concrete earlier
     // FAIL findings alongside the execution failure for callers to display.
     if (failed && !chunkedResponses.some(({ parsed }) => parsed.verdict === 'FAIL')) continue;

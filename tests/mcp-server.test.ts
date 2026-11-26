@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { createJeanCiMcpHandler, type JeanCiMcpDeps } from '../lib/mcp/server.ts';
-import { InMemoryMcpTaskStore } from '../lib/mcp/tasks.ts';
+import { InMemoryMcpTaskStore, McpTaskAbortRegistry } from '../lib/mcp/tasks.ts';
 import { REVIEW_INSPECTOR_URI, RESOURCE_MIME_TYPE } from '../lib/mcp/apps.ts';
 import {
   AI_CATALOG_MEDIA_TYPE,
@@ -19,6 +19,7 @@ import type { CheckRun, CheckRunSummaryRecord, OpenPR, Repo } from '../lib/db.ts
 
 function createFixtureDeps() {
   const taskStore = new InMemoryMcpTaskStore();
+  const taskAbortRegistry = new McpTaskAbortRegistry();
   const repos: Repo[] = [
     {
       id: 1,
@@ -126,6 +127,7 @@ function createFixtureDeps() {
   const deps: JeanCiMcpDeps = {
     baseUrl: 'https://jean-ci.example.com',
     taskStore,
+    taskAbortRegistry,
     getRepo: async (fullName) => repos.find((r) => r.full_name === fullName) || null,
     getReposWithActivity: async () =>
       repos.map((r) => ({
@@ -924,4 +926,307 @@ test('official @modelcontextprotocol/client connects over Streamable HTTP and ex
     await new Promise<void>((resolve, reject) => httpServer.close((err) => (err ? reject(err) : resolve())));
   }
 });
+
+test('get_pr_reviews groups by stable checkIdentity and excludes removed historical checks from current rollup', async () => {
+  const { deps } = createFixtureDeps();
+  const currentSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const olderSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+  const customDeps: JeanCiMcpDeps = {
+    ...deps,
+    getPRReviewState: async (repo, prNumber) => ({
+      repo,
+      pr_number: prNumber,
+      last_reviewed_sha: currentSha,
+      is_draft: false,
+      draft_reviewed: false,
+      updated_at: new Date('2026-11-26T00:00:00.000Z'),
+    }),
+    getCheckRunsForPR: async () => [
+      // Custom check with the SAME display name "Code Review" passes at current head
+      {
+        id: 201,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'Code Review',
+        check_identity: 'path:.jean-ci/pr-checks/Code Review.md',
+        head_sha: currentSha,
+        status: 'completed',
+        conclusion: 'success',
+        title: '✅ Custom Code Review passed',
+        created_at: new Date('2026-11-26T00:02:00.000Z'),
+        completed_at: new Date('2026-11-26T00:02:30.000Z'),
+      },
+      // Global "Code Review" failed at current head — must NOT be masked by custom check
+      {
+        id: 200,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'Code Review',
+        check_identity: 'global:code-review',
+        head_sha: currentSha,
+        status: 'completed',
+        conclusion: 'failure',
+        title: '❌ Blocking issue',
+        created_at: new Date('2026-11-26T00:01:00.000Z'),
+        completed_at: new Date('2026-11-26T00:01:30.000Z'),
+      },
+      // Historical check removed in current commit — must stay in allChecks but NOT taint latestChecks/rollup
+      {
+        id: 199,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'removed-check',
+        check_identity: 'path:.jean-ci/pr-checks/removed-check.md',
+        head_sha: olderSha,
+        status: 'completed',
+        conclusion: 'success',
+        title: '✅ Old check',
+        created_at: new Date('2026-11-25T23:00:00.000Z'),
+        completed_at: new Date('2026-11-25T23:01:00.000Z'),
+      },
+    ],
+  };
+
+  const handler = createJeanCiMcpHandler(customDeps);
+  const res = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'get_pr_reviews', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 200 } },
+    { mcpName: 'get_pr_reviews' },
+  );
+  assert.equal(res.status, 200);
+  const data = res.json.result.structuredContent;
+  assert.equal(data.allChecks.length, 3, 'allChecks preserves historical runs');
+  assert.equal(data.latestChecks.length, 2, 'latestChecks excludes removed check from older commit and keeps both Code Review identities');
+  assert.deepEqual(
+    data.latestChecks.map((c: { checkIdentity: string }) => c.checkIdentity).sort(),
+    ['global:code-review', 'path:.jean-ci/pr-checks/Code Review.md'],
+  );
+  assert.equal(data.overallStatus, 'failing', 'failing global Code Review is not hidden by passing custom Code Review and not falsely marked stale');
+
+  // Now verify that when all checks at currentSha pass, the removed historical check does NOT cause "stale"
+  const passingDeps: JeanCiMcpDeps = {
+    ...customDeps,
+    getCheckRunsForPR: async () => [
+      {
+        id: 202,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'Code Review',
+        check_identity: 'global:code-review',
+        head_sha: currentSha,
+        status: 'completed',
+        conclusion: 'success',
+        title: '✅ Approved',
+        created_at: new Date('2026-11-26T00:03:00.000Z'),
+        completed_at: new Date('2026-11-26T00:03:30.000Z'),
+      },
+      {
+        id: 199,
+        repo: 'telegraphic-dev/jean-ci',
+        pr_number: 200,
+        check_name: 'removed-check',
+        check_identity: 'path:.jean-ci/pr-checks/removed-check.md',
+        head_sha: olderSha,
+        status: 'completed',
+        conclusion: 'success',
+        title: '✅ Old check',
+        created_at: new Date('2026-11-25T23:00:00.000Z'),
+        completed_at: new Date('2026-11-25T23:01:00.000Z'),
+      },
+    ],
+  };
+  const passingHandler = createJeanCiMcpHandler(passingDeps);
+  const passRes = await callModernMcp(
+    passingHandler,
+    'tools/call',
+    { name: 'get_pr_reviews', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 200 } },
+    { mcpName: 'get_pr_reviews' },
+  );
+  assert.equal(passRes.json.result.structuredContent.overallStatus, 'passing');
+  assert.equal(passRes.json.result.structuredContent.latestChecks.length, 1);
+  assert.equal(passRes.json.result.structuredContent.allChecks.length, 2);
+});
+
+test('MCP task persistence failures never escape as unhandled rejections', async () => {
+  const { deps } = createFixtureDeps();
+  const failingTaskStore = {
+    create: deps.taskStore.create.bind(deps.taskStore),
+    get: deps.taskStore.get.bind(deps.taskStore),
+    update: async () => {
+      throw new Error('simulated PostgreSQL outage during task update');
+    },
+  };
+
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on('unhandledRejection', onUnhandled);
+
+  try {
+    const handler = createJeanCiMcpHandler({
+      ...deps,
+      taskStore: failingTaskStore,
+      runPRReview: async () => {
+        throw new Error('simulated review failure');
+      },
+      runLocalReview: async () => {
+        throw new Error('simulated local review failure');
+      },
+    });
+    const tasksCaps = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
+
+    const r1 = await callModernMcp(
+      handler,
+      'tools/call',
+      { name: 'retrigger_pr_review', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 171 } },
+      { mcpName: 'retrigger_pr_review', clientCapabilities: tasksCaps },
+    );
+    assert.equal(r1.json.result.resultType, 'task');
+
+    const r2 = await callModernMcp(
+      handler,
+      'tools/call',
+      {
+        name: 'run_local_review',
+        arguments: { repo: 'telegraphic-dev/jean-ci', ref: 'main', diff: 'diff --git a/a.ts b/a.ts\n+1\n' },
+      },
+      { mcpName: 'run_local_review', clientCapabilities: tasksCaps },
+    );
+    assert.equal(r2.json.result.resultType, 'task');
+
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(unhandled.length, 0, 'no unhandled rejections should escape when task persistence fails');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
+test('tasks/cancel propagates AbortSignal and stops in-flight PR and local reviews cooperatively', async () => {
+  const { deps } = createFixtureDeps();
+  const tasksCaps = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
+
+  let prSignalAborted = false;
+  let releasePr!: () => void;
+  const prWaiter = new Promise<void>((resolve) => {
+    releasePr = resolve;
+  });
+
+  const handler = createJeanCiMcpHandler({
+    ...deps,
+    runPRReview: async (_inst, _owner, _repo, _pr, _sha, options) => {
+      options?.signal?.addEventListener('abort', () => {
+        prSignalAborted = true;
+        releasePr();
+      });
+      await prWaiter;
+    },
+  });
+
+  const created = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'retrigger_pr_review', arguments: { repo: 'telegraphic-dev/jean-ci', prNumber: 171 } },
+    { mcpName: 'retrigger_pr_review', clientCapabilities: tasksCaps },
+  );
+  const taskId = created.json.result.taskId as string;
+  assert.equal(prSignalAborted, false);
+
+  const cancelRes = await callModernMcp(
+    handler,
+    'tasks/cancel',
+    { taskId },
+    { mcpName: taskId, clientCapabilities: tasksCaps },
+  );
+  assert.equal(cancelRes.status, 200);
+  assert.equal(prSignalAborted, true, 'tasks/cancel must abort the running PR review signal');
+
+  // Verify runLocalReview itself stops between checks when its AbortSignal fires
+  const { runLocalReview } = await import('../lib/local-review.ts');
+  const controller = new AbortController();
+  const reviewerCalls: string[] = [];
+  const localResult = await runLocalReview({
+    repo: 'telegraphic-dev/jean-ci',
+    ref: 'main',
+    diff: 'diff --git a/a.ts b/a.ts\n+export const x = 1;\n',
+    signal: controller.signal,
+    __deps: {
+      getUserPrompt: async () => 'Review code.',
+      fetchChecksFromGit: async () => [
+        {
+          name: 'second-check',
+          prompt: '# Second\n## Purpose\nTest\n## Review Instructions\nCheck.\n## Verdict Criteria\n- PASS\n- FAIL',
+        },
+      ],
+      callReviewer: async (_prompt, _context, metadata) => {
+        reviewerCalls.push(String(metadata?.promptName || 'unknown'));
+        controller.abort();
+        return { success: true, response: '**VERDICT: PASS**\n\nNo blocking issues.' };
+      },
+    },
+  });
+  assert.equal(reviewerCalls.length, 1, 'second check must not invoke reviewer after cancellation');
+  assert.equal(localResult.checks.length, 0, 'cancelled check result is not finalized');
+});
+
+test('runPRReview isolates onCheckCreated/onCheckCompleted errors so completed verdicts are never overwritten', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+
+    const persistedUpdates = [];
+    const githubUpdates = [];
+
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        DEFAULT_USER_PROMPT: 'Review prompt',
+        getRepo: async () => ({ id: 1, full_name: 'acme/app', installation_id: 1, pr_review_enabled: true }),
+        getConfig: async () => 'Review prompt',
+        insertCheckRun: async () => 777,
+        setCheckRunGithubId: async () => {},
+        setReservedCheckInput: async () => {},
+        updateCheckRun: async (id, data) => { persistedUpdates.push({ id, ...data }); },
+      },
+    });
+    mock.module('./lib/github.ts', {
+      namedExports: {
+        getInstallationOctokit: async () => ({}),
+        fetchPRCheckFiles: async () => [],
+        getPRInfo: async () => ({ number: 1, state: 'open', title: 'Test PR', body: '', head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, base: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } }),
+        getPRDiff: async () => 'diff --git a/a.ts b/a.ts\\n+export const ok = true;\\n',
+        createCheck: async () => ({ id: 888 }),
+        updateCheck: async (_ok, _o, _r, id, data) => { githubUpdates.push({ id, ...data }); },
+        createPRReview: async () => {},
+      },
+    });
+    mock.module('./lib/llm.ts', {
+      namedExports: {
+        callOpenClaw: async () => ({ success: true, response: '**VERDICT: PASS**\\n\\nNo blocking issues found.\\n- Review profile: diff=reviewed; repository=not needed; tests=not needed.' }),
+      },
+    });
+
+    const { runPRReview } = await import('./lib/pr-review.ts');
+    await runPRReview(1, 'acme', 'app', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', undefined, {
+      onCheckCreated: async () => { throw new Error('simulated task store down on create'); },
+      onCheckCompleted: async () => { throw new Error('simulated task store down on complete'); },
+    });
+
+    const terminalPersists = persistedUpdates.filter((u) => u.status === 'completed');
+    assert.equal(terminalPersists.length, 1, 'completed check must only be persisted once');
+    assert.equal(terminalPersists[0].conclusion, 'success', 'PASS verdict must not be overwritten by callback failure');
+    const terminalGithub = githubUpdates.filter((u) => u.status === 'completed');
+    assert.equal(terminalGithub.length, 1, 'GitHub check must only be completed once');
+    assert.equal(terminalGithub[0].conclusion, 'success');
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    { cwd: process.cwd(), stdio: 'pipe' },
+  );
+});
+
 
