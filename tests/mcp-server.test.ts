@@ -118,6 +118,7 @@ function createFixtureDeps() {
     prNumber: number;
     headSha: string;
     checkNames?: string[];
+    checkIdentities?: string[];
   }> = [];
 
   let prState = 'open';
@@ -243,7 +244,15 @@ function createFixtureDeps() {
       },
     ],
     runPRReview: async (installationId, owner, repo, prNumber, headSha, options) => {
-      triggeredRuns.push({ installationId, owner, repo, prNumber, headSha, checkNames: options?.checkNames });
+      triggeredRuns.push({
+        installationId,
+        owner,
+        repo,
+        prNumber,
+        headSha,
+        checkNames: options?.checkNames,
+        checkIdentities: options?.checkIdentities,
+      });
       const names = options?.checkNames && options.checkNames.length > 0 ? options.checkNames : ['Code Review', 'security'];
       let nextDbId = 500;
       for (const checkName of names) {
@@ -542,8 +551,12 @@ test('retrigger_pr_review enforces guardrails and supports synchronous fallback 
   assert.equal(queuedRes.json.result.isError, undefined);
   assert.equal(queuedRes.json.result.structuredContent.status, 'queued');
   assert.deepEqual(queuedRes.json.result.structuredContent.checksRequested, ['security']);
+  assert.deepEqual(queuedRes.json.result.structuredContent.checkIdentitiesRequested, [
+    'path:.jean-ci/pr-checks/security.md',
+  ]);
   assert.equal(fixture.triggeredRuns.length, 1);
-  assert.deepEqual(fixture.triggeredRuns[0].checkNames, ['security']);
+  assert.deepEqual(fixture.triggeredRuns[0].checkIdentities, ['path:.jean-ci/pr-checks/security.md']);
+  assert.equal(fixture.triggeredRuns[0].checkNames, undefined);
 
   // Tasks-capable client: returns CreateTaskResult -> poll tasks/get until completed
   const tasksCaps = { extensions: { 'io.modelcontextprotocol/tasks': {} } };
@@ -1759,6 +1772,139 @@ test('MCP handler rejects untrusted Origin headers with 403 and undeclared tasks
     extensions: { 'io.modelcontextprotocol/tasks': {} },
   });
 });
+
+test('single-check retrigger preserves check_identity and rejects ambiguous legacy names', async () => {
+  const fixture = createFixtureDeps();
+  const customIdentity = 'path:.jean-ci/pr-checks/Code Review.md';
+  let upsertCalls = 0;
+
+  const customCodeReviewCheck: CheckRun = {
+    id: 301,
+    github_check_id: 3001,
+    repo: 'telegraphic-dev/jean-ci',
+    pr_number: 171,
+    check_name: 'Code Review',
+    check_identity: customIdentity,
+    head_sha: 'ad8ac61000000000000000000000000000000000',
+    status: 'completed',
+    conclusion: 'failure',
+    title: 'Custom failed',
+    summary: 'Custom finding',
+    created_at: new Date('2026-11-26T08:00:00Z'),
+    completed_at: new Date('2026-11-26T08:01:00Z'),
+  };
+  const legacyAmbiguousCheck: CheckRun = {
+    ...customCodeReviewCheck,
+    id: 302,
+    github_check_id: 3002,
+    check_identity: undefined,
+  };
+
+  const handler = createJeanCiMcpHandler({
+    ...fixture.deps,
+    getCheckRun: async (id) => {
+      if (id === 301) return customCodeReviewCheck;
+      if (id === 302) return legacyAmbiguousCheck;
+      return fixture.deps.getCheckRun(id);
+    },
+    fetchPRCheckFiles: async () => [
+      {
+        name: 'Code Review',
+        path: '.jean-ci/pr-checks/Code Review.md',
+        content: '# Custom Code Review\n\n## Purpose\nCustom.\n\n## Review Instructions\nCheck.\n\n## Verdict Criteria\n- **PASS** if ok\n- **FAIL** if bad',
+      },
+    ],
+    upsertPRReviewState: async (state) => {
+      upsertCalls += 1;
+      await fixture.deps.upsertPRReviewState(state);
+    },
+  });
+
+  // 1) Legacy check without check_identity whose name collides with global Code Review is rejected
+  const ambiguousRes = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'retrigger_pr_review', arguments: { checkId: 302, onlyThisCheck: true } },
+    { mcpName: 'retrigger_pr_review' },
+  );
+  assert.equal(ambiguousRes.json.result.isError, true);
+  assert.match(ambiguousRes.json.result.content[0].text, /Ambiguous legacy check name/i);
+  assert.equal(upsertCalls, 0, 'ambiguous legacy single-check retrigger must not advance review state');
+  assert.equal(fixture.triggeredRuns.length, 0);
+
+  // 2) Custom check with stable check_identity passes only its identity to runPRReview
+  const customRes = await callModernMcp(
+    handler,
+    'tools/call',
+    { name: 'retrigger_pr_review', arguments: { checkId: 301, onlyThisCheck: true } },
+    { mcpName: 'retrigger_pr_review' },
+  );
+  assert.equal(customRes.json.result.isError, undefined);
+  assert.deepEqual(customRes.json.result.structuredContent.checkIdentitiesRequested, [customIdentity]);
+  assert.equal(fixture.triggeredRuns.length, 1);
+  assert.deepEqual(fixture.triggeredRuns[0].checkIdentities, [customIdentity]);
+  assert.equal(fixture.triggeredRuns[0].checkNames, undefined);
+
+  // 3) Verify real runPRReview with checkIdentities runs ONLY the custom check and never submits a global PR review
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+
+    const inserted = [];
+    let prReviewSubmissions = 0;
+
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        DEFAULT_USER_PROMPT: 'Global prompt',
+        getRepo: async () => ({ id: 1, full_name: 'acme/app', installation_id: 1, pr_review_enabled: true }),
+        getConfig: async () => 'Global prompt',
+        insertCheckRun: async (row) => { inserted.push(row); return 900 + inserted.length; },
+        setCheckRunGithubId: async () => {},
+        setReservedCheckInput: async () => {},
+        updateCheckRun: async () => {},
+      },
+    });
+    mock.module('./lib/github.ts', {
+      namedExports: {
+        getInstallationOctokit: async () => ({}),
+        fetchPRCheckFiles: async () => [
+          {
+            name: 'Code Review',
+            path: '.jean-ci/pr-checks/Code Review.md',
+            content: '## Purpose\\nCustom.\\n\\n## Review Instructions\\nCheck.\\n\\n## Verdict Criteria\\n- **PASS** if ok\\n- **FAIL** if bad',
+          },
+        ],
+        getPRInfo: async () => ({ number: 1, state: 'open', title: 'Test PR', body: '', head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, base: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } }),
+        getPRDiff: async () => 'diff --git a/a.ts b/a.ts\\n+export const ok = true;\\n',
+        createCheck: async () => ({ id: 888 }),
+        updateCheck: async () => {},
+        createPRReview: async () => { prReviewSubmissions += 1; },
+      },
+    });
+    mock.module('./lib/llm.ts', {
+      namedExports: {
+        callOpenClaw: async () => ({ success: true, response: '**VERDICT: PASS**\\n\\nLooks good.\\n- Review profile: diff=reviewed; repository=not needed; tests=not needed.' }),
+      },
+    });
+
+    const { runPRReview } = await import('./lib/pr-review.ts');
+    await runPRReview(1, 'acme', 'app', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', undefined, {
+      checkIdentities: ['path:.jean-ci/pr-checks/Code Review.md'],
+    });
+
+    assert.equal(inserted.length, 1, 'only the single custom check must run');
+    assert.equal(inserted[0].check_identity, 'path:.jean-ci/pr-checks/Code Review.md');
+    assert.equal(prReviewSubmissions, 0, 'global PR review publication must not run for custom check identity');
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    { cwd: process.cwd(), stdio: 'pipe' },
+  );
+});
+
 
 
 

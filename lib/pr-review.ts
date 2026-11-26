@@ -97,8 +97,12 @@ async function completeCheck(
 }
 
 export interface RunPRReviewOptions {
+  /** Optional subset of stable check identities to run (exact match, e.g. global:code-review or path:.jean-ci/pr-checks/...). */
+  checkIdentities?: string[];
   /** Optional subset of check names to run (case-insensitive trimmed match). Omit to run all checks. */
   checkNames?: string[];
+  /** When true with checkNames, require exactly one matched check (reject ambiguous legacy names). */
+  requireSingleMatch?: boolean;
   /** Cooperative cancellation signal for caller-triggered reviews (e.g. MCP Tasks cancel). */
   signal?: AbortSignal;
   /** Optional async cooperative cancellation predicate (e.g. durable task status check). */
@@ -190,7 +194,15 @@ export async function runPRReview(
   const allChecks = normalizeChecks(userPrompt, checkFiles);
   let checks = allChecks.filter(c => !restart || (restart.checkIdentity ? c.identity === restart.checkIdentity : c.name === restart.checkName));
   if (restart && checks.length !== 1) throw new Error('The requested check is missing or its legacy name is ambiguous at the reviewed head');
-  if (!restart && options?.checkNames && options.checkNames.length > 0) {
+  if (!restart && options?.checkIdentities && options.checkIdentities.length > 0) {
+    const requestedIds = new Set(options.checkIdentities.map((id) => id.trim()).filter(Boolean));
+    const availableIds = new Set(allChecks.map((c) => c.identity));
+    const unknownIds = [...requestedIds].filter((id) => !availableIds.has(id));
+    if (requestedIds.size === 0 || unknownIds.length > 0) {
+      throw new Error(`Unknown check identity(ies) at ${headSha.slice(0, 7)}: ${unknownIds.join(', ')}. Available: ${allChecks.map((c) => c.identity).join(', ')}`);
+    }
+    checks = allChecks.filter((c) => requestedIds.has(c.identity));
+  } else if (!restart && options?.checkNames && options.checkNames.length > 0) {
     const requested = new Set(options.checkNames.map((n) => n.trim().toLowerCase()).filter(Boolean));
     const available = new Set(allChecks.map((c) => c.name.trim().toLowerCase()));
     const unknown = [...requested].filter((name) => !available.has(name));
@@ -198,6 +210,9 @@ export async function runPRReview(
       throw new Error(`Unknown check name(s) at ${headSha.slice(0, 7)}: ${unknown.join(', ')}. Available: ${allChecks.map((c) => c.name).join(', ')}`);
     }
     checks = allChecks.filter((c) => requested.has(c.name.trim().toLowerCase()));
+    if (options.requireSingleMatch && checks.length !== 1) {
+      throw new Error(`Ambiguous legacy check name at ${headSha.slice(0, 7)}: matched ${checks.length} checks (${checks.map((c) => c.identity).join(', ')})`);
+    }
   }
 
   if (await isRunCancelled()) {

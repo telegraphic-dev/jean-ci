@@ -1223,6 +1223,8 @@ export async function createJeanCiMcpServer(
       let targetRepo = inputRepo;
       let targetPrNumber = inputPrNumber;
       let targetCheckNames = checkNames && checkNames.length > 0 ? [...checkNames] : undefined;
+      let targetCheckIdentities: string[] | undefined;
+      let requireSingleMatch = false;
       let sourceCheck: CheckRun | null = null;
 
       if (checkId !== undefined) {
@@ -1234,6 +1236,11 @@ export async function createJeanCiMcpServer(
         targetPrNumber = targetPrNumber ?? sourceCheck.pr_number;
         if (onlyThisCheck && !targetCheckNames) {
           targetCheckNames = [sourceCheck.check_name];
+          if (sourceCheck.check_identity) {
+            targetCheckIdentities = [sourceCheck.check_identity];
+          } else {
+            requireSingleMatch = true;
+          }
         }
       }
 
@@ -1264,7 +1271,7 @@ export async function createJeanCiMcpServer(
         );
       }
 
-      if (targetCheckNames && targetCheckNames.length > 0) {
+      if ((targetCheckIdentities && targetCheckIdentities.length > 0) || (targetCheckNames && targetCheckNames.length > 0)) {
         let checkFiles: RepoCheckFile[];
         try {
           checkFiles = await deps.fetchPRCheckFiles(repoConfig.installation_id, owner, repoName, headSha);
@@ -1274,20 +1281,43 @@ export async function createJeanCiMcpServer(
             `Could not verify check definitions at ${headSha.slice(0, 7)} before retriggering: ${message}`,
           );
         }
-        const availableNames = [
-          'Code Review',
+        const availableChecks = [
+          { identity: 'global:code-review', name: 'Code Review' },
           ...checkFiles
             .slice()
             .sort((a, b) => a.name.localeCompare(b.name))
-            .map((file) => file.name),
+            .map((file) => ({
+              identity: `path:${file.path ?? `.jean-ci/pr-checks/${file.name}.md`}`,
+              name: file.name,
+            })),
         ];
-        const availableLower = new Set(availableNames.map((name) => name.trim().toLowerCase()));
-        const requested = new Set(targetCheckNames.map((name) => name.trim().toLowerCase()).filter(Boolean));
-        const unknown = [...requested].filter((name) => !availableLower.has(name));
-        if (requested.size === 0 || unknown.length > 0) {
-          return toolError(
-            `Unknown check name(s) at ${headSha.slice(0, 7)}: ${unknown.join(', ')}. Available: ${availableNames.join(', ')}`,
-          );
+
+        if (targetCheckIdentities && targetCheckIdentities.length > 0) {
+          const availableIds = new Set(availableChecks.map((c) => c.identity));
+          const unknownIds = targetCheckIdentities.filter((id) => !availableIds.has(id));
+          if (unknownIds.length > 0) {
+            return toolError(
+              `Unknown check identity(ies) at ${headSha.slice(0, 7)}: ${unknownIds.join(', ')}. Available: ${availableChecks.map((c) => c.identity).join(', ')}`,
+            );
+          }
+        } else if (targetCheckNames && targetCheckNames.length > 0) {
+          const availableNames = availableChecks.map((c) => c.name);
+          const availableLower = new Set(availableNames.map((name) => name.trim().toLowerCase()));
+          const requested = new Set(targetCheckNames.map((name) => name.trim().toLowerCase()).filter(Boolean));
+          const unknown = [...requested].filter((name) => !availableLower.has(name));
+          if (requested.size === 0 || unknown.length > 0) {
+            return toolError(
+              `Unknown check name(s) at ${headSha.slice(0, 7)}: ${unknown.join(', ')}. Available: ${availableNames.join(', ')}`,
+            );
+          }
+          if (requireSingleMatch) {
+            const matched = availableChecks.filter((c) => requested.has(c.name.trim().toLowerCase()));
+            if (matched.length !== 1) {
+              return toolError(
+                `Ambiguous legacy check name "${targetCheckNames[0]}" at ${headSha.slice(0, 7)} (matched ${matched.length} checks: ${matched.map((c) => c.identity).join(', ')}). Refusing to retrigger multiple checks.`,
+              );
+            }
+          }
         }
       }
 
@@ -1311,6 +1341,7 @@ export async function createJeanCiMcpServer(
             prNumber: targetPrNumber,
             headSha,
             checkNames: targetCheckNames ?? null,
+            checkIdentities: targetCheckIdentities ?? null,
           },
         });
 
@@ -1337,7 +1368,9 @@ export async function createJeanCiMcpServer(
         void (async () => {
           try {
             await deps.runPRReview(repoConfig.installation_id, owner, repoName, targetPrNumber, headSha, {
-              checkNames: targetCheckNames,
+              checkIdentities: targetCheckIdentities,
+              checkNames: targetCheckIdentities ? undefined : targetCheckNames,
+              requireSingleMatch,
               signal: abortController.signal,
               isCancelled: isTaskCancelled,
               onCheckCreated: async ({ dbId, checkName, githubCheckId }) => {
@@ -1371,6 +1404,7 @@ export async function createJeanCiMcpServer(
               headSha,
               sourceCheckId: sourceCheck?.id ?? null,
               checksRequested: targetCheckNames ?? ['all'],
+              checkIdentitiesRequested: targetCheckIdentities ?? null,
               createdChecks,
               completedChecks,
               prUrl: pr.html_url || `https://github.com/${targetRepo}/pull/${targetPrNumber}`,
@@ -1408,7 +1442,9 @@ export async function createJeanCiMcpServer(
       // enqueue asynchronously and return immediately with clear inspection instructions.
       void deps
         .runPRReview(repoConfig.installation_id, owner, repoName, targetPrNumber, headSha, {
-          checkNames: targetCheckNames,
+          checkIdentities: targetCheckIdentities,
+          checkNames: targetCheckIdentities ? undefined : targetCheckNames,
+          requireSingleMatch,
         })
         .catch((err) => console.error(`MCP retrigger_pr_review error (${targetRepo}#${targetPrNumber}):`, err));
 
@@ -1420,6 +1456,7 @@ export async function createJeanCiMcpServer(
         sourceCheckId: sourceCheck?.id ?? null,
         headChangedFromSourceCheck: Boolean(sourceCheck?.head_sha && sourceCheck.head_sha !== headSha),
         checksRequested: targetCheckNames ?? ['all'],
+        checkIdentitiesRequested: targetCheckIdentities ?? null,
         prUrl: pr.html_url || `https://github.com/${targetRepo}/pull/${targetPrNumber}`,
         message: `Queued PR review for ${targetRepo}#${targetPrNumber} @ ${headSha.slice(0, 7)}. Poll get_pr_reviews to inspect progress and results.`,
       };
