@@ -1906,6 +1906,94 @@ test('single-check retrigger preserves check_identity and rejects ambiguous lega
   );
 });
 
+test('runPRReview preserves already-confirmed FAIL findings when cancelled between review segments', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const script = `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+
+    const persistedUpdates = [];
+    const githubUpdates = [];
+    const abortController = new AbortController();
+
+    mock.module('./lib/db.ts', {
+      namedExports: {
+        DEFAULT_USER_PROMPT: 'Review prompt',
+        getRepo: async () => ({ id: 1, full_name: 'acme/app', installation_id: 1, pr_review_enabled: true }),
+        getConfig: async () => 'Review prompt',
+        insertCheckRun: async () => 950,
+        setCheckRunGithubId: async () => {},
+        setReservedCheckInput: async () => {},
+        updateCheckRun: async (id, data) => { persistedUpdates.push({ id, ...data }); },
+      },
+    });
+    mock.module('./lib/github.ts', {
+      namedExports: {
+        getInstallationOctokit: async () => ({}),
+        fetchPRCheckFiles: async () => [],
+        getPRInfo: async () => ({ number: 1, state: 'open', title: 'Test PR', body: '', head: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }, base: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } }),
+        getPRDiff: async () => [
+          'diff --git a/src/a.ts b/src/a.ts',
+          '--- a/src/a.ts',
+          '+++ b/src/a.ts',
+          '@@ -1,1 +1,2 @@',
+          '+export const a = 1;',
+          'diff --git a/src/b.ts b/src/b.ts',
+          '--- a/src/b.ts',
+          '+++ b/src/b.ts',
+          '@@ -1,1 +1,2 @@',
+          '+export const b = 2;',
+        ].join('\\n'),
+        createCheck: async () => ({ id: 888 }),
+        updateCheck: async (_ok, _o, _r, id, data) => { githubUpdates.push({ id, ...data }); },
+        createPRReview: async () => {},
+      },
+    });
+    mock.module('./lib/review-context.ts', {
+      namedExports: {
+        buildReviewContexts: () => [
+          { label: 'segment-1', context: 'ctx-1' },
+          { label: 'segment-2', context: 'ctx-2' },
+        ],
+        truncateReviewDiff: (d) => d,
+      },
+    });
+    mock.module('./lib/llm.ts', {
+      namedExports: {
+        callOpenClaw: async () => {
+          // Cancel after segment-1 returns a confirmed FAIL finding
+          abortController.abort();
+          return {
+            success: true,
+            response: '**VERDICT: FAIL**\\n\\nBlocking SQL injection bug in src/a.ts:2.\\n- Review profile: diff=reviewed; repository=not needed; tests=not needed.',
+          };
+        },
+      },
+    });
+
+    const { runPRReview } = await import('./lib/pr-review.ts');
+    await runPRReview(1, 'acme', 'app', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', undefined, {
+      signal: abortController.signal,
+    });
+
+    const terminal = persistedUpdates.filter((u) => u.status === 'completed');
+    assert.equal(terminal.length, 1);
+    assert.equal(terminal[0].conclusion, 'failure', 'confirmed FAIL finding must not be downgraded to neutral on cancel');
+    assert.match(terminal[0].summary, /SQL injection/i);
+    assert.match(terminal[0].summary, /interrupted|incomplete/i);
+    const ghTerminal = githubUpdates.filter((u) => u.status === 'completed');
+    assert.equal(ghTerminal.length, 1);
+    assert.equal(ghTerminal[0].conclusion, 'failure');
+  `;
+
+  execFileSync(
+    process.execPath,
+    ['--experimental-strip-types', '--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    { cwd: process.cwd(), stdio: 'pipe' },
+  );
+});
+
+
 
 
 

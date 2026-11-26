@@ -361,6 +361,21 @@ export async function runPRReview(
         }
       }
       if (cancelledDuringCheck || await isRunCancelled()) {
+        const priorFailure = chunkedResponses.find(({ parsed }) => parsed.verdict === 'FAIL');
+        if (priorFailure) {
+          const preservedFailure = combineChunkedReviewResponses(chunkedResponses);
+          await complete(octokit, owner, repo, checkRun.id, dbId, {
+            conclusion: 'failure',
+            title: preservedFailure.title,
+            summary: `${linkReviewedLocations(preservedFailure.reviewMarkdown, { owner, repo, headSha, diff })}\n\n${REVIEW_INTERRUPTION_NOTICE} [View full details](${BASE_URL}/checks/${dbId})`,
+            diagnostics: withReviewInterruption(
+              preservedFailure.normalized,
+              'Review run was cancelled by the caller before remaining segments completed.',
+            ),
+          }, check.name);
+          console.log(`Check "${check.name}" preserved an earlier blocking finding after caller cancellation`);
+          continue;
+        }
         await complete(octokit, owner, repo, checkRun.id, dbId, {
           conclusion: 'neutral',
           title: '⚠️ Review cancelled',

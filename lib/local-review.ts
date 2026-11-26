@@ -281,7 +281,20 @@ export async function runLocalReview(input: LocalReviewRequest): Promise<LocalRe
       });
       failed = true;
     }
-    if (cancelled || await isRunCancelled()) break;
+    if (cancelled || await isRunCancelled()) {
+      if (chunkedResponses.some(({ parsed }) => parsed.verdict === 'FAIL')) {
+        const parsed = combineChunkedReviewResponses(chunkedResponses);
+        checks.push({
+          name: check.name,
+          verdict: parsed.verdict,
+          title: parsed.title,
+          summary: parsed.summary,
+          normalized: parsed.normalized,
+          isGlobal: check.isGlobal,
+        });
+      }
+      break;
+    }
     // Never turn a partial PASS into a completed review. Keep concrete earlier
     // FAIL findings alongside the execution failure for callers to display.
     if (failed && !chunkedResponses.some(({ parsed }) => parsed.verdict === 'FAIL')) continue;
