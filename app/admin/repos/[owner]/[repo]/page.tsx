@@ -5,9 +5,9 @@ type SearchParams = Promise<{ tab?: string; checksPage?: string; deploymentsPage
 export default async function RepoBasePage({ params, searchParams }: { params: Promise<{ owner: string; repo: string }>; searchParams: SearchParams }) {
   const { owner, repo } = await params;
   const { tab, checksPage, deploymentsPage, eventsPage } = await searchParams;
-  const targetSection = tab === 'checks' || tab === 'deployments' || tab === 'tasks' || tab === 'events' || tab === 'sessions'
+  const targetSection = tab === 'checks' || tab === 'deployments' || tab === 'tasks' || tab === 'events'
     ? tab
-    : 'sessions';
+    : 'checks';
 
   const target = new URLSearchParams();
   if (targetSection === 'checks' && checksPage) target.set('checksPage', checksPage);

@@ -102,7 +102,6 @@ npx -y @mcpjam/inspector@latest --url https://jean-ci.example.com/mcp
 - `list_deployments` — Coolify deployments for a repository.
 - `list_events` — Recorded GitHub/Coolify webhook events.
 - `list_tasks` — Scheduled task summaries or events (outputs redacted, matching `/api/public/v1/tasks`).
-- `list_feature_sessions` — OpenClaw feature sessions for a repository.
 
 ## Resources & Prompts
 

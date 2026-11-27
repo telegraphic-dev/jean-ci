@@ -199,9 +199,6 @@ export default function AdminOverview() {
                 >
                   {tokenActionBusy ? 'Revoking…' : 'Revoke stored token'}
                 </button>
-                <Link href="/admin/gateway" className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm">
-                  Open gateway playground
-                </Link>
               </div>
             </div>
             <details className="rounded-lg border border-[var(--border)] p-3">

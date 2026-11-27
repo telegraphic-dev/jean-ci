@@ -27,7 +27,6 @@ function createFixtureDeps() {
       full_name: 'telegraphic-dev/jean-ci',
       installation_id: 101,
       pr_review_enabled: true,
-      feature_sessions_enabled: true,
       created_at: new Date('2026-01-01T00:00:00.000Z'),
       updated_at: new Date('2026-11-01T00:00:00.000Z'),
     },
@@ -36,7 +35,6 @@ function createFixtureDeps() {
       full_name: 'telegraphic-dev/disabled-repo',
       installation_id: 102,
       pr_review_enabled: false,
-      feature_sessions_enabled: false,
       created_at: new Date('2026-01-01T00:00:00.000Z'),
       updated_at: new Date('2026-11-01T00:00:00.000Z'),
     },
@@ -134,8 +132,7 @@ function createFixtureDeps() {
     getReposWithActivity: async () =>
       repos.map((r) => ({
         ...r,
-        last_activity: new Date('2026-11-25T10:00:00.000Z'),
-        active_feature_sessions: 0,
+        last_activity: new Date('2026-11-25T10:00:00.000Z').toISOString(),
       })),
     getOpenPRsFromEvents: async () => openPrs,
     getCheckRunsFiltered: async (opts) => {
@@ -218,7 +215,6 @@ function createFixtureDeps() {
     getDeploymentPipelinesByRepo: async () => ({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
     getDeploymentsByRepoPaginated: async () => ({ items: [], total: 0, page: 1, limit: 25, totalPages: 0 }),
     getRecentEventsPaginated: async () => ({ items: [], total: 0, page: 1, limit: 25, totalPages: 0 }),
-    getRepoFeatureSessions: async () => [],
     getDefaultUserPrompt: async () => '## Review Criteria\nDefault prompt.',
     getPRInfo: async (_inst, owner, repo, prNumber) => ({
       number: prNumber,
@@ -424,7 +420,7 @@ test('tools/list returns deterministic tool order and MCP Apps UI metadata', asy
   const tools = json.result.tools as Array<{ name: string; _meta?: Record<string, unknown> }>;
   const names = tools.map((t) => t.name);
   assert.deepEqual(names, [...names].sort(), 'tools must be listed in deterministic alphabetical order');
-  assert.equal(names.length, 16);
+  assert.equal(names.length, 15);
 
   const getPrReviews = tools.find((t) => t.name === 'get_pr_reviews');
   const getReviewCheck = tools.find((t) => t.name === 'get_review_check');
@@ -929,7 +925,7 @@ test('official @modelcontextprotocol/client connects over Streamable HTTP and ex
     await client.connect(transport);
     try {
       const listed = await client.listTools();
-      assert.equal(listed.tools.length, 16);
+      assert.equal(listed.tools.length, 15);
 
       const statsResult = await client.callTool({ name: 'get_ci_stats', arguments: {} });
       assert.equal(statsResult.isError, undefined);
