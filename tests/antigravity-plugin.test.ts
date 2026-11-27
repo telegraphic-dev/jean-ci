@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import yaml from 'yaml';
-import { createJeanCiMcpHandler, type JeanCiMcpDependencies } from '../lib/mcp/server.ts';
+import { createJeanCiMcpHandler } from '../lib/mcp/server.ts';
 import { InMemoryMcpTaskStore, McpTaskAbortRegistry } from '../lib/mcp/tasks.ts';
 import { InMemoryMcpEventsStore } from '../lib/mcp/events.ts';
 
@@ -125,26 +125,8 @@ test('mcp_config.json wraps ${JEAN_CI_URL}/mcp with valid variables and register
   assert.match(urlVar.link as string, /^https:\/\//);
 
   // Verify every eager tool listed in mcp_config.json actually exists on the Jean CI MCP server
-  const mockDeps: Partial<JeanCiMcpDependencies> = {
-    getStats: async () => ({}),
-    getOpenPRs: async () => [],
-    getAllRepos: async () => [],
-    getRepo: async () => null,
-    getAllCheckRunsPaginated: async () => ({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
-    getCheckRun: async () => null,
-    getCheckRunsForPR: async () => [],
-    getPRReviewState: async () => null,
-    getPipelinesPaginated: async () => ({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
-    getDeploymentsPaginated: async () => ({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
-    getRecentEventsPaginated: async () => ({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 }),
-    getScheduledTasksSummary: async () => [],
-    getScheduledTaskEvents: async () => [],
-    getFeatureSessionsForRepo: async () => [],
-  };
-
   const handler = createJeanCiMcpHandler({
     baseUrl: 'https://jean-ci.example.com',
-    deps: mockDeps as JeanCiMcpDependencies,
     taskStore: new InMemoryMcpTaskStore(),
     taskAbortRegistry: new McpTaskAbortRegistry(),
     eventsStore: new InMemoryMcpEventsStore(),
