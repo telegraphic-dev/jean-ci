@@ -108,3 +108,27 @@ npx -y @mcpjam/inspector@latest --url https://jean-ci.example.com/mcp
 
 - **Resources**: `jean-ci://stats`, `jean-ci://repos`, `jean-ci://prs/open`, `jean-ci://checks/{checkId}`, `jean-ci://repos/{owner}/{repo}/prs/{prNumber}/reviews`, `ui://jean-ci/review-inspector.html`, and `skill://jean-ci/...`.
 - **Prompts**: `triage-pr-reviews`, `fix-review-findings`, `draft-pr-check-prompt` (with repository autocompletion).
+
+## Google Antigravity Plugin
+
+This repository ships an official **Google Antigravity plugin** at the repository root (`.antigravity-plugin/plugin.json` + `mcp_config.json` + `skills/` + `agents/` + `rules/` + `assets/logo.svg`).
+
+```bash
+# Install directly from GitHub
+agy plugin install https://github.com/telegraphic-dev/jean-ci
+
+# Or validate and install from a local checkout
+agy plugin validate .
+agy plugin install .
+```
+
+1. Enable the `jean-ci` plugin in **Customizations > Installed** (Antigravity App) or `/plugin` (Antigravity CLI).
+2. Enter your `JEAN_CI_URL` base URL including `https://` without a trailing slash (for example, `https://jean-ci.telegraphic.app`).
+3. Complete the automatic OAuth 2.1 browser sign-in flow (Antigravity discovers Jean CI via RFC 9728 / RFC 8414 and authenticates with CIMD or DCR + PKCE `S256`).
+
+The plugin bundles:
+- **MCP Server (`jean-ci`)**: Connects to `${JEAN_CI_URL}/mcp` with a 600s timeout and eagerly loaded `get_pr_reviews`, `get_review_check`, and `retrigger_pr_review` tools.
+- **Skills**: `/triage-pr-review`, `/local-pr-review`, and `/author-pr-check`.
+- **Subagent**: `jean-ci-reviewer` (read-only PR review triage specialist).
+- **Rule**: `rules/jean-ci-pr-checks.md` (glob-triggered for `.jean-ci/pr-checks/*.md`).
+
