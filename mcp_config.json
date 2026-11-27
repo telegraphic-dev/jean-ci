@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "jean-ci": {
+      "serverUrl": "${JEAN_CI_URL}/mcp",
+      "timeoutSeconds": 600,
+      "tools": {
+        "get_pr_reviews": {
+          "eager": true
+        },
+        "get_review_check": {
+          "eager": true
+        },
+        "retrigger_pr_review": {
+          "eager": true
+        }
+      },
+      "variables": [
+        {
+          "name": "JEAN_CI_URL",
+          "title": "Jean CI Base URL",
+          "description": "Base URL of your Jean CI instance including https:// and without a trailing slash (for example, https://jean-ci.telegraphic.app). OAuth 2.1 browser sign-in is discovered automatically via CIMD/DCR.",
+          "link": "https://github.com/telegraphic-dev/jean-ci/blob/main/docs/mcp-server.md"
+        }
+      ]
+    }
+  }
+}

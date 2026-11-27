@@ -1,0 +1,28 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "jean-ci",
+  "displayName": "Jean CI",
+  "version": "0.13.0",
+  "description": "Inspect, triage, locally validate, and retrigger automated Jean CI pull request reviews and monitor CI pipelines, deployments, and events.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Inspect the Jean CI PR reviews on my current pull request and explain any failing checks",
+    "Run a local Jean CI review on my uncommitted git diff before I push",
+    "Help me author a custom .jean-ci/pr-checks/*.md review rule for this repository"
+  ],
+  "author": {
+    "name": "Telegraphic",
+    "url": "https://github.com/telegraphic-dev"
+  },
+  "homepage": "https://github.com/telegraphic-dev/jean-ci/blob/main/docs/mcp-server.md",
+  "repository": "https://github.com/telegraphic-dev/jean-ci",
+  "keywords": [
+    "jean-ci",
+    "code-review",
+    "pr-reviews",
+    "ci-cd",
+    "github-checks",
+    "deployments",
+    "mcp"
+  ]
+}

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" role="img" aria-label="Jean CI">
+  <defs>
+    <linearGradient id="jean-ci-bg" x1="12" y1="12" x2="116" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#D16640"/>
+      <stop offset="100%" stop-color="#874534"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="104" height="104" rx="24" fill="url(#jean-ci-bg)" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="2"/>
+  <circle cx="44" cy="40" r="8" stroke="#FFFFFF" stroke-width="6"/>
+  <circle cx="44" cy="88" r="8" stroke="#FFFFFF" stroke-width="6"/>
+  <path d="M44 48V80" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round"/>
+  <path d="M70 40H78C83.5228 40 88 44.4772 88 50V56" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M74 34L68 40L74 46" stroke="#FFFFFF" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M68 78L77 87L95 67" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
