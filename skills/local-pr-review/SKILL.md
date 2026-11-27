@@ -17,7 +17,7 @@ Use this workflow to validate local code changes against Jean CI's exact review 
    - Optionally call `list_pr_check_definitions` with `repo` and `ref` to see which checks (`Code Review` plus any `.jean-ci/pr-checks/*.md` checks) apply to this repository.
 
 2. **Collect a clean unified diff**
-   - For uncommitted changes, capture `git diff` (or `git diff HEAD` to include staged changes).
+   - For uncommitted changes, capture `git diff HEAD` by default so both staged and unstaged changes are reviewed (use plain `git diff` only if the user explicitly asks for an unstaged-only review).
    - For a feature branch compared against `main`, capture `git diff origin/main...HEAD`.
    - Avoid including generated lockfiles or binary noise if the diff is very large; focus on the code changes under review.
 
