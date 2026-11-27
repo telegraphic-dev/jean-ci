@@ -9,7 +9,6 @@ interface Repo {
   full_name: string;
   installation_id: number;
   pr_review_enabled: boolean;
-  feature_sessions_enabled: boolean;
 }
 
 interface CheckRun {
@@ -67,21 +66,6 @@ interface Counts {
   events: number;
 }
 
-interface FeatureSession {
-  id: number;
-  session_key: string;
-  repo_full_name: string;
-  title: string;
-  branch_name?: string | null;
-  status: string;
-  session_url?: string | null;
-  pr_number?: number | null;
-  pr_url?: string | null;
-  last_activity_at?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 interface FetchResult<T> {
   ok: boolean;
   status: number;
@@ -109,7 +93,7 @@ interface TaskStats {
   failures_24h: number;
 }
 
-export type RepoSection = 'sessions' | 'checks' | 'deployments' | 'tasks' | 'events';
+export type RepoSection = 'checks' | 'deployments' | 'tasks' | 'events';
 
 const SECTION_PAGE_PARAM: Record<'checks' | 'deployments' | 'events', string> = {
   checks: 'checksPage',
@@ -216,10 +200,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   const [checks, setChecks] = useState<PaginatedResult<CheckRun>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
   const [pipelines, setPipelines] = useState<PaginatedResult<Pipeline>>({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
   const [events, setEvents] = useState<PaginatedResult<WebhookEvent>>({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
-  const [sessions, setSessions] = useState<FeatureSession[]>([]);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
-  const [creatingSession, setCreatingSession] = useState(false);
-  const [newSessionIdea, setNewSessionIdea] = useState('');
   const [tasks, setTasks] = useState<{ summary: TaskSummary[]; stats: TaskStats | null }>({ summary: [], stats: null });
   const [loading, setLoading] = useState(true);
   const [selectedOutput, setSelectedOutput] = useState<string | null>(null);
@@ -264,14 +244,13 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
 
   const fetchData = useCallback(async (checksPage = 1, pipelinesPage = 1, eventsPage = 1) => {
     try {
-      const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData, sessionsData] = await Promise.all([
+      const [repoData, countsData, checksData, pipelinesData, eventsData, tasksData] = await Promise.all([
         fetchJson<Repo>(repoApiBase),
         fetchJson<Counts>(`${repoApiBase}/counts`),
         fetchJson<PaginatedResult<CheckRun>>(`${repoApiBase}/checks?page=${checksPage}`),
         fetchJson<PaginatedResult<Pipeline>>(`${repoApiBase}/pipelines?page=${pipelinesPage}`),
         fetchJson<PaginatedResult<WebhookEvent>>(`${repoApiBase}/events?page=${eventsPage}`),
         fetchJson<{ summary: TaskSummary[]; stats: TaskStats | null }>(`/api/tasks?view=summary&repo=${encodeURIComponent(fullName)}`),
-        fetchJson<FeatureSession[]>(`${repoApiBase}/sessions`),
       ]);
       setRepo(repoData.ok && repoData.data ? repoData.data : null);
       setCounts(countsData.ok && countsData.data ? countsData.data : { checks: 0, deployments: 0, events: 0 });
@@ -279,8 +258,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
       setPipelines(pipelinesData.ok && pipelinesData.data?.items ? pipelinesData.data : { items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
       setEvents(eventsData.ok && eventsData.data?.items ? eventsData.data : { items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
       setTasks({ summary: tasksData.ok && tasksData.data?.summary ? tasksData.data.summary : [], stats: tasksData.ok ? (tasksData.data?.stats || null) : null });
-      setSessions(sessionsData.ok && Array.isArray(sessionsData.data) ? sessionsData.data : []);
-      setSessionsError(sessionsData.ok ? null : 'Failed to load feature sessions.');
     } catch {
       setRepo(null);
       setCounts({ checks: 0, deployments: 0, events: 0 });
@@ -288,8 +265,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
       setPipelines({ items: [], total: 0, page: 1, limit: 20, totalPages: 0 });
       setEvents({ items: [], total: 0, page: 1, limit: 50, totalPages: 0 });
       setTasks({ summary: [], stats: null });
-      setSessions([]);
-      setSessionsError('Failed to load repository data.');
     } finally {
       setLoading(false);
     }
@@ -322,7 +297,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
   }
 
   const tabs: { id: RepoSection; label: string; count: number }[] = [
-    { id: 'sessions', label: 'Feature Sessions', count: sessions.length },
     { id: 'checks', label: 'PR Reviews', count: counts.checks },
     { id: 'deployments', label: 'Deployments', count: pipelines.total },
     { id: 'tasks', label: 'Scheduled Tasks', count: tasks.summary.length },
@@ -349,9 +323,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
             <span className={`text-sm px-2 py-0.5 rounded ${repo.pr_review_enabled ? 'bg-[var(--green)]/10 text-[var(--green)]' : 'bg-[var(--bg-secondary)] text-[var(--text-muted)]'}`}>
               {repo.pr_review_enabled ? '✅ Reviews enabled' : 'Reviews disabled'}
             </span>
-            <span className={`text-sm px-2 py-0.5 rounded ${repo.feature_sessions_enabled ? 'bg-emerald-500/10 text-emerald-500' : 'bg-[var(--bg-secondary)] text-[var(--text-muted)]'}`}>
-              {repo.feature_sessions_enabled ? '🌳 Feature sessions enabled' : 'Feature sessions disabled'}
-            </span>
           </h1>
         </div>
       </div>
@@ -376,110 +347,6 @@ export default function RepoDetailContent({ owner, repoName, section }: { owner:
           </Link>
         ))}
       </div>
-
-      {section === 'sessions' && (
-        <div className="space-y-4">
-          {repo.feature_sessions_enabled && (
-            <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-4">
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-sm text-[var(--text-secondary)] mb-1">Initial feature idea</label>
-                  <textarea
-                    value={newSessionIdea}
-                    onChange={(e) => setNewSessionIdea(e.target.value)}
-                    placeholder="Rework feature sessions to create a gateway chat and continue there instead of embedding chat UI here"
-                    rows={4}
-                    className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-card)]"
-                  />
-                  <p className="mt-2 text-xs text-[var(--text-muted)]">
-                    jean-ci will create the repo-bound session, seed it with this idea plus PR backlink rules, then open the real gateway chat.
-                  </p>
-                </div>
-                <button
-                  disabled={creatingSession || !newSessionIdea.trim()}
-                  onClick={async () => {
-                    setCreatingSession(true);
-                    setSessionsError(null);
-                    try {
-                      const response = await fetch(`/api/repos/${encodeURIComponent(decodedOwner)}/${encodeURIComponent(decodedRepoName)}/sessions/create`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ initialIdea: newSessionIdea }),
-                      });
-
-                      const contentType = response.headers.get('content-type') || '';
-                      const payload = contentType.includes('application/json')
-                        ? await response.json().catch(() => null)
-                        : null;
-
-                      if (!response.ok) {
-                        setSessionsError(payload?.error || 'Failed to create feature session.');
-                      } else {
-                        setNewSessionIdea('');
-                        if (payload?.sessionUrl || payload?.session_url) {
-                          window.open(payload.sessionUrl || payload.session_url, '_blank', 'noopener,noreferrer');
-                        }
-                        await fetchData(checksPage, deploymentsPage, eventsPage);
-                      }
-                    } finally {
-                      setCreatingSession(false);
-                    }
-                  }}
-                  className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-                >
-                  {creatingSession ? 'Creating…' : 'Create Gateway Session'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-hidden">
-            {sessionsError ? (
-              <div className="p-6 text-red-400">{sessionsError}</div>
-            ) : sessions.length === 0 ? (
-              <div className="p-6 text-[var(--text-muted)]">No feature sessions tracked for this repository yet.</div>
-            ) : (
-              <div className="divide-y divide-[var(--border)]">
-                {sessions.map(session => (
-                  <div key={session.session_key} className="p-4 flex flex-col gap-3">
-                    <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
-                      <div>
-                        <div className="font-medium">{session.title}</div>
-                        <div className="mt-1 text-xs text-[var(--text-muted)] font-mono break-all">{session.session_key}</div>
-                        <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                          <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)]">{session.status}</span>
-                          {session.branch_name && (
-                            <span className="px-2 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-secondary)] font-mono">{session.branch_name}</span>
-                          )}
-                          {session.pr_number && (
-                            <span className="px-2 py-0.5 rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">PR #{session.pr_number}</span>
-                          )}
-                        </div>
-                      </div>
-                      <div className="text-sm text-[var(--text-muted)] lg:text-right">
-                        {session.last_activity_at ? formatRelativeTime(session.last_activity_at) : 'no activity yet'}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap gap-3 text-sm">
-                      {session.session_url && (
-                        <a href={session.session_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                          Continue in gateway
-                        </a>
-                      )}
-                      {session.pr_url && (
-                        <a href={session.pr_url} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">
-                          Open PR
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {section === 'checks' && (
         <div>

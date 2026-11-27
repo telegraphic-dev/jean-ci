@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth';
-import { getRepo, setRepoFeatureSessionsEnabled, setRepoReviewEnabled } from '@/lib/db';
+import { getRepo, setRepoReviewEnabled } from '@/lib/db';
 
 type Params = { params: Promise<{ owner: string; repo: string }> };
 
@@ -37,22 +37,14 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 
   const body = await req.json();
-  const { pr_review_enabled, feature_sessions_enabled } = body ?? {};
+  const { pr_review_enabled } = body ?? {};
 
   if (pr_review_enabled !== undefined && typeof pr_review_enabled !== 'boolean') {
     return NextResponse.json({ error: 'pr_review_enabled must be a boolean' }, { status: 400 });
   }
-
-  if (feature_sessions_enabled !== undefined && typeof feature_sessions_enabled !== 'boolean') {
-    return NextResponse.json({ error: 'feature_sessions_enabled must be a boolean' }, { status: 400 });
-  }
   
   if (pr_review_enabled !== undefined) {
     await setRepoReviewEnabled(fullName, pr_review_enabled);
-  }
-
-  if (feature_sessions_enabled !== undefined) {
-    await setRepoFeatureSessionsEnabled(fullName, feature_sessions_enabled);
   }
   
   return NextResponse.json({ success: true });

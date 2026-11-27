@@ -10,8 +10,6 @@ interface Repo {
   full_name: string;
   installation_id: number;
   pr_review_enabled: boolean;
-  feature_sessions_enabled: boolean;
-  active_feature_sessions: number;
   last_activity?: string;
 }
 
@@ -96,17 +94,6 @@ export default function ReposPage() {
     ));
   }
 
-  async function toggleFeatureSessions(fullName: string, enabled: boolean) {
-    await fetch(`/api/repos/${fullName}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feature_sessions_enabled: enabled }),
-    });
-    setRepos(repos.map(r => 
-      r.full_name === fullName ? { ...r, feature_sessions_enabled: enabled } : r
-    ));
-  }
-
   const filteredRepos = repos
     .filter(r => {
       const matchesSearch = r.full_name.toLowerCase().includes(search.toLowerCase());
@@ -134,7 +121,7 @@ export default function ReposPage() {
         <div>
           <h1 className="text-2xl font-bold">Repositories ({filteredRepos.length})</h1>
           <p className="text-[var(--text-secondary)] mt-1">
-            Manage repo-level PR reviews and feature-session trees
+            Manage repo-level PR reviews
           </p>
         </div>
         <button
@@ -193,11 +180,10 @@ export default function ReposPage() {
 
       {/* Repos table */}
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[920px]">
+        <table className="w-full min-w-[720px]">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Repository</th>
-              <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Feature Sessions</th>
               <th className="text-left py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Last Activity</th>
               <th className="text-center py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">PR Review</th>
               <th className="text-right py-3 px-4 text-sm font-semibold text-[var(--text-secondary)]">Actions</th>
@@ -206,7 +192,7 @@ export default function ReposPage() {
           <tbody className="text-sm">
             {filteredRepos.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">
+                <td colSpan={4} className="py-8 text-center text-[var(--text-muted)]">
                   {filter === 'enabled' ? 'No repos enabled yet.' : 'No repos found.'}
                 </td>
               </tr>
@@ -218,14 +204,6 @@ export default function ReposPage() {
                       {repo.full_name}
                     </Link>
                   </td>
-                  <td className="py-3 px-4 text-center">
-                    <div className="flex items-center justify-center gap-2">
-                      <span className={repo.feature_sessions_enabled ? 'text-[var(--green)]' : 'text-[var(--text-muted)]'}>
-                        {repo.feature_sessions_enabled ? '🌳' : '⚪'}
-                      </span>
-                      <span className="text-xs text-[var(--text-muted)]">{repo.active_feature_sessions}</span>
-                    </div>
-                  </td>
                   <td className="py-3 px-4 text-[var(--text-muted)]">
                     {repo.last_activity ? formatRelativeTime(repo.last_activity) : '—'}
                   </td>
@@ -236,16 +214,6 @@ export default function ReposPage() {
                   </td>
                   <td className="py-3 px-4 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button
-                        onClick={() => toggleFeatureSessions(repo.full_name, !repo.feature_sessions_enabled)}
-                        className={`px-3 py-1 rounded text-xs ${
-                          repo.feature_sessions_enabled
-                            ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
-                            : 'bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20'
-                        }`}
-                      >
-                        {repo.feature_sessions_enabled ? 'Disable Sessions' : 'Enable Sessions'}
-                      </button>
                       <button
                         onClick={() => toggleRepoReview(repo.full_name, !repo.pr_review_enabled)}
                         className={`px-3 py-1 rounded text-xs ${

@@ -24,7 +24,6 @@ import type {
   PaginatedResult,
   Pipeline,
   Repo,
-  RepoFeatureSession,
   RepoWithActivity,
   TaskStats,
   TaskSummary,
@@ -130,7 +129,6 @@ export interface JeanCiMcpDeps {
     eventType?: string,
     repo?: string,
   ) => Promise<PaginatedResult<WebhookEvent>>;
-  getRepoFeatureSessions: (repoFullName: string) => Promise<RepoFeatureSession[]>;
   getDefaultUserPrompt: () => Promise<string>;
   getPRInfo: (installationId: number, owner: string, repo: string, prNumber: number) => Promise<PrInfoSnapshot>;
   getRepoDefaultBranch: (installationId: number, owner: string, repo: string) => Promise<string>;
@@ -185,7 +183,6 @@ export function createDefaultMcpDeps(): JeanCiMcpDeps {
     getDeploymentsByRepoPaginated: async (repo, page, limit) => (await import('../db.ts')).getDeploymentsByRepoPaginated(repo, page, limit),
     getRecentEventsPaginated: async (page, limit, eventType, repo) =>
       (await import('../db.ts')).getRecentEventsPaginated(page, limit, eventType, repo),
-    getRepoFeatureSessions: async (repoFullName) => (await import('../db.ts')).getRepoFeatureSessions(repoFullName),
     getDefaultUserPrompt: async () => {
       const db = await import('../db.ts');
       return (await db.getConfig('user_prompt')) || db.DEFAULT_USER_PROMPT;
@@ -663,14 +660,13 @@ export async function createJeanCiMcpServer(
           fullName: repoConfig.full_name,
           installationId: repoConfig.installation_id,
           prReviewEnabled: Boolean(repoConfig.pr_review_enabled),
-          featureSessionsEnabled: Boolean(repoConfig.feature_sessions_enabled),
           createdAt: iso(repoConfig.created_at),
           updatedAt: iso(repoConfig.updated_at),
         },
         counts: { checks, deployments, events },
       };
       return jsonToolResult(
-        `**${repo}** — PR reviews: ${data.repo.prReviewEnabled ? 'enabled' : 'disabled'}, feature sessions: ${data.repo.featureSessionsEnabled ? 'enabled' : 'disabled'}. Counts: ${checks} checks, ${deployments} deployments, ${events} events.`,
+        `**${repo}** — PR reviews: ${data.repo.prReviewEnabled ? 'enabled' : 'disabled'}. Counts: ${checks} checks, ${deployments} deployments, ${events} events.`,
         data,
       );
     },
@@ -850,35 +846,7 @@ export async function createJeanCiMcpServer(
     },
   );
 
-  // 7. list_feature_sessions
-  server.registerTool(
-    'list_feature_sessions',
-    {
-      title: 'List Feature Sessions',
-      description: 'List tracked OpenClaw feature sessions for a repository with feature sessions enabled.',
-      inputSchema: z.object({
-        repo: RepoSlugSchema.describe('Repository slug in owner/repo format'),
-      }),
-      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-    },
-    async ({ repo }) => {
-      if (!hasReadScope) return insufficientReadScopeError();
-      const repoConfig = await deps.getRepo(repo);
-      if (!repoConfig) {
-        return toolError(`Repository not found: ${repo}`);
-      }
-      if (!repoConfig.feature_sessions_enabled) {
-        return toolError(`Feature sessions are not enabled for ${repo}.`);
-      }
-      const sessions = await deps.getRepoFeatureSessions(repo);
-      return jsonToolResult(
-        `Found ${sessions.length} feature session(s) for ${repo}.`,
-        { repo, items: sessions, total: sessions.length },
-      );
-    },
-  );
-
-  // 8. list_open_prs
+  // 7. list_open_prs
   server.registerTool(
     'list_open_prs',
     {

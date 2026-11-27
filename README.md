@@ -141,7 +141,6 @@ NEXT_PUBLIC_BASE_URL=https://jean-ci.example.com
 # OpenClaw Gateway
 OPENCLAW_GATEWAY_URL=https://openclaw.example.com
 OPENCLAW_GATEWAY_TOKEN=your_gateway_token
-OPENCLAW_GATEWAY_PUBLIC_URL=https://openclaw.example.com
 OPENCLAW_AGENT_ID=qa
 # Optional but recommended: use a dedicated jean-ci operator/device token,
 # not a personal token. If the gateway returns pairing/token-drift auth details,
@@ -428,13 +427,10 @@ Key points:
 The OpenClaw gateway URL is deployment-specific. Configure it explicitly:
 - URL: `OPENCLAW_GATEWAY_URL=https://openclaw.example.com`
 - Auth: Bearer token via `OPENCLAW_GATEWAY_TOKEN`
-- Public chat URL base: `OPENCLAW_GATEWAY_PUBLIC_URL=https://openclaw.example.com`
 - Agent routing: `OPENCLAW_AGENT_ID=main` by default, or set `OPENCLAW_AGENT_ID=qa` for a dedicated deployment
 - Recommendation: mint a dedicated jean-ci token/device identity instead of reusing a human operator token
 
 If you're running behind a reverse proxy or bridge, point `OPENCLAW_GATEWAY_URL` at that endpoint.
-
-Feature sessions use `OPENCLAW_GATEWAY_PUBLIC_URL` to build browser links like `https://openclaw.example.com/chat?session=agent%3Aqa%3A...` so users can continue the real conversation in the gateway UI.
 
 ### Gateway auth recovery
 
@@ -476,7 +472,7 @@ If approval does not fix it, rotate the credential for that device:
 Admin UI helpers:
 - Dashboard now shows the scopes jean-ci requests for its gateway device token.
 - You can revoke the cached stored device token from the admin dashboard.
-- After revocation, trigger any gateway action (for example from the gateway playground) and jean-ci will request a fresh token that includes `operator.admin`.
+- After revocation, trigger any gateway action and jean-ci will request a fresh token that includes `operator.admin`.
 
 Operational note:
 - jean-ci should use its own dedicated gateway identity/device, not a personal human operator token

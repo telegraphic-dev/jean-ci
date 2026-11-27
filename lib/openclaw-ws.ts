@@ -5,7 +5,6 @@ import {
   type DeviceIdentity,
   type DeviceStateStore,
   type StoredDeviceTokenStore,
-  type SessionsDeleteResult,
   normalizeWebSocketUrl,
 } from '@telegraphic-dev/openclaw-gateway-client';
 import { getJsonState, setJsonState } from './db.ts';
@@ -19,8 +18,6 @@ const DEVICE_TOKEN_STORE_VERSION = 1;
 
 const DEVICE_IDENTITY_STATE_KEY = 'identity';
 const DEVICE_TOKEN_STORE_STATE_KEY = 'token-store';
-
-export interface SessionDeleteResult extends SessionsDeleteResult {}
 
 type GatewayRpcResult<T> =
   | { success: true; result: T }
@@ -123,21 +120,18 @@ function buildStore(): DeviceStateStore {
   };
 }
 
-function buildGatewayClient(authOverrides: { role?: string; scopes?: string[] } = {}) {
+function buildGatewayClient() {
   const url = getWebSocketUrl();
   const token = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
   if (!url || !token) {
     return null;
   }
 
-  const role = authOverrides.role?.trim() || ROLE;
-  const scopes = [...new Set((authOverrides.scopes || [...SCOPES]).map((scope) => scope.trim()).filter(Boolean))];
-
   return new OpenClawGatewayClient({
     url,
     token,
-    role,
-    scopes: scopes.length > 0 ? scopes : [...SCOPES],
+    role: ROLE,
+    scopes: [...SCOPES],
     store: buildStore(),
     client: {
       id: 'gateway-client',
@@ -160,9 +154,8 @@ function buildGatewayClient(authOverrides: { role?: string; scopes?: string[] } 
 export async function callGatewayRpc<T>(
   method: string,
   params: Record<string, unknown> = {},
-  authOverrides: { role?: string; scopes?: string[] } = {},
 ): Promise<GatewayRpcResult<T>> {
-  const client = buildGatewayClient(authOverrides);
+  const client = buildGatewayClient();
   if (!client) {
     return { success: false, error: 'WebSocket URL or token not configured' };
   }
@@ -186,51 +179,6 @@ export async function callGatewayRpc<T>(
   } finally {
     await client.close().catch(() => undefined);
   }
-}
-
-export async function deleteSession(
-  sessionKey: string,
-  options: {
-    deleteTranscript?: boolean;
-    emitLifecycleHooks?: boolean;
-  } = {},
-): Promise<GatewayRpcResult<SessionDeleteResult>> {
-  const { deleteTranscript = true, emitLifecycleHooks = false } = options;
-
-  logWs(`Deleting session: ${sessionKey}`);
-
-  const result = await callGatewayRpc<SessionDeleteResult>('sessions.delete', {
-    key: sessionKey,
-    deleteTranscript,
-    emitLifecycleHooks,
-  });
-
-  if (result.success) {
-    logWs(`Session deleted: ${sessionKey}, archived: ${result.result.archived?.length || 0} files`);
-  } else {
-    errorWs(`Failed to delete session ${sessionKey}: ${result.error}`);
-  }
-
-  return result;
-}
-
-export async function listSessions(options: {
-  limit?: number;
-  activeMinutes?: number;
-} = {}): Promise<GatewayRpcResult<unknown[]>> {
-  const result = await callGatewayRpc<{ sessions?: unknown[] } | unknown[]>('sessions.list', options);
-  if (!result.success) {
-    return result;
-  }
-
-  const payload = result.result;
-  const sessions = Array.isArray(payload)
-    ? payload
-    : Array.isArray((payload as { sessions?: unknown[] })?.sessions)
-      ? (payload as { sessions: unknown[] }).sessions
-      : [];
-
-  return { success: true, result: sessions };
 }
 
 export async function getOpenClawDeviceAuthDebugInfo() {
