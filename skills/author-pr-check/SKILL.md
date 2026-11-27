@@ -27,5 +27,7 @@ Custom checks live under `.jean-ci/pr-checks/<name>.md` and run **additively** a
    - Target concrete, merge-blocking risks (security boundaries, schema migrations, API/OpenAPI parity, backwards-compatibility regressions).
    - Avoid subjective style nitpicks that create noisy false-positive failures.
 
-4. **Validate against a real diff before merging**
-   - Call `run_local_review` with `repo`, `ref` (or `headSha`), `diff`, and `selectedChecks: ["<name>"]` to verify the prompt parses cleanly and returns accurate `PASS` / `FAIL` verdicts.
+4. **Push to a branch and validate against a real diff before merging**
+   - `list_pr_check_definitions` and `run_local_review` load `.jean-ci/pr-checks/*.md` definitions from GitHub at the supplied `ref` or `headSha` (not from unpushed local edits in the diff).
+   - Commit and push your new or edited `.jean-ci/pr-checks/<name>.md` file to a feature or temporary branch first.
+   - Call `list_pr_check_definitions` with `repo` and that pushed `ref` (or `headSha`) to confirm the prompt passes Jean CI's structural validation, then call `run_local_review` with `repo`, that same pushed `ref`/`headSha`, a representative `diff`, and `selectedChecks: ["<name>"]` to verify it returns accurate `PASS` / `FAIL` verdicts.
